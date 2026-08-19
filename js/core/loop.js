@@ -7,8 +7,20 @@
 
 export const FIXED_DT = 1 / 30;
 
-/** 1フレームで消化する最大ステップ数（重い環境でスパイラルしないための上限） */
-const MAX_STEPS_PER_FRAME = 12;
+/**
+ * 1フレームで固定更新に使ってよい実時間(ms)。
+ *
+ * 以前は「1フレーム最大12ステップ」という固定回数で頭打ちにしていたが、
+ * それだと倍速が上がるほど足りなくなる。x4 では realDt が 0.1秒 を超えた時点で
+ * 必要ステップ数が12を超え、超過分を捨てるので**実効速度が落ちたまま戻らない**。
+ * 「4倍速にしたのに等速になる」のはこれで起きうる。
+ *
+ * 回数ではなく時間で区切れば、速い環境では捨てずに済み、
+ * 遅い環境でもフレームが延びすぎない（スパイラルもしない）。
+ */
+const STEP_BUDGET_MS = 10;
+/** それでも念のための回数上限（無限ループ防止） */
+const MAX_STEPS_PER_FRAME = 60;
 
 export class GameLoop {
   /**
@@ -32,6 +44,12 @@ export class GameLoop {
     this.fps = 0;
     this._fpsAccum = 0;
     this._fpsFrames = 0;
+
+    /** 実際に出ている倍率。要求(speed)より低ければ処理が追いついていない。 */
+    this.effectiveSpeed = 1;
+    this._rateWall = 0;
+    this._rateSim = 0;
+    this._starved = false;
 
     this._tick = this._tick.bind(this);
   }
@@ -89,19 +107,32 @@ export class GameLoop {
       this._fpsFrames = 0;
     }
 
+    const simBefore = this.simTime;
     if (this.speed > 0) {
       this._accum += realDt * this.speed;
+      const budgetEnd = performance.now() + STEP_BUDGET_MS;
       let steps = 0;
       while (this._accum >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
         this.onFixedUpdate(FIXED_DT);
         this.simTime += FIXED_DT;
         this._accum -= FIXED_DT;
         steps++;
+        if (performance.now() > budgetEnd) break;
       }
-      // 消化しきれなかった分は捨てる（低速環境ではスローモーションになる）
-      if (steps >= MAX_STEPS_PER_FRAME) this._accum = 0;
+      // 予算内に消化しきれなかった分は捨てる（低速環境ではスローモーションになる）
+      if (this._accum >= FIXED_DT) { this._accum = 0; this._starved = true; }
     } else {
       this._accum = 0;
+    }
+
+    // 実効倍率の計測（要求どおり進んでいるかを画面に出すため）
+    this._rateWall += realDt;
+    this._rateSim += this.simTime - simBefore;
+    if (this._rateWall >= 0.5) {
+      this.effectiveSpeed = this._rateSim / this._rateWall;
+      this._rateWall = 0;
+      this._rateSim = 0;
+      this._starved = false;
     }
 
     const alpha = this.speed > 0 ? this._accum / FIXED_DT : 0;

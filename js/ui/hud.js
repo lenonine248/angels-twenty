@@ -170,7 +170,9 @@ export class Hud {
       return;
     }
 
-    // 構造が変わるときだけ作り直す
+    // 構造が変わるときだけ作り直す。
+    // 「実行内容」は指示が変わるたびに変わる“値”なので、ここ（構造のキー）には入れない。
+    // 入れないまま値の更新もしないと、指示を変えても表示が古いまま残る（実際に起きた）。
     const key = mine.map((u) => `${u.id}${u.alive ? 1 : 0}${u.state}${this.commands.isSelected(u) ? 1 : 0}`
       + `${u.aiMode}${u.formation ? u.formation.id : 0}${u.threats.length ? 1 : 0}`).join('|');
     if (key !== this._rosterKey) {
@@ -192,6 +194,11 @@ export class Hud {
       }
       const hp = row.querySelector('.bar.hp i');
       if (hp) hp.style.width = `${Math.round(u.hpRatio * 100)}%`;
+      const st = row.querySelector('.ur-state');
+      if (st) {
+        const html = rosterState(u);
+        if (st.innerHTML !== html) st.innerHTML = html;
+      }
     }
   }
 
@@ -199,10 +206,7 @@ export class Hud {
     const sel = this.commands.isSelected(u) ? ' selected' : '';
     const dead = u.alive ? '' : ' dead';
     const threat = u.alive && u.threats.length ? ' threat' : '';
-    const state = !u.alive ? '撃墜'
-      : threat ? `<span class="ur-warn">⚠ ミサイル×${u.threats.length}</span>`
-      : u.onGround || u.state === 'landing' ? (STATE_LABEL[u.state] || u.state)
-      : orderLabel(u);
+    const state = rosterState(u);
     const mode = u.alive && !u.onGround
       ? ` · <span class="ur-mode">${(AI_MODES[u.aiMode] || {}).label || ''}</span>` : '';
     const fm = u.formation ? ` · ${u.formation.name}` : '';
@@ -422,6 +426,17 @@ export class Hud {
 }
 
 // -------------------------------------------------------------- 表示ヘルパ
+
+/**
+ * ロースター1行の「実行内容」。
+ * 指示が変わるたびに変わるので、構造ではなく値として毎フレーム書き込む。
+ */
+function rosterState(u) {
+  if (!u.alive) return '撃墜';
+  if (u.threats.length) return `<span class="ur-warn">⚠ ミサイル×${u.threats.length}</span>`;
+  if (u.onGround || u.state === 'landing') return STATE_LABEL[u.state] || u.state;
+  return orderLabel(u);
+}
 
 function orderLabel(u) {
   const o = u.order;

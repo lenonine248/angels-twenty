@@ -170,12 +170,18 @@ export class CommandController {
   // ------------------------------------------------------------ 選択
 
   select(units) {
-    this.selection = units.filter((u) => u.alive);
+    const next = units.filter((u) => u.alive);
+    // 選択から外れた機体の兵装指定は解除する。
+    // 残したままだと、次にその機体を選んだとき身に覚えのない兵装が指定されている。
+    for (const u of this.selection) {
+      if (!next.includes(u)) u.selectedWeapon = null;
+    }
+    this.selection = next;
   }
 
   toggle(unit) {
     const i = this.selection.indexOf(unit);
-    if (i >= 0) this.selection.splice(i, 1);
+    if (i >= 0) { this.selection.splice(i, 1); unit.selectedWeapon = null; }
     else this.selection.push(unit);
   }
 

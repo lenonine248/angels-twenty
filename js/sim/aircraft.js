@@ -20,6 +20,20 @@ import { APPROACH_DISTANCE } from './airbase.js';
 const MIN_AGL = 220;
 /** 地形先読みのサンプル間隔(m)。地形グリッド(200m)より細かくして尾根の見落としを防ぐ。 */
 const LOOK_STEP = 150;
+/** 細かく見る距離。これより先は粗いサンプルで足りる。 */
+const LOOK_NEAR = 3000;
+/** 先読み距離の設計根拠。これだけの高度差を登り切れる時間ぶん先まで見る。 */
+const RIDGE_CLIMB = 2200;
+/**
+ * 登り切れないときに試す針路のずらし幅（ラジアン）。左右交互に、浅い角度から試す。
+ * 引き返す角度まで含めないと、袋小路の谷に入ったときに出口が見つからない。
+ */
+const ESCAPE_TURNS = [0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3, Math.PI];
+/**
+ * この値を超えたら「登り切れない」と判断して針路を変える。
+ * 1.0（＝ぎりぎり間に合う）で判断すると、気づいた時にはもう避けられない。
+ */
+const CLIMB_DEMAND_LIMIT = 0.65;
 /** 巡航速度・最大舵時の減速(m/s^2)。旋回はエネルギーを消費する。 */
 const TURN_DRAG = 5.5;
 /** 到達判定の基準を旋回半径の何倍にするか */
@@ -161,7 +175,7 @@ export class Aircraft extends Unit {
 
     this._steer(dt, world);
     this._integrate(dt, world);
-    this._consumeFuel(dt);
+    this._consumeFuel(dt, world);
     this._checkBingoFuel(world);
   }
 
@@ -306,6 +320,12 @@ export class Aircraft extends Unit {
     const needed = (dist / Math.max(80, this.spec.cruiseSpeed)) * 1.6 + 110;
     if (this.fuel < needed) {
       this._rtbTriggered = true;
+      // 指示だけでなく AI モードも帰投にする。
+      // 指示しか変えないと、次のtickで AI（PURSUIT等）が目標を見つけて
+      // 攻撃指示で上書きし、帰投が無かったことになる。
+      // しかも _rtbTriggered が立っているので二度と燃料監視が働かず、
+      // そのまま燃料切れで落ちる（実際にミッション4で多発していた）。
+      this.aiMode = 'RTB';
       this.setOrder({ type: 'rtb', airbase: ab });
       world.log?.(`${this.name} 燃料残少 — 帰投`);
     }
@@ -490,7 +510,33 @@ export class Aircraft extends Unit {
     }
 
     // --- 地形回避（さらに優先） ---
-    const floor = this._terrainFloor(world, desiredHeading);
+    //
+    // 高度を上げるだけでは足りない場合がある。上昇率の低い機体が急峻な尾根へ
+    // 向かうと、機首を上げても物理的に間に合わず山肌に突っ込む。
+    // 登り切れないと分かったら、登れる方角へ逃がす。
+    let scan = this._terrainScan(world, desiredHeading);
+    const demand = this._climbDemand(scan);
+    if (demand > CLIMB_DEMAND_LIMIT) {
+      let best = null;
+      for (const off of ESCAPE_TURNS) {
+        const h = desiredHeading + off;
+        const s2 = this._terrainScan(world, h);
+        const d = this._climbDemand(s2);
+        if (!best || d < best.d) best = { d, h, scan: s2 };
+        if (d < CLIMB_DEMAND_LIMIT * 0.6) break;   // 十分に楽な方角が見つかったら打ち切る
+      }
+      if (best && best.d < demand) {
+        desiredHeading = best.h;
+        scan = best.scan;
+      }
+      this.terrainAvoiding = true;
+      // 速度を落として時間を稼ぐ。上昇率は変わらないが、
+      // 壁に着くまでの時間が延びるぶん高度を稼げる。
+      desiredSpeed = Math.min(desiredSpeed, this.spec.minSpeed * 1.15);
+    } else {
+      this.terrainAvoiding = false;
+    }
+    const floor = scan.floor;
     if (desiredAlt < floor) desiredAlt = floor;
     desiredAlt = clamp(desiredAlt, 100, this.spec.ceiling);
 
@@ -574,27 +620,61 @@ export class Aircraft extends Unit {
    * 旋回を織り込んだ予測経路に沿って一定距離ごと（LOOK_STEP）に見る。
    */
   _terrainFloor(world, desiredHeading = this.heading) {
+    return this._terrainScan(world, desiredHeading).floor;
+  }
+
+  /**
+   * 先読みの結果。floor は確保すべき高度、dist はその最高点までの距離。
+   * dist が要る理由は「登り切れるか」を判断するため。
+   */
+  _terrainScan(world, desiredHeading = this.heading) {
     const terrain = world.terrain;
-    const lookAhead = Math.max(3000, this.speed * 16);   // 16秒先まで
-    const steps = Math.min(40, Math.ceil(lookAhead / LOOK_STEP));
-    const dtStep = LOOK_STEP / Math.max(50, this.speed);
-    const turnPerStep = this.effectiveTurnRate * dtStep;
+
+    // 先読みの距離は「登り切れるか」で決まる。
+    //
+    // 上昇率の低い機体（A-3 は 90m/s）が高い尾根に向かうとき、
+    // 短い先読みだと尾根が見えた時点で必要な上昇量が上昇率を超えていて、
+    // どれだけ機首を上げても間に合わず山肌に突っ込む（実際に起きた）。
+    // 想定する最大の登り(RIDGE_CLIMB)を上昇率で割った時間ぶん先まで見る。
+    const climbTime = RIDGE_CLIMB / Math.max(20, this.spec.climbRate);
+    const lookAhead = clamp(this.speed * climbTime, 4000, 11000);
+
+    const dtNear = LOOK_STEP / Math.max(50, this.speed);
+    const turnNear = this.effectiveTurnRate * dtNear;
 
     let h = this.heading;
     let remaining = angleDiff(desiredHeading, this.heading);
     let x = this.pos.x, z = this.pos.z;
     let ground = terrain.heightAt(x, z);
+    let travelled = 0;
+    let peakAt = 0;
 
-    for (let i = 0; i < steps; i++) {
+    // 近くは細かく、遠くは粗く見る。遠方は「そこに高い所があるか」だけ分かればよく、
+    // 全区間を細かく見るとサンプル数が増えすぎる。
+    while (travelled < lookAhead) {
+      const step = travelled < LOOK_NEAR ? LOOK_STEP : LOOK_STEP * 3;
+      const turnPerStep = turnNear * (step / LOOK_STEP);
       const turn = clamp(remaining, -turnPerStep, turnPerStep);
       h += turn;
       remaining -= turn;
-      x += Math.sin(h) * LOOK_STEP;
-      z += -Math.cos(h) * LOOK_STEP;
+      x += Math.sin(h) * step;
+      z += -Math.cos(h) * step;
+      travelled += step;
       const g = terrain.heightAt(x, z);
-      if (g > ground) ground = g;
+      if (g > ground) { ground = g; peakAt = travelled; }
     }
-    return Math.max(ground, 0) + MIN_AGL;
+    return { floor: Math.max(ground, 0) + MIN_AGL, dist: peakAt };
+  }
+
+  /**
+   * その針路の地形を、上昇率で登り切れるか。
+   * 1 を超えると間に合わない（＝機首を上げても山肌に当たる）。
+   */
+  _climbDemand(scan) {
+    const need = scan.floor - this.pos.y;
+    if (need <= 0) return 0;
+    const seconds = Math.max(1, scan.dist / Math.max(50, this.speed));
+    return (need / seconds) / Math.max(20, this.spec.climbRate);
   }
 
   _advanceOrder() {
@@ -690,7 +770,8 @@ export class Aircraft extends Unit {
       if (this.nearestBase(world)) return false;      // 帰れる飛行場があるなら離脱しない
       this.withdrawing = true;
       this._noHomeBase = true;
-      world.log?.(`${this.name} 戦域を離脱`);
+      // ここではログを出さない。離脱を「決めた」だけで、まだ戦域にいる。
+      // 実際にマップ外へ出た時点で handleDeaths がログを出す。
     }
 
     // 一番近い縁の外側へ向かう
@@ -713,7 +794,7 @@ export class Aircraft extends Unit {
     return true;
   }
 
-  _consumeFuel(dt) {
+  _consumeFuel(dt, world) {
     let rate = 1;
     if (this.speed > this.spec.cruiseSpeed * 1.15) rate *= 3;          // アフターバーナー域
     if (this.pos.y > 6000) rate *= 0.7;
@@ -725,10 +806,13 @@ export class Aircraft extends Unit {
       this.fuel = 0;
       // 帰る場所が無い機体（マップ外を拠点とする敵編隊など）は燃料切れで落とさない。
       // 帰投先が無いのに勝手に落ちると、戦果が転がり込むだけで面白くない。
-      if (!this._noHomeBase) {
-        this.deathCause = 'fuel';
-        this.destroy();
-      }
+      //
+      // 判定はフラグではなく、その場で確かめる。帰投を始めたあとに飛行場を壊されると
+      // 「帰る場所がある前提」のフラグが古いまま残り、落ちなくてよい機体が落ちる。
+      const homeless = world ? !this.nearestBase(world) : this._noHomeBase;
+      if (homeless) { this._noHomeBase = true; return; }
+      this.deathCause = 'fuel';
+      this.destroy();
     }
   }
 

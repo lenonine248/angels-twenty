@@ -554,9 +554,13 @@ function handleDeaths(world) {
   for (const u of world.units) {
     if (u.alive || u._deathHandled) continue;
     u._deathHandled = true;
+    const mine = u.side === world.playerSide;
 
     // 戦域離脱は撃墜ではない。爆発も戦果カウントもしない。
-    if (u.deathCause === 'withdraw') continue;
+    if (u.deathCause === 'withdraw') {
+      if (mine || playerSees(world, u)) world.log(`${u.name} 戦域を離脱`);
+      continue;
+    }
 
     const air = u.kind === 'aircraft';
     world.effects.explosion(u.pos, air ? 420 : 520, air ? 'air' : 'ground');
@@ -566,16 +570,28 @@ function handleDeaths(world) {
     } else {
       world.effects.wreck(u.pos, null, 'ground');
     }
-    const mine = u.side === world.playerSide;
     if (battle) { if (mine) battle.losses++; else battle.kills++; }
     const cause = u.deathCause === 'fuel' ? '燃料切れ'
       : u.deathCause === 'terrain' ? '地形衝突' : '撃破';
-    world.log(`${mine ? '【損失】' : '【戦果】'} ${u.name} ${cause}`);
-    audio.radio(mine ? 'bad' : 'good');
+
+    // 見えていない敵の撃破はログに出さない。
+    // 出すと「戦果が出た＝そこに敵がいた」と分かってしまい、フォグ・オブ・ウォーが崩れる。
+    // 勝敗判定は内部の真の状態で行うので、ログを出さなくてもクリア判定には影響しない（§12）。
+    if (mine || playerSees(world, u)) {
+      world.log(`${mine ? '【損失】' : '【戦果】'} ${u.name} ${cause}`);
+      audio.radio(mine ? 'bad' : 'good');
+    }
   }
 }
 
 const _deathVel = new THREE.Vector3();
+
+/** プレイヤーが今この敵を見えているか（記憶ではなく、実際に探知中か） */
+function playerSees(world, u) {
+  if (!world.detection) return true;
+  const c = world.detection.contactsFor(world.playerSide).get(u.id);
+  return !!(c && c.detected);
+}
 
 const logLines = [];
 function pushLog(msg) {
@@ -594,7 +610,13 @@ let hudFrames = 0;
 function updateHudBar() {
   el('missionTime').textContent = formatTime(loop.simTime);
   if (++hudFrames % 15 === 0) {
-    el('perf').textContent = `${loop.fps.toFixed(0)} fps`;
+    // 要求どおりの倍率が出ていないときは、その旨を出す。
+    // 黙って遅くなると「倍速が効かない」という分かりにくい症状になる。
+    const slow = loop.speed > 0 && loop.effectiveSpeed < loop.speed * 0.75;
+    el('perf').textContent = slow
+      ? `${loop.fps.toFixed(0)} fps · 実効 x${loop.effectiveSpeed.toFixed(1)}`
+      : `${loop.fps.toFixed(0)} fps`;
+    el('perf').classList.toggle('slow', slow);
     renderObjectives();
   }
   el('pauseOverlay').classList.toggle('hidden', !loop.paused);

@@ -26,7 +26,7 @@ const MIN_SPEED_RATIO = 0.35;
 /** 誘導に必要な視線を確認する間隔(秒) */
 const LOS_INTERVAL = 0.25;
 /** ARM が電波を失ったときの慣性誘導の誤差（残距離に対する割合） */
-const ARM_MEMORY_ERROR = 0.02;
+const ARM_MEMORY_ERROR = 0.018;
 
 let nextId = 1;
 

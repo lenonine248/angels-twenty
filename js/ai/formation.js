@@ -65,8 +65,13 @@ export class Formation {
     leader.setOrder(order);
     for (const m of this.members) {
       if (m === leader || !m.alive) continue;
-      if (order.type === 'attack') m.setOrder({ ...order });
-      else m.setOrder({ type: 'follow', target: leader, slot: m.formationSlot });
+      if (order.type === 'attack') { m.setOrder({ ...order }); continue; }
+      // 追従指示にも player フラグを引き継ぐ。
+      // 落とすと僚機だけ「指示なし」扱いになり、AI が即座に上書きして
+      // 近くの敵へ勝手に向かう（編隊指示を出したのに崩れる原因だった）。
+      m.setOrder({
+        type: 'follow', target: leader, slot: m.formationSlot, player: order.player,
+      });
     }
   }
 

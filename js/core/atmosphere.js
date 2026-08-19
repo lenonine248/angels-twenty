@@ -63,7 +63,12 @@ export function missileDragFactor(alt) {
  *   終末が濃い空気になるため、この平均を使うと実挙動とよく一致する。
  */
 export function effectiveMissileRange(weapon, avgAlt) {
-  return weapon.range * (0.25 + 0.75 / missileDragFactor(avgAlt));
+  const mult = 0.25 + 0.75 / missileDragFactor(avgAlt);   // 海面で 1.0
+  // altGain は「高度による射程の伸びをどれだけ受けるか」。
+  // 1 なら理論どおり、0 なら高度に関係なく表記射程のまま。
+  // 兵装ごとに運用高度の役割を分けるための係数（AGM は低め）。
+  const gain = weapon.altGain ?? 1;
+  return weapon.range * (1 + (mult - 1) * gain);
 }
 
 /** UI表示用: 高度の性能サマリ */
@@ -71,6 +76,6 @@ export function altitudeProfile(alt) {
   return {
     thrust: thrustFactor(alt),
     turn: turnFactor(alt),
-    missileRange: 0.25 + 0.75 / missileDragFactor(alt),
+    missileRange: 0.25 + 0.75 / missileDragFactor(alt),   // altGain=1 のときの倍率
   };
 }
