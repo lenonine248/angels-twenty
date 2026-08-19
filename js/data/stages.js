@@ -108,9 +108,12 @@ export const STAGES = [
     friendly: {
       base: { x: 9000, z: 42000 },
       startAirborne: false,
+      // 対地攻撃機は2機。1機失っただけで「30km先まで積み替えて往復し直す」
+      // という長い作業が確定してしまうのを避ける（実プレイで18分がそれに消えた）。
       aircraft: [
         { type: 'F-2', name: 'HAMMER 1', loadout: ['ARM', 'ARM', 'AAM-S'] },
         { type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AGM', 'AAM-S', 'AAM-S'] },
+        { type: 'A-3', name: 'ANVIL 2', loadout: ['AGM', 'AGM', 'AAM-S', 'AAM-S'] },
         { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
       ],
     },

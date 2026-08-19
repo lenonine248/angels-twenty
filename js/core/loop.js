@@ -8,6 +8,14 @@
 export const FIXED_DT = 1 / 30;
 
 /**
+ * 選べる倍率。
+ * 固定タイムステップなので、倍率を上げても1ステップの刻みは 1/30秒 のまま。
+ * 変わるのは「1フレームで何ステップ進めるか」だけで、物理の精度は落ちない。
+ * x8 は補給待ちや進出中の待ち時間を飛ばすためのもの。
+ */
+export const SPEED_STEPS = [1, 2, 4, 8];
+
+/**
  * 1フレームで固定更新に使ってよい実時間(ms)。
  *
  * 以前は「1フレーム最大12ステップ」という固定回数で頭打ちにしていたが、
@@ -79,7 +87,7 @@ export class GameLoop {
 
   /** [ ] キー用: 速度を一段ずつ変える */
   stepSpeed(dir) {
-    const steps = [1, 2, 4];
+    const steps = SPEED_STEPS;
     if (this.paused) {
       if (dir > 0) this.setSpeed(steps[0]);
       return;
