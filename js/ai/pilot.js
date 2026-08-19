@@ -74,6 +74,10 @@ export class PilotAI {
     for (const u of this.world.units) {
       if (u.kind !== 'aircraft' || !u.alive || u.onGround) continue;
       if (u.state === 'landing') continue;
+      // 練度が低いほど判断が遅い（状況の変化に気づくのが遅れる）
+      const interval = AI_INTERVAL / (0.6 + 0.4 * (u.skill ?? 1));
+      if (u._nextThink != null && this.time < u._nextThink) continue;
+      u._nextThink = this.time + interval;
       this._think(u, attackers);
     }
   }

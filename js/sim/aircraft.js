@@ -95,6 +95,13 @@ export class Aircraft extends Unit {
 
     /** 自分を狙って飛来中で、かつ気づけているミサイル（sim/combat.js が毎tick更新） */
     this.threats = [];
+
+    /**
+     * 練度 0..1。難易度を「機数」ではなく「腕」で調整するためのダイヤル。
+     * 判断の速さ・撃つ判断・機銃の当たりやすさ・回避の質にまとめて効く。
+     * 1 が満点で、既定。ステージ側から敵に低い値を与えて難易度を下げる。
+     */
+    this.skill = o.skill != null ? clamp(o.skill, 0.2, 1) : 1;
     this.fireCooldown = 0;
     this._decoyTimer = 0;
     this.evading = false;
@@ -464,11 +471,27 @@ export class Aircraft extends Unit {
         const tz = t.pos.z - f.z * back + rz * lat;
         const dx = tx - this.pos.x, dz = tz - this.pos.z;
         const dist = Math.hypot(dx, dz);
-        desiredHeading = dist > 250 ? headingOf(dx, dz) : t.heading;
+
+        // ズレはリーダーの進行方向に沿って符号付きで見る。
+        //   along > 0 … スロットはまだ前。追いつく必要がある
+        //   along < 0 … 行き過ぎている。減速して戻る
+        // 符号なしの距離で速度を決めると、追い越したあとも「離れている」と判断して
+        // さらに加速し、いつまでも前に出続ける（護衛が被護衛機を追い越す原因だった）。
+        const along = dx * f.x + dz * f.z;
+        const lateral = dx * rx + dz * rz;
+
+        // 前に出すぎたときは向きを変えずに減速だけで戻す。
+        // 旋回で戻そうとすると編隊が蛇行する。
+        const overshot = along < 0 && Math.abs(lateral) < 400;
+        desiredHeading = overshot ? t.heading
+          : (dist > 250 ? headingOf(dx, dz) : t.heading);
         desiredAlt = t.pos.y;
-        // 追いつく／離れすぎない速度制御
-        desiredSpeed = clamp(t.speed + (dist - 400) * 0.25,
-                             this.spec.minSpeed, this.spec.maxSpeed);
+
+        // 追いつくのは速く、行き過ぎたら確実に落とす（非対称にする）
+        const corr = along > 0
+          ? Math.min(along * 0.30, 140)
+          : Math.max(along * 0.40, -90);
+        desiredSpeed = clamp(t.speed + corr, this.spec.minSpeed, this.spec.maxSpeed);
         break;
       }
 
@@ -594,9 +617,10 @@ export class Aircraft extends Unit {
     const bearing = headingOf(dx, dz);
     const tti = dist / Math.max(60, m.speed);      // 到達までの概算秒数
 
-    // デコイ投射（誘導方式に合わせてフレア／チャフを選ぶ）
+    // デコイ投射（誘導方式に合わせてフレア／チャフを選ぶ）。
+    // 練度が低いほど気づくのが遅く、撒き始めが遅れる。
     this._decoyTimer -= dt;
-    if (tti < 4.5 && this._decoyTimer <= 0 && world.combat) {
+    if (tti < 4.5 * (0.45 + 0.55 * this.skill) && this._decoyTimer <= 0 && world.combat) {
       const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
       if (world.combat.deployDecoy(this, kind)) this._decoyTimer = 1.2;
     }

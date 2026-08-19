@@ -16,6 +16,7 @@ import { GameLoop, formatTime } from './core/loop.js';
 import { makeRng } from './core/rng.js';
 import { loadProgress, markCleared, resetProgress, saveSettings } from './core/save.js';
 import { AudioManager } from './core/audio.js';
+import * as telemetry from './core/telemetry.js';
 import { Aircraft } from './sim/aircraft.js';
 import { GroundUnit, findFlatSpot } from './sim/ground.js';
 import { Airbase, pickRunwayHeading } from './sim/airbase.js';
@@ -100,7 +101,7 @@ async function boot() {
     get commands() { return commands; },
     get hud() { return hud; },
     get minimap() { return minimap; },
-    scene, loop, screens, progress, audio, stages: STAGES,
+    scene, loop, screens, progress, audio, stages: STAGES, telemetry,
     /** 検証用: ステージを直接開始する（ブリーフィング既定の兵装で出撃） */
     startStage(i) { screens.showBriefing(STAGES[i]); startBattle(STAGES[i], screens.loadouts.map((l) => l.slice())); },
   };
@@ -282,6 +283,7 @@ function buildBattle(stage, loadouts) {
     log: pushLog,
     weaponPoints: stage.weaponPoints,
     weaponPointsMax: stage.weaponPoints,
+    enemySkill: stage.enemy?.skill ?? 1,
     isVisibleToPlayer(u) {
       return this.detection ? this.detection.isVisible(this.playerSide, u) : true;
     },
@@ -321,7 +323,10 @@ function buildBattle(stage, loadouts) {
   world.effects.onExplosion = (pos, size, kind) => audio.explosion(pos, size, kind);
 
   world.onFire = (shooter, target, weapon, missile) => {
-    if (shooter.side === world.playerSide) world.log(`${shooter.name} ${weapon.id} 発射`);
+    if (shooter.side === world.playerSide) {
+      world.log(`${shooter.name} ${weapon.id} 発射`);
+      telemetry.markShot(weapon.id);
+    }
     world.effects.launchFlash(shooter.pos, missile ? missile.dir : null);
     audio.missileLaunch(shooter.pos);
   };
@@ -329,6 +334,9 @@ function buildBattle(stage, loadouts) {
     if (m.target && m.target.side === world.playerSide) world.log(`${m.target.name} デコイ有効`);
   };
   world.onDecoy = (unit) => audio.flare(unit.pos);
+  world.onMissileHit = (m) => {
+    if (m.side === world.playerSide) telemetry.markHit(m.weapon.id);
+  };
   // 機銃の命中にも曳光弾の演出を出す（当たっているのが見えないと分からない）
   world.onGunHit = (shooter, target) => {
     if (world.rng() < 0.3) world.effects.tracer(shooter.pos, target.pos, shooter.side);
@@ -357,6 +365,7 @@ function buildBattle(stage, loadouts) {
 
   logLines.length = 0;
   objectivesKey = null;
+  telemetry.begin(stage, loadouts);
   pushLog(`任務 ${stage.name} 開始`);
 
   battle = {
@@ -453,6 +462,8 @@ function spawnStage(world, stage, loadouts, terrain) {
       type: a.type, name: a.name, side: SIDE.RED, tags: a.tags,
       x: a.x, z: a.z, alt: Math.max(0, terrain.heightAt(a.x, a.z)) + (a.agl || 5000),
       heading: Math.PI, loadout: a.loadout || (a.type === 'E-8' ? [] : ['AAM-M', 'AAM-S', 'AAM-S']),
+      // 練度はステージ既定 → 機体ごとの指定 の順で上書きできる
+      skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
     u.aiMode = a.aiMode || 'PATROL';
     u.patrolArea = { x: a.x, z: a.z, alt: u.pos.y, radius: 4500 };
@@ -514,6 +525,7 @@ function spawnReinforcement(world, airbase, type, index) {
     type, name: `増援 ${index}`, side: airbase.side,
     x: airbase.pos.x, z: airbase.pos.z, alt: airbase.pos.y,
     loadout: ['AAM-M', 'AAM-S', 'AAM-S'],
+    skill: world.enemySkill ?? 1,
   }));
   ac.baseLoadout = ac.loadout.slice();
   airbase.onArrive(ac);
@@ -532,6 +544,10 @@ function finishBattle() {
   const clear = mission.state === MISSION.CLEAR;
   if (clear) { progress = markCleared(progress, stage.id); screens.progress = progress; }
 
+  telemetry.end(clear ? 'clear' : 'fail', {
+    sec: loop.simTime, kills: battle.kills, losses: battle.losses,
+    pointsLeft: world.weaponPoints,
+  });
   audio.setAlarm(0);
   audio.setEngine(0, 1);
   setTimeout(() => {
@@ -555,6 +571,9 @@ function handleDeaths(world) {
     if (u.alive || u._deathHandled) continue;
     u._deathHandled = true;
     const mine = u.side === world.playerSide;
+
+    telemetry.mark(u.deathCause === 'withdraw' ? 'withdraw' : (mine ? 'loss' : 'kill'),
+      loop.simTime, u, { cause: u.deathCause || '被弾', kind: u.kind });
 
     // 戦域離脱は撃墜ではない。爆発も戦果カウントもしない。
     if (u.deathCause === 'withdraw') {

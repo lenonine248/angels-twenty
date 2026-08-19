@@ -159,12 +159,19 @@ export class CombatSystem {
     const weapon = this.selectWeapon(shooter, target);
     if (!weapon) return;
 
-    // 命中が見込めないうちは撃たない（乱射してミサイルを空にしないため）
+    // 命中が見込めないうちは撃たない（乱射してミサイルを空にしないため）。
+    //
+    // ここに練度を効かせてはいけない。ミサイルが実体で飛ぶこのゲームでは、
+    // しきい値を下げれば「手数が増えて」強くなり、上げれば「良い射点でだけ撃つ」
+    // ので強くなる。どちらへ動かしても強くなるため、難易度の軸として使えない。
+    // 練度は発射間隔・照準精度・反応速度・回避の質で効かせる（単調に効く軸だけ使う）。
     const need = FIRE_THRESHOLD[shooter.fireThreshold || 'mid'] ?? FIRE_THRESHOLD.mid;
     if (weapon.kind !== 'bomb' && estimateHitChance(shooter, target, weapon) < need) return;
 
     this.fire(shooter, target, weapon);
-    shooter.fireCooldown = weapon.kind === 'bomb' ? BOMB_COOLDOWN : FIRE_COOLDOWN;
+    // 練度が低いほど次弾までが遅い。手数そのものを減らす、副作用の少ない効かせ方。
+    const cd = weapon.kind === 'bomb' ? BOMB_COOLDOWN : FIRE_COOLDOWN;
+    shooter.fireCooldown = cd / (0.5 + 0.5 * (shooter.skill ?? 1));
   }
 
   /** プレイヤーが指定した射撃指示（兵装＋目標）を条件が整った順に消化する */
@@ -282,6 +289,19 @@ export class CombatSystem {
     shooter.loadout.splice(idx, 1);
 
     const m = new Missile({ weapon, launcher: shooter, target, world: this.world });
+
+    // 照準の甘さ。練度が低いほど初期の向きがずれ、ミサイルは修正にエネルギーを使う。
+    // 「撃つかどうか」ではなく「どれだけ正確に撃てるか」に効かせるのが、
+    // 難易度の軸として素直に効く（外すほど当たらなくなる）。
+    const skill = shooter.skill ?? 1;
+    if (skill < 1) {
+      const err = (1 - skill) * 0.11;                   // 練度0.2で約5度
+      const a = (this.world.rng() - 0.5) * 2 * err;
+      const c = Math.cos(a), sn = Math.sin(a);
+      const dx0 = m.dir.x, dz0 = m.dir.z;
+      m.dir.set(dx0 * c - dz0 * sn, m.dir.y, dx0 * sn + dz0 * c).normalize();
+    }
+
     // 無誘導爆弾は投下高度に応じて散布界が広がる
     if (weapon.kind === 'bomb' && weapon.dispersionPerKm) {
       const h = Math.max(0, shooter.pos.y - target.pos.y);
@@ -359,7 +379,7 @@ export class CombatSystem {
     this.world.onGunFire?.(shooter, target, rounds);
 
     const rng = this.world.rng;
-    const base = air ? g.airHit : g.groundHit;
+    const base = (air ? g.airHit : g.groundHit) * (0.5 + 0.5 * (shooter.skill ?? 1));
     const dmg = air ? g.airDmg : g.groundDmg;
     const pHit = base * (1 - (dist / range) * 0.6);
     let expected = rounds * pHit;
