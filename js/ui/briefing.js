@@ -1,0 +1,299 @@
+// ステージ選択・ブリーフィング・戦果画面。仕様書 §11 / §13。
+//
+// ブリーフィングで見せるもの:
+//   ・ステージ目標
+//   ・地形（固定シードで生成されるので、ここで見た地形がそのまま戦場になる）
+//   ・判明している敵の配置（known:true のユニットのみ）
+//   ・出撃編成と兵装（兵装ポイントの範囲内で自由に組める）
+
+import { STAGES, isUnlocked } from '../data/stages.js';
+import { VERSION, VERSION_DATE } from '../core/version.js';
+import { showChangelog } from './changelog.js';
+import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
+import { getType } from '../data/aircraft.js';
+import { Terrain, CELLS, MAP_SIZE } from '../world/terrain.js';
+
+const LOADABLE = ['AAM-S', 'AAM-M', 'AAM-A', 'AGM', 'ARM', 'BOMB', 'TANK'];
+
+export class ScreenManager {
+  /**
+   * @param {object} o
+   * @param {(stage, loadouts, terrain)=>void} o.onStart 出撃
+   */
+  constructor(o) {
+    this.onStart = o.onStart;
+    this.progress = o.progress;
+    this.root = document.getElementById('screens');
+    this._terrainCache = new Map();
+    /** ステージIDごとに、最後に組んだ搭載を覚えておく（ブリーフィングに戻っても消えない） */
+    this._lastLoadouts = new Map();
+    this.loadouts = null;
+    this.stage = null;
+
+    this.root.addEventListener('click', (e) => this._onClick(e));
+  }
+
+  // -------------------------------------------------------------- 画面
+
+  hide() { this.root.classList.add('hidden'); this.root.innerHTML = ''; }
+
+  showTitle() {
+    const cleared = this.progress.cleared.length;
+    this._show(`
+      <div class="screen-inner title-screen">
+        <h1 class="game-title">ANGELS TWENTY</h1>
+        <div class="screen-sub">戦闘機による空戦／対地 リアルタイム戦略シミュレーション</div>
+        <div class="title-prog">クリア済み ${cleared} / ${STAGES.length}</div>
+        <div class="screen-foot">
+          <button data-act="select" class="go">ミッション選択</button>
+        </div>
+      </div>
+      <button class="version-tag" data-act="changelog" title="更新履歴を見る">
+        ${VERSION}<span>${VERSION_DATE}</span>
+      </button>`);
+  }
+
+  showStageSelect() {
+    const cleared = this.progress.cleared;
+    const cards = STAGES.map((s, i) => {
+      const unlocked = isUnlocked(s, cleared);
+      const done = cleared.includes(s.id);
+      return `<div class="stage-card${unlocked ? '' : ' locked'}${done ? ' cleared' : ''}"
+                   ${unlocked ? `data-stage="${s.id}"` : ''}>
+        <div class="sc-no">MISSION ${String(i + 1).padStart(2, '0')}</div>
+        <div class="sc-name">${s.name}</div>
+        <div class="sc-title">${s.title}</div>
+        <div class="sc-state">${done ? 'CLEARED' : unlocked ? '出撃可能' : 'LOCKED'}</div>
+      </div>`;
+    }).join('');
+
+    this._show(`
+      <div class="screen-inner">
+        <h1 class="game-title">ANGELS TWENTY</h1>
+        <div class="screen-sub">MISSION SELECT</div>
+        <div class="stage-grid">${cards}</div>
+        <div class="screen-foot">
+          <span>クリアすると次のミッションが解禁されます</span>
+          <button data-act="title" class="ghost">タイトルへ</button>
+          <button data-act="reset" class="ghost">進行状況をリセット</button>
+        </div>
+      </div>`);
+  }
+
+  showBriefing(stage) {
+    this.stage = stage;
+    // 前回このステージで組んだ搭載があればそれを復元する。
+    // 出撃 → 途中でブリーフィングに戻る、を繰り返すたびに組み直しになると煩わしい。
+    const saved = this._lastLoadouts.get(stage.id);
+    this.loadouts = saved
+      ? saved.map((l) => l.slice())
+      : stage.friendly.aircraft.map((a) => a.loadout.slice());
+    // 機体数が変わった場合（ステージ定義の更新）は初期値に戻す
+    if (this.loadouts.length !== stage.friendly.aircraft.length) {
+      this.loadouts = stage.friendly.aircraft.map((a) => a.loadout.slice());
+    }
+    this._renderBriefing();
+  }
+
+  /** 現在の搭載を記憶する（出撃時・変更時） */
+  _rememberLoadouts() {
+    if (!this.stage || !this.loadouts) return;
+    this._lastLoadouts.set(this.stage.id, this.loadouts.map((l) => l.slice()));
+  }
+
+  /** 搭載の記憶を初期値へ戻す */
+  resetLoadouts(stage) {
+    this._lastLoadouts.delete(stage.id);
+  }
+
+  _renderBriefing() {
+    const stage = this.stage;
+    const spent = this.loadouts.reduce((n, l) => n + loadoutCost(l), 0);
+    const left = stage.weaponPoints - spent;
+
+    const roster = stage.friendly.aircraft.map((a, i) => {
+      const spec = getType(a.type);
+      const load = this.loadouts[i];
+      const slots = loadoutSlots(load);
+      const chips = load.length
+        ? load.map((id, k) => `<button class="chip load" data-del="${i}:${k}">${id}<i>×</i></button>`).join('')
+        : '<span class="chip empty">なし</span>';
+      const adds = LOADABLE.map((id) => {
+        const w = WEAPONS[id];
+        const room = slots + w.slots <= spec.hardpoints && (w.cost === 0 || w.cost <= left);
+        return `<button class="addw${room ? '' : ' disabled'}" data-add="${i}:${id}"
+          title="${w.name} / ${w.slots}スロット / コスト${w.cost}">+${id}</button>`;
+      }).join('');
+      return `<div class="bf-plane">
+        <div class="bf-head"><b>${a.name}</b><span>${spec.name}</span>
+          <span class="bf-slots${slots > spec.hardpoints ? ' bad' : ''}">${slots}/${spec.hardpoints}スロット</span></div>
+        <div class="bf-load">${chips}</div>
+        <div class="bf-add">${adds}</div>
+      </div>`;
+    }).join('');
+
+    const objectives = stage.objectives.map((o) =>
+      `<li class="${o.fail ? 'obj-fail' : ''}">${o.label}${o.fail ? '（失敗条件）' : ''}</li>`).join('');
+
+    this._show(`
+      <div class="screen-inner briefing">
+        <div class="bf-top">
+          <div>
+            <div class="screen-sub">BRIEFING</div>
+            <h1 class="bf-name">${stage.name}<small>${stage.title}</small></h1>
+          </div>
+          <div class="bf-points">兵装ポイント <b class="${left < 0 ? 'bad' : ''}">${left}</b> / ${stage.weaponPoints}</div>
+        </div>
+
+        <div class="bf-body">
+          <div class="bf-left">
+            <div class="bf-section">任務</div>
+            <p class="bf-text">${stage.brief.replace(/\n/g, '<br>')}</p>
+            <div class="bf-section">目標</div>
+            <ul class="bf-obj">${objectives}</ul>
+            <div class="bf-section">助言</div>
+            <p class="bf-hint">${stage.hint || ''}</p>
+          </div>
+          <div class="bf-right">
+            <div class="bf-section">戦域図</div>
+            <canvas id="bfMap" width="${CELLS}" height="${CELLS}"></canvas>
+            <div class="bf-legend">
+              <span class="lg blue">■</span> 自軍飛行場
+              <span class="lg red">■</span> 判明している敵
+              <span class="lg dim">□</span> 未確認地域
+            </div>
+          </div>
+        </div>
+
+        <div class="bf-section">出撃編成</div>
+        <div class="bf-roster">${roster}</div>
+
+        <div class="screen-foot">
+          <button data-act="back" class="ghost">戻る</button>
+          <button data-act="launch" class="go"${left < 0 ? ' disabled' : ''}>出撃</button>
+        </div>
+      </div>`);
+
+    this._drawMap(stage);
+  }
+
+  showResult(stage, result, stats) {
+    const clear = result === 'clear';
+    const next = STAGES[STAGES.indexOf(stage) + 1];
+    this._show(`
+      <div class="screen-inner result">
+        <div class="res-badge ${clear ? 'clear' : 'fail'}">${clear ? 'MISSION COMPLETE' : 'MISSION FAILED'}</div>
+        <h1 class="bf-name">${stage.name}<small>${stage.title}</small></h1>
+        <div class="res-reason">${stats.reason || ''}</div>
+        <div class="res-stats">
+          <div><label>経過時間</label><b>${stats.time}</b></div>
+          <div><label>撃墜</label><b>${stats.kills}</b></div>
+          <div><label>喪失</label><b>${stats.losses}</b></div>
+          <div><label>残兵装P</label><b>${stats.points}</b></div>
+        </div>
+        ${clear && next ? `<div class="res-next">次の任務「${next.name}」が解禁されました</div>` : ''}
+        <div class="screen-foot">
+          <button data-act="select" class="ghost">ミッション選択へ</button>
+          <button data-act="retry" class="go">${clear ? 'もう一度' : '再挑戦'}</button>
+        </div>
+      </div>`);
+  }
+
+  // -------------------------------------------------------------- 内部
+
+  _show(html) {
+    this.root.innerHTML = html;
+    this.root.classList.remove('hidden');
+  }
+
+  _onClick(e) {
+    const card = e.target.closest('[data-stage]');
+    if (card) { this.showBriefing(STAGES.find((s) => s.id === card.dataset.stage)); return; }
+
+    const add = e.target.closest('[data-add]');
+    if (add && !add.classList.contains('disabled')) {
+      const [i, id] = add.dataset.add.split(':');
+      this.loadouts[Number(i)].push(id);
+      this._rememberLoadouts();
+      this._renderBriefing();
+      return;
+    }
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      const [i, k] = del.dataset.del.split(':').map(Number);
+      this.loadouts[i].splice(k, 1);
+      this._rememberLoadouts();
+      this._renderBriefing();
+      return;
+    }
+
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    switch (act.dataset.act) {
+      case 'changelog': showChangelog(); break;
+      case 'back':   this.showStageSelect(); break;
+      case 'title':  this.showTitle(); break;
+      case 'select': this.showStageSelect(); break;
+      case 'launch':
+        if (!act.hasAttribute('disabled')) {
+          this._rememberLoadouts();
+          this.onStart(this.stage, this.loadouts.map((l) => l.slice()), this._terrainFor(this.stage));
+        }
+        break;
+      case 'retry':
+        this.showBriefing(this.stage);
+        break;
+      case 'reset':
+        if (this.onReset) this.onReset();
+        this._lastLoadouts.clear();
+        this.showStageSelect();
+        break;
+      default: break;
+    }
+  }
+
+  /** ステージの地形（プレビュー用。戦闘側は同じシードで作り直す） */
+  _terrainFor(stage) {
+    if (!this._terrainCache.has(stage.id)) {
+      this._terrainCache.set(stage.id, new Terrain(stage.terrain));
+    }
+    return this._terrainCache.get(stage.id);
+  }
+
+  /** 戦域図。地形と、判明している配置だけを描く。 */
+  _drawMap(stage) {
+    const canvas = document.getElementById('bfMap');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const terrain = this._terrainFor(stage);
+    ctx.putImageData(terrain.buildMinimapImage(ctx), 0, 0);
+
+    const px = (x) => (x / MAP_SIZE) * CELLS;
+    const mark = (x, z, color, size = 5) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(px(x) - size / 2, px(z) - size / 2, size, size);
+    };
+
+    // 自軍
+    if (stage.friendly.base) mark(stage.friendly.base.x, stage.friendly.base.z, '#5aa9ff', 7);
+    for (const g of stage.friendly.ground || []) mark(g.x, g.z, '#5aa9ff', 5);
+
+    // 判明している敵だけ
+    const enemy = stage.enemy;
+    for (const key of ['base', 'base2']) {
+      const b = enemy[key];
+      if (b && b.known) mark(b.x, b.z, '#ff5b44', 7);
+    }
+    for (const g of enemy.ground || []) if (g.known) mark(g.x, g.z, '#ff5b44', 5);
+
+    // 到達目標
+    for (const o of stage.objectives) {
+      if (o.type !== 'reach') continue;
+      ctx.strokeStyle = '#ffb648';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(px(o.x), px(o.z), Math.max(4, px(o.radius || 3000)), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+}

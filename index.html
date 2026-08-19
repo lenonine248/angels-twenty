@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ANGELS TWENTY</title>
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<canvas id="viewport"></canvas>
+
+<!-- ミッション選択 / ブリーフィング / 戦果 -->
+<div id="screens" class="hidden"></div>
+
+<div id="loading">
+  <div class="loading-title">ANGELS TWENTY</div>
+  <div class="loading-msg">GENERATING TERRAIN...</div>
+</div>
+
+<!-- ===== HUD ===== -->
+<div id="hud" class="hidden">
+
+  <!-- 上部バー -->
+  <div id="topbar">
+    <div class="tb-left">
+      <span class="tb-label">MISSION</span>
+      <span id="missionName">TERRAIN TEST</span>
+      <span class="tb-label" style="margin-left:18px">兵装P</span>
+      <span id="weaponPoints">--</span>
+    </div>
+    <div class="tb-center">
+      <span class="tb-label">T+</span>
+      <span id="missionTime">00:00</span>
+      <div id="speedCtl">
+        <button data-speed="0" id="btnPause" title="Space">II</button>
+        <button data-speed="1" class="active">x1</button>
+        <button data-speed="2">x2</button>
+        <button data-speed="4">x4</button>
+      </div>
+    </div>
+    <div class="tb-right">
+      <span id="perf">-- fps</span>
+    </div>
+  </div>
+
+  <!-- 目標 -->
+  <div id="objectives"></div>
+
+  <!-- 左：ユニットリスト -->
+  <div id="unitList">
+    <div class="panel-title">FLIGHT ROSTER</div>
+    <div id="rosterBody"></div>
+  </div>
+
+  <!-- 右上：ミニマップ -->
+  <div id="minimapWrap">
+    <div class="panel-title">TACTICAL MAP</div>
+    <canvas id="minimap" width="220" height="220"></canvas>
+  </div>
+
+  <!-- 下部：選択ユニット詳細 -->
+  <div id="detailPanel">
+    <div class="panel-title">SELECTED</div>
+    <div id="detailBody"></div>
+  </div>
+
+  <!-- 戦闘ログ -->
+  <div id="eventLog"></div>
+
+  <!-- カーソル先の情報（距離など） -->
+  <div id="hoverInfo" class="hidden"></div>
+
+  <!-- 範囲選択ボックス -->
+  <div id="selBox"></div>
+
+  <!-- 操作ヘルプ -->
+  <div id="helpBox">
+    <div class="help-row"><b>左クリック/ドラッグ</b> 選択 / <b>右クリック</b> 移動・攻撃・随伴</div>
+    <div class="help-row"><b>Shift+右</b> 経路追加 / <b>Z X</b> 高度 / <b>C</b> 追跡 / <b>Tab</b> 次の機体</div>
+    <div class="help-row"><b>G</b> 編隊を組む / <b>Shift+G</b> 解散 / <b>B</b> 帰投</div>
+    <div class="help-row"><b>Ctrl+数字</b> 編隊登録 / <b>数字</b> 編隊呼出 / <b>Esc</b> 選択解除</div>
+    <div class="help-row"><b>WASD</b> カメラ / <b>Q E</b> 旋回 / <b>R F</b> 仰角 / <b>ホイール</b> ズーム</div>
+    <div class="help-row"><b>Space</b> 一時停止 / <b>[ ]</b> 速度 / <b>H</b> ヘルプ切替</div>
+  </div>
+
+  <!-- ポーズ表示 -->
+  <div id="pauseOverlay" class="hidden">PAUSED</div>
+
+  <!-- Escメニュー -->
+  <div id="pauseMenu" class="hidden">
+    <div class="pm-box">
+      <div class="pm-title">MENU</div>
+      <button data-menu="resume">続ける</button>
+      <button data-menu="briefing">ブリーフィングに戻る</button>
+      <button data-menu="select">ミッション選択に戻る</button>
+      <button data-menu="title">タイトルに戻る</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- 音量設定（どの画面からでも開ける） -->
+<button id="audioBtn" title="音量設定 (M でミュート)">&#9834;</button>
+<div id="audioPanel" class="hidden">
+  <div class="ap-title">AUDIO</div>
+  <div class="ap-row"><span>全体</span><input type="range" data-vol="master" min="0" max="100"><b data-volv="master">80</b></div>
+  <div class="ap-row"><span>BGM</span><input type="range" data-vol="music" min="0" max="100"><b data-volv="music">45</b></div>
+  <div class="ap-row"><span>効果音</span><input type="range" data-vol="sfx" min="0" max="100"><b data-volv="sfx">85</b></div>
+  <div class="ap-hint">M キーでミュート切替</div>
+</div>
+
+<!-- 更新履歴（タイトル画面の版表示から開く） -->
+<div id="changelog" class="hidden"></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

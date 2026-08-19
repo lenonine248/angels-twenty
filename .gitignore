@@ -1,0 +1,13 @@
+# OS が作る余計なファイル
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# エディタ
+.vscode/
+.idea/
+*.swp
+
+# Python
+__pycache__/
+*.pyc

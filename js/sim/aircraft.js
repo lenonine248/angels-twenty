@@ -1,0 +1,739 @@
+// 戦闘機の飛行モデルと指示処理。
+//
+// プレイヤーは操縦しない（完全指揮型RTS）ため、飛行モデルは
+// 「指示 → 目標方位・目標高度・目標速度 → 物理的に到達可能な範囲で追従」
+// という素直な構造にしてある。厳密な空力ではなく、
+//   ・旋回半径が速度に依存する
+//   ・上昇すると減速し、降下すると加速する（エネルギー交換）
+//   ・地形に突っ込まない
+// という「戦術判断に効く挙動」だけを再現する。
+
+import * as THREE from 'three';
+import { Unit, headingOf, angleDiff, DEG } from './unit.js';
+import { getType } from '../data/aircraft.js';
+import { loadoutSlots, loadoutFuelBonus } from '../data/weapons.js';
+import { clamp } from '../core/rng.js';
+import { thrustFactor, turnFactor, maxSpeedFactor } from '../core/atmosphere.js';
+import { APPROACH_DISTANCE } from './airbase.js';
+
+/** 地表から確保する最低高度(m) */
+const MIN_AGL = 220;
+/** 地形先読みのサンプル間隔(m)。地形グリッド(200m)より細かくして尾根の見落としを防ぐ。 */
+const LOOK_STEP = 150;
+/** 巡航速度・最大舵時の減速(m/s^2)。旋回はエネルギーを消費する。 */
+const TURN_DRAG = 5.5;
+/** 到達判定の基準を旋回半径の何倍にするか */
+const ARRIVE_FACTOR = 0.9;
+
+const _tmp = new THREE.Vector3();
+
+export class Aircraft extends Unit {
+  constructor(o) {
+    const spec = getType(o.type);
+    super({ ...o, kind: 'aircraft', hp: spec.hp, name: o.name || spec.id });
+
+    this.spec = spec;
+    this.typeId = spec.id;
+    this.loadout = (o.loadout || []).slice();
+
+    this.speed = o.speed ?? spec.cruiseSpeed;
+    this.pos.y = o.alt ?? 3000;
+    this.desiredAlt = this.pos.y;
+    this.desiredSpeed = spec.cruiseSpeed;
+
+    this.fuelMax = spec.fuelSeconds * loadoutFuelBonus(this.loadout);
+    this.fuel = this.fuelMax;
+    this.gun = spec.gunRounds;
+    this.flares = spec.flares;
+    this.chaff = spec.chaff;
+
+    // 見た目用（描画側が参照する）
+    this.roll = 0;
+    this.pitch = 0;
+
+    /** 指示。order が現在の指示、queue が Shift+右クリックで積んだ待ち行列 */
+    this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, radius: 2500 };
+    this.queue = [];
+
+    /**
+     * 'flying' 飛行中 / 'landing' 最終進入・滑走 / 'parked' 駐機 /
+     * 'servicing' 整備中 / 'ready' 整備完了・発進待ち / 'takeoff' 離陸滑走
+     */
+    this.state = 'flying';
+    this.deathCause = null;
+    this.rolling = false;          // 滑走路上を転がっているか
+    this.airbase = null;
+
+    /** 離陸時の搭載。帰投後の既定の再装備内容になる。 */
+    this.baseLoadout = this.loadout.slice();
+    /** プレイヤーが指定した次回の搭載（未指定なら baseLoadout） */
+    this.plannedLoadout = null;
+
+    /** AIモード（ai/pilot.js が解釈する）。プレイヤーがユニット単位で切り替える。 */
+    this.aiMode = o.aiMode || 'PATROL';
+    /** 索敵のための機首の振り。レーダーが前方扇形なので、これが死角を減らす。 */
+    this.headingBias = 0;
+    this.patrolArea = null;
+    this.escortTarget = null;
+    this.strikeTarget = null;
+    this.formationSlot = 0;
+    this.formation = null;
+
+    /** 自分を狙って飛来中で、かつ気づけているミサイル（sim/combat.js が毎tick更新） */
+    this.threats = [];
+    this.fireCooldown = 0;
+    this._decoyTimer = 0;
+    this.evading = false;
+    this.cranking = false;
+
+    /** ミサイル誘導中でも回避機動を取るか（false なら誘導を優先して耐える） */
+    this.evadeWhileGuiding = true;
+    /** プレイヤーが指定した使用兵装。null ならAIが選ぶ。 */
+    this.selectedWeapon = null;
+    /** プレイヤーの射撃指示 [{weapon, target}]。攻撃目標は変えずに撃つ。 */
+    this.fireTasks = [];
+    /** AIが自動発射に踏み切る命中期待度 'low' | 'mid' | 'high' */
+    this.fireThreshold = 'mid';
+    /** 兵装種別ごとの自動使用可否。false にするとAIが勝手に使わない。 */
+    this.autoWeapons = {};
+  }
+
+  // ------------------------------------------------------------- 指示
+
+  /** 指示を設定。append=true なら待ち行列に積む */
+  setOrder(order, append = false) {
+    if (append && this.order && this.order.type !== 'orbit') {
+      this.queue.push(order);
+    } else {
+      this.order = order;
+      this.queue.length = 0;
+    }
+  }
+
+  clearOrders() {
+    this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, radius: 2500 };
+    this.queue.length = 0;
+  }
+
+  /** 経路表示用: 現在地から順に辿る目標地点のリスト */
+  waypoints() {
+    const pts = [];
+    const push = (o) => {
+      if (!o) return;
+      if (o.type === 'move' || o.type === 'orbit') pts.push({ x: o.x, z: o.z, alt: o.alt ?? this.desiredAlt });
+      else if (o.type === 'rtb' && o.airbase) {
+        pts.push({ x: o.airbase.pos.x, z: o.airbase.pos.z, alt: o.airbase.pos.y + 400 });
+      }
+      else if ((o.type === 'follow' || o.type === 'attack') && o.target && o.target.alive) {
+        pts.push({ x: o.target.pos.x, z: o.target.pos.z, alt: o.target.pos.y, hostile: o.type === 'attack' });
+      }
+    };
+    push(this.order);
+    for (const o of this.queue) push(o);
+    return pts;
+  }
+
+  // ------------------------------------------------------------- 更新
+
+  /** 地上にいる（レーダーに映らず、飛行処理も行わない） */
+  get onGround() {
+    return this.state === 'parked' || this.state === 'servicing' || this.state === 'ready'
+      || this.state === 'takeoff' || (this.state === 'landing' && this.rolling);
+  }
+
+  update(dt, world) {
+    if (!this.alive) return;
+
+    switch (this.state) {
+      case 'parked':
+      case 'servicing':
+      case 'ready':
+        return;                                  // 整備中。時間は飛行場側が進める
+      case 'takeoff':
+        this._updateTakeoff(dt, world);
+        return;
+      case 'landing':
+        this._updateLanding(dt, world);
+        return;
+      default:
+        break;
+    }
+
+    this._steer(dt, world);
+    this._integrate(dt, world);
+    this._consumeFuel(dt);
+    this._checkBingoFuel(world);
+  }
+
+  // ------------------------------------------------------------- 離着陸
+
+  /**
+   * 最終進入と着陸滑走。
+   * 通常の飛行処理は最低対地高度を確保してしまうので、着陸だけは別経路にする。
+   */
+  _updateLanding(dt, world) {
+    const ab = this.airbase;
+    if (!ab || !ab.alive) {                      // 着陸先を失った
+      this.state = 'flying';
+      this.rolling = false;
+      this.clearOrders();
+      return;
+    }
+
+    const dir = ab.runwayDir;
+    const start = ab.runwayStart;
+    const along = _tmp.copy(this.pos).sub(start).dot(dir);   // 滑走路始端からの距離
+    const toTouchdown = 250 - along;                          // 接地点まで（正=手前）
+
+    if (!this.rolling) {
+      // 滑走路軸上の少し先を狙う。横ズレが自然に収束する。
+      const lead = clamp(Math.abs(toTouchdown) * 0.7, 600, 3000);
+      const aim = start.clone().addScaledVector(dir, Math.min(250, along + lead));
+      const desiredHeading = headingOf(aim.x - this.pos.x, aim.z - this.pos.z);
+
+      const maxTurn = this.effectiveTurnRate * dt;
+      this.heading += clamp(angleDiff(desiredHeading, this.heading), -maxTurn, maxTurn);
+      this.roll += ((clamp(angleDiff(desiredHeading, this.heading), -0.3, 0.3) * 2) - this.roll) * dt * 2;
+
+      // 接地点へ向かう降下角（約3.7度）。
+      // ただし進入路の地形より下を通らないよう、接地直前以外はクリアランスを確保する。
+      // これが無いと丘を突き抜けて進入してしまう。
+      // 接地直前はフレア（機首上げ）に相当する分だけ余裕を無くし、確実に接地させる
+      let glideAlt = ab.fieldAlt + Math.max(0, toTouchdown) * 0.065
+        + (toTouchdown > 300 ? 6 : 0);
+      if (toTouchdown > 700) {
+        const f = this.forward();
+        const ahead = Math.max(
+          world.terrain.heightAt(this.pos.x, this.pos.z),
+          world.terrain.heightAt(this.pos.x + f.x * 400, this.pos.z + f.z * 400),
+          world.terrain.heightAt(this.pos.x + f.x * 900, this.pos.z + f.z * 900),
+        );
+        glideAlt = Math.max(glideAlt, Math.max(0, ahead) + 150);
+      }
+      const vs = clamp((glideAlt - this.pos.y) * 0.8, -55, 45);
+      this.pos.y += vs * dt;
+      this.pitch = Math.atan2(vs, Math.max(40, this.speed));
+
+      // 進入中でも地面に当たれば墜落する（整地の誤差ぶんは許容）
+      if (this.pos.y < Math.max(0, world.terrain.heightAt(this.pos.x, this.pos.z)) - 25) {
+        this.deathCause = 'terrain';
+        this.destroy();
+        return;
+      }
+
+      // 進入速度まで減速
+      const approachSpeed = this.spec.minSpeed * 1.12;
+      this.speed += clamp(approachSpeed - this.speed, -8 * dt, 8 * dt) ;
+
+      // 接地。滑走路上を浮いたまま通り過ぎないよう、行き過ぎたら強制的に降ろす。
+      if ((this.pos.y <= ab.fieldAlt + 10 && toTouchdown < 500) || toTouchdown < -150) {
+        this.rolling = true;
+        this.pos.y = ab.fieldAlt;
+        this.pitch = 0;
+        this.roll = 0;
+      }
+    } else {
+      // 接地後の滑走
+      this.pos.y = ab.fieldAlt;
+      this.heading += clamp(angleDiff(ab.runwayHeading, this.heading), -0.8 * dt, 0.8 * dt);
+      this.speed = Math.max(0, this.speed - 9 * dt);
+      if (this.speed <= 12) {
+        this.rolling = false;
+        ab.onArrive(this);
+        world.log?.(`${this.name} 着陸`);
+        return;
+      }
+    }
+
+    const f = this.forward();
+    this.pos.x += f.x * this.speed * dt;
+    this.pos.z += f.z * this.speed * dt;
+    this._consumeFuel(dt * 0.4);
+  }
+
+  /**
+   * 離陸滑走から上昇まで。
+   * 通常飛行へ渡すのは地面から十分離れてから。すぐ渡すと、
+   * 通常飛行側の地形衝突判定（地表+20m）に引っかかって滑走路上で墜落する。
+   */
+  _updateTakeoff(dt, world) {
+    const ab = this.airbase;
+    if (!ab) { this.state = 'flying'; return; }
+
+    this.heading = ab.runwayHeading;
+    const ground = Math.max(0, world.terrain.heightAt(this.pos.x, this.pos.z));
+
+    if (!this._rotated) {
+      // 滑走
+      this.pos.y = ab.fieldAlt;
+      this.speed += 9 * dt;
+      if (this.speed >= this.spec.minSpeed * 1.05) this._rotated = true;
+    } else {
+      // 引き起こして上昇
+      this.speed += 6 * dt;
+      const climb = this.spec.climbRate * 0.55;
+      this.pos.y += climb * dt;
+      this.pitch = Math.atan2(climb, Math.max(40, this.speed));
+      if (this.pos.y - ground > 180) {
+        this.state = 'flying';
+        this.rolling = false;
+        this._rotated = false;
+        this._rtbTriggered = false;
+        this.desiredAlt = ab.fieldAlt + 1500;
+        if (!this.order || this.order.type === 'rtb') {
+          this.order = { type: 'orbit', x: ab.pos.x, z: ab.pos.z, alt: ab.fieldAlt + 3000, radius: 4500 };
+        }
+      }
+    }
+
+    const f = this.forward();
+    this.pos.x += f.x * this.speed * dt;
+    this.pos.z += f.z * this.speed * dt;
+    this._consumeFuel(dt * 0.6);
+  }
+
+  /**
+   * 燃料監視（仕様 §9.2）。
+   * 最寄りの自軍飛行場まで戻れなくなる前に自動で帰投へ切り替える。
+   */
+  _checkBingoFuel(world) {
+    if (this._rtbTriggered || !this.order || this.order.type === 'rtb') return;
+    const ab = this.nearestBase(world);
+    if (!ab) { this._noHomeBase = true; return; }
+    this._noHomeBase = false;
+    // 余裕を厚めに取る。ぎりぎりで判断すると、進入待ちや迂回で間に合わない。
+    const dist = this.distanceTo(ab) + APPROACH_DISTANCE;
+    const needed = (dist / Math.max(80, this.spec.cruiseSpeed)) * 1.6 + 110;
+    if (this.fuel < needed) {
+      this._rtbTriggered = true;
+      this.setOrder({ type: 'rtb', airbase: ab });
+      world.log?.(`${this.name} 燃料残少 — 帰投`);
+    }
+  }
+
+  /** 最寄りの自軍飛行場 */
+  nearestBase(world) {
+    let best = null, bestD = Infinity;
+    for (const u of world.units) {
+      // approachFix を持つ＝滑走路として運用できる飛行場だけを対象にする
+      if (u.kind !== 'airbase' || !u.alive || u.side !== this.side) continue;
+      if (typeof u.approachFix !== 'function') continue;
+      const d = this.distanceTo(u);
+      if (d < bestD) { bestD = d; best = u; }
+    }
+    return best;
+  }
+
+  /** 旋回半径(m)。速度が上がるほど大きくなる。 */
+  get turnRadius() {
+    return this.speed / Math.max(0.01, this.effectiveTurnRate);
+  }
+
+  /** 実効旋回率(rad/s)。速度・損傷・搭載量・高度で変化する。 */
+  get effectiveTurnRate() {
+    const base = this.spec.turnRate * DEG;
+    const speedFactor = clamp(this.spec.cruiseSpeed / Math.max(60, this.speed), 0.45, 1.5);
+    const hpFactor = 0.6 + 0.4 * (this.hp / this.maxHp);
+    // ハードポイント0の機体（早期警戒機）でゼロ除算しないよう下限を置く
+    const loadFactor = 1 - 0.25 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.hardpoints));
+    // 薄い空気では揚力が足りず曲がれない
+    return base * speedFactor * hpFactor * loadFactor * turnFactor(this.pos.y);
+  }
+
+  /** その高度で出せる水平最大速度(m/s) */
+  get altitudeMaxSpeed() {
+    return this.spec.maxSpeed * maxSpeedFactor(this.pos.y);
+  }
+
+  /** 現在高度での推力の割合（UI表示用） */
+  get thrustRatio() { return thrustFactor(this.pos.y); }
+
+  _steer(dt, world) {
+    const o = this.order;
+    let desiredHeading = this.heading;
+    let desiredAlt = this.desiredAlt;
+    let desiredSpeed = this.spec.cruiseSpeed;
+
+    switch (o.type) {
+      case 'move': {
+        const dx = o.x - this.pos.x, dz = o.z - this.pos.z;
+        const dist = Math.hypot(dx, dz);
+        desiredHeading = headingOf(dx, dz);
+        if (o.alt != null) desiredAlt = o.alt;
+        if (o.speed != null) desiredSpeed = o.speed;
+        const arrive = Math.max(500, this.turnRadius * ARRIVE_FACTOR);
+        if (dist < arrive) this._advanceOrder();
+        break;
+      }
+
+      case 'orbit': {
+        const dx = o.x - this.pos.x, dz = o.z - this.pos.z;
+        const dist = Math.hypot(dx, dz);
+        const R = o.radius || Math.max(2000, this.turnRadius * 1.6);
+        if (o.alt != null) desiredAlt = o.alt;
+        if (dist > R * 2.2) {
+          desiredHeading = headingOf(dx, dz);      // まだ遠い → 直進
+        } else {
+          // 中心を左に見ながら旋回。半径のズレを方位に足して収束させる。
+          const toCenter = headingOf(dx, dz);
+          const err = clamp((dist - R) / R, -0.7, 0.7);
+          desiredHeading = toCenter - Math.PI / 2 + err;
+        }
+        desiredSpeed = this.spec.cruiseSpeed * 0.9;
+        break;
+      }
+
+      case 'attack': {
+        const t = o.target;
+        if (!t || !t.alive) { this._advanceOrder(); break; }
+        const dx = t.pos.x - this.pos.x, dz = t.pos.z - this.pos.z;
+        desiredHeading = headingOf(dx, dz);
+
+        // クランク機動: セミアクティブ誘導(AAM-M)を誘導中は、目標をレーダー扇の
+        // 縁に置いたまま斜めに飛ぶ。照射は続けつつ接近速度を落とし、
+        // 相手のミサイルの射程外へ寄っていく。
+        if (this._guidingSarhAt(t, world)) {
+          const crank = Math.max(10, (this.spec.radarFovH || 60) - 12) * DEG;
+          const off = angleDiff(desiredHeading, this.heading);
+          desiredHeading += off >= 0 ? -crank : crank;
+          this.cranking = true;
+        } else {
+          this.cranking = false;
+        }
+
+        // 空中目標には高度を合わせる。
+        // 地上目標は「爆弾を積んでいれば投下高度を保つ」「そうでなければ降りて掃射する」。
+        if (t.kind === 'aircraft') {
+          desiredAlt = t.pos.y;
+        } else if (o.alt != null) {
+          // プレイヤーが高度を指定していればそれに従う
+          // （高高度からの爆撃など、意図した高度で攻撃させるため）
+          desiredAlt = o.alt;
+        } else if (this.loadout.includes('BOMB')) {
+          desiredAlt = Math.max(t.pos.y + 900, this._terrainFloor(world, desiredHeading) + 300);
+        } else {
+          // 機銃掃射: 目標へ向かう緩い降下角を保つ。
+          // 水平飛行のまま近づくと、目標が真下に来て機首が向かず撃てない。
+          const flat = Math.hypot(dx, dz);
+          desiredAlt = flat < 6000
+            ? t.pos.y + clamp(flat * 0.18, 120, 900)
+            : Math.max(t.pos.y + 900, this._terrainFloor(world, desiredHeading) + 300);
+        }
+        // 遠いうちは巡航で進出し、交戦距離に入ってから加速する（燃料は3倍消費する）。
+        // 爆撃進入だけは速度を落とす。速いほど投下点の窓が短くなって当たらない。
+        const bombing = t.kind !== 'aircraft' && this.loadout.includes('BOMB');
+        desiredSpeed = bombing
+          ? this.spec.cruiseSpeed * 0.85
+          : (Math.hypot(dx, dz) > 15000
+            ? this.spec.cruiseSpeed * 1.05
+            : this.altitudeMaxSpeed * 0.92);
+        break;
+      }
+
+      case 'follow': {
+        const t = o.target;
+        if (!t || !t.alive) { this._advanceOrder(); break; }
+        // リーダーの後方・側方にオフセットした位置を狙う
+        const slot = o.slot ?? 1;
+        const side = slot % 2 === 0 ? 1 : -1;
+        const rank = Math.ceil(slot / 2);
+        const f = t.forward();
+        const rx = -f.z, rz = f.x;                 // 右手方向
+        const back = 700 * rank, lat = 550 * rank * side;
+        const tx = t.pos.x - f.x * back + rx * lat;
+        const tz = t.pos.z - f.z * back + rz * lat;
+        const dx = tx - this.pos.x, dz = tz - this.pos.z;
+        const dist = Math.hypot(dx, dz);
+        desiredHeading = dist > 250 ? headingOf(dx, dz) : t.heading;
+        desiredAlt = t.pos.y;
+        // 追いつく／離れすぎない速度制御
+        desiredSpeed = clamp(t.speed + (dist - 400) * 0.25,
+                             this.spec.minSpeed, this.spec.maxSpeed);
+        break;
+      }
+
+      case 'rtb': {
+        // 帰投。進入開始点へ向かい、到達したら最終進入へ引き継ぐ。
+        const ab = o.airbase && o.airbase.alive ? o.airbase : this.nearestBase(world);
+        if (!ab) { this._advanceOrder(); break; }
+        o.airbase = ab;
+        const fix = ab.approachFix(world.terrain);
+        const dx = fix.x - this.pos.x, dz = fix.z - this.pos.z;
+        const dist = Math.hypot(dx, dz);
+        desiredHeading = headingOf(dx, dz);
+        desiredAlt = fix.y;
+        desiredSpeed = dist > 12000 ? this.spec.cruiseSpeed : this.spec.minSpeed * 1.35;
+        if (dist < 2200) {
+          this.state = 'landing';
+          this.airbase = ab;
+          this.rolling = false;
+        }
+        break;
+      }
+
+      case 'hold':
+      default:
+        desiredHeading = this.heading;
+        break;
+    }
+
+    // 待機旋回中はAIが指示した角度だけ機首を振り、レーダーの扇で広く探る
+    if (o.type === 'orbit' && this.headingBias) desiredHeading += this.headingBias;
+
+    // --- ミサイル回避（どの指示よりも優先して割り込む） ---
+    const evade = this.threats.length > 0 ? this._evade(world, dt) : null;
+    this.evading = !!evade;
+    if (evade) {
+      desiredHeading = evade.heading;
+      desiredAlt = evade.alt;
+      desiredSpeed = evade.speed;
+    }
+
+    // --- 地形回避（さらに優先） ---
+    const floor = this._terrainFloor(world, desiredHeading);
+    if (desiredAlt < floor) desiredAlt = floor;
+    desiredAlt = clamp(desiredAlt, 100, this.spec.ceiling);
+
+    this._desiredHeading = desiredHeading;
+    this.desiredAlt = desiredAlt;
+    this.desiredSpeed = clamp(desiredSpeed, this.spec.minSpeed, this.altitudeMaxSpeed);
+  }
+
+  /**
+   * ミサイル回避。
+   *
+   * ビーム機動（ミサイルを真横に置く）でシーカーの追従を難しくし、
+   * 終末段階では降下して地面近くへ逃げる。同時にデコイを投射する。
+   * 仕様 §9.2「ミサイル警戒」に相当し、AIモードを問わず割り込む。
+   */
+  /** セミアクティブ誘導のミサイルを、この目標に対して誘導中か */
+  _guidingSarhAt(target, world) {
+    if (!world.missiles) return false;
+    return world.missiles.some((m) => m.alive && !m.lost
+      && m.launcher === this && m.target === target && m.guidance === 'sarh');
+  }
+
+  /**
+   * 自分が誘導し続けているセミアクティブ弾があるか（目標は問わない）。
+   *
+   * 「誘導を優先」の判定を指示の種類に結び付けてはいけない。
+   * 最後の1発を撃った瞬間に「兵装を撃ち尽くした」判定で帰投指示へ切り替わり、
+   * order.type が attack でなくなった途端に回避を始めて、
+   * まさに今誘導している弾を自分で外してしまう。
+   */
+  _guidingSarh(world) {
+    if (!world.missiles) return false;
+    return world.missiles.some((m) => m.alive && !m.lost
+      && m.launcher === this && m.guidance === 'sarh');
+  }
+
+  _evade(world, dt) {
+    const m = this.threats[0];
+    if (!m || !m.alive) return null;
+
+    // 誘導優先の設定なら、自分のミサイルを誘導している間は回避機動を取らない。
+    // （デコイだけは撒く。撃ち勝つために被弾リスクを受け入れる選択）
+    if (!this.evadeWhileGuiding && this._guidingSarh(world)) {
+      this._decoyTimer -= dt;
+      const dist = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
+      if (dist / Math.max(60, m.speed) < 4.5 && this._decoyTimer <= 0 && world.combat) {
+        const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
+        if (world.combat.deployDecoy(this, kind)) this._decoyTimer = 1.2;
+      }
+      return null;
+    }
+
+    const dx = m.pos.x - this.pos.x, dz = m.pos.z - this.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const bearing = headingOf(dx, dz);
+    const tti = dist / Math.max(60, m.speed);      // 到達までの概算秒数
+
+    // デコイ投射（誘導方式に合わせてフレア／チャフを選ぶ）
+    this._decoyTimer -= dt;
+    if (tti < 4.5 && this._decoyTimer <= 0 && world.combat) {
+      const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
+      if (world.combat.deployDecoy(this, kind)) this._decoyTimer = 1.2;
+    }
+
+    // ミサイルを真横に置く向きのうち、旋回量が少ない方を選ぶ
+    const left = bearing - Math.PI / 2;
+    const right = bearing + Math.PI / 2;
+    const heading = Math.abs(angleDiff(left, this.heading)) < Math.abs(angleDiff(right, this.heading))
+      ? left : right;
+
+    // 終末では地面すれすれまで降ろす（地形回避側で下限がかかる）
+    const alt = tti < 8 ? 0 : this.pos.y;
+
+    return { heading, alt, speed: this.spec.maxSpeed };
+  }
+
+  /**
+   * これから通る経路の地形を先読みし、確保すべき最低高度を返す。
+   *
+   * 直線で数点だけ見ると、サンプルの隙間にある尾根を跨いでしまって山に突っ込む。
+   * 旋回を織り込んだ予測経路に沿って一定距離ごと（LOOK_STEP）に見る。
+   */
+  _terrainFloor(world, desiredHeading = this.heading) {
+    const terrain = world.terrain;
+    const lookAhead = Math.max(3000, this.speed * 16);   // 16秒先まで
+    const steps = Math.min(40, Math.ceil(lookAhead / LOOK_STEP));
+    const dtStep = LOOK_STEP / Math.max(50, this.speed);
+    const turnPerStep = this.effectiveTurnRate * dtStep;
+
+    let h = this.heading;
+    let remaining = angleDiff(desiredHeading, this.heading);
+    let x = this.pos.x, z = this.pos.z;
+    let ground = terrain.heightAt(x, z);
+
+    for (let i = 0; i < steps; i++) {
+      const turn = clamp(remaining, -turnPerStep, turnPerStep);
+      h += turn;
+      remaining -= turn;
+      x += Math.sin(h) * LOOK_STEP;
+      z += -Math.cos(h) * LOOK_STEP;
+      const g = terrain.heightAt(x, z);
+      if (g > ground) ground = g;
+    }
+    return Math.max(ground, 0) + MIN_AGL;
+  }
+
+  _advanceOrder() {
+    if (this.queue.length > 0) {
+      this.order = this.queue.shift();
+    } else if (this.order.type === 'move') {
+      // 到達したらその場で待機旋回に移る
+      this.order = { type: 'orbit', x: this.order.x, z: this.order.z, alt: this.order.alt, radius: 2500 };
+    }
+  }
+
+  _integrate(dt, world) {
+    // --- 旋回 ---
+    const maxTurn = this.effectiveTurnRate * dt;
+    const diff = angleDiff(this._desiredHeading, this.heading);
+    const turn = clamp(diff, -maxTurn, maxTurn);
+    this.heading += turn;
+
+    // バンク角（見た目）: 旋回の強さに比例
+    const bankTarget = clamp(turn / Math.max(1e-6, maxTurn), -1, 1) * 1.05
+                       * clamp(Math.abs(diff) / (12 * DEG), 0, 1);
+    this.roll += (bankTarget - this.roll) * Math.min(1, dt * 3.5);
+
+    // --- 上昇・降下 ---
+    const altErr = this.desiredAlt - this.pos.y;
+    const climbCap = this.spec.climbRate * clamp(this.speed / this.spec.cruiseSpeed, 0.35, 1.2);
+    // 上昇は素早く（地形回避が間に合うように）、降下は緩やかに
+    const vs = clamp(altErr > 0 ? altErr * 0.9 : altErr * 0.35, -climbCap * 1.4, climbCap);
+    this.pos.y += vs * dt;
+    this.pitch = Math.atan2(vs, Math.max(40, this.speed));
+
+    // --- 速度（高度による推力低下とエネルギー交換） ---
+    //
+    // 高空では推力が落ちるため、失った速度を取り戻すのに時間がかかる。
+    // 逆に降下すれば位置エネルギーを速度に変換でき、水平最大速度を
+    // 数割超えて突っ込める（一撃離脱の根拠になる）。
+    const thrust = this.spec.accel * thrustFactor(this.pos.y);
+    // 降下中は速度を捨てにくい（絞っても位置エネルギーが速度に変わり続ける）。
+    // これが無いと降下しても巡航速度まで減速してしまい、一撃離脱が成立しない。
+    const decelLimit = thrust * (vs < 0 ? 0.15 : 0.6);
+    let accel = clamp((this.desiredSpeed - this.speed) * 0.6, -decelLimit, thrust);
+    accel -= vs * 0.030;                       // 上昇=減速 / 降下=加速
+
+    // 旋回による誘導抗力。曲がり続ける機体は速度を失い、追いつかれる。
+    // 速度に比例させる（低速では減速も小さい。そうしないと低速機が止まってしまう）。
+    const turnRatio = Math.abs(turn) / Math.max(1e-6, maxTurn);
+    const speedFrac = clamp(this.speed / this.spec.cruiseSpeed, 0.25, 1.4);
+    accel -= turnRatio * TURN_DRAG * speedFrac;
+
+    const diveBonus = 1 + 0.35 * clamp(-vs / this.spec.climbRate, 0, 1);
+    const speedCap = this.altitudeMaxSpeed * diveBonus;
+    this.speed = clamp(this.speed + accel * dt, this.spec.minSpeed, speedCap);
+
+    // --- 位置 ---
+    const f = this.forward();
+    this.pos.x += f.x * this.speed * dt;
+    this.pos.z += f.z * this.speed * dt;
+
+    // --- 地表衝突（回避に失敗した場合の最終判定） ---
+    const ground = Math.max(0, world.terrain.heightAt(this.pos.x, this.pos.z));
+    if (this.pos.y < ground + 20) {
+      this.pos.y = ground + 20;
+      this.deathCause = 'terrain';
+      this.destroy();
+    }
+
+    if (this._checkWithdraw(world)) return;
+
+    // マップ外へ出ないよう緩やかに引き戻す
+    const M = world.mapSize;
+    if (this.pos.x < 0 || this.pos.x > M || this.pos.z < 0 || this.pos.z > M) {
+      const cx = clamp(this.pos.x, 0, M), cz = clamp(this.pos.z, 0, M);
+      this._desiredHeading = headingOf(cx - this.pos.x || 1, cz - this.pos.z);
+    }
+  }
+
+  /**
+   * 戦域離脱。
+   *
+   * 帰投先の無い機体（マップ外を拠点とする敵編隊）が帰投判断をしたり燃料が尽きたりすると、
+   * 行き先が無いままマップの縁で延々と飛び続ける。
+   * この状態の敵が1機でも残ると destroyAll 系の目標が永久に達成できない。
+   * そこで一番近い縁へ向かわせ、外に出たところで戦域から取り除く。
+   * 判定上は撃墜ではなく「撃退」の扱いにする（handleDeaths が戦果に数えない）。
+   *
+   * @returns {boolean} 離脱行動を取ったか（true ならマップ外への引き戻しはしない）
+   */
+  _checkWithdraw(world) {
+    if (!this.withdrawing) {
+      const leaving = this.fuel <= 0 || this.aiMode === 'RTB'
+        || (this.order && this.order.type === 'rtb');
+      if (!leaving) return false;
+      if (this.nearestBase(world)) return false;      // 帰れる飛行場があるなら離脱しない
+      this.withdrawing = true;
+      this._noHomeBase = true;
+      world.log?.(`${this.name} 戦域を離脱`);
+    }
+
+    // 一番近い縁の外側へ向かう
+    const M = world.mapSize;
+    let tx = this.pos.x;
+    let tz = this.pos.z;
+    if (Math.min(this.pos.x, M - this.pos.x) < Math.min(this.pos.z, M - this.pos.z)) {
+      tx = this.pos.x < M / 2 ? -9000 : M + 9000;
+    } else {
+      tz = this.pos.z < M / 2 ? -9000 : M + 9000;
+    }
+    this._desiredHeading = headingOf(tx - this.pos.x || 1, tz - this.pos.z);
+
+    const OUT = 3000;
+    if (this.pos.x < -OUT || this.pos.x > M + OUT
+        || this.pos.z < -OUT || this.pos.z > M + OUT) {
+      this.deathCause = 'withdraw';
+      this.destroy();
+    }
+    return true;
+  }
+
+  _consumeFuel(dt) {
+    let rate = 1;
+    if (this.speed > this.spec.cruiseSpeed * 1.15) rate *= 3;          // アフターバーナー域
+    if (this.pos.y > 6000) rate *= 0.7;
+    else if (this.pos.y < 1000) rate *= 1.4;
+    rate *= 1 + 0.3 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.hardpoints));
+
+    this.fuel -= rate * dt;
+    if (this.fuel <= 0) {
+      this.fuel = 0;
+      // 帰る場所が無い機体（マップ外を拠点とする敵編隊など）は燃料切れで落とさない。
+      // 帰投先が無いのに勝手に落ちると、戦果が転がり込むだけで面白くない。
+      if (!this._noHomeBase) {
+        this.deathCause = 'fuel';
+        this.destroy();
+      }
+    }
+  }
+
+  /** 燃料残量の割合 0..1 */
+  get fuelRatio() { return this.fuel / this.fuelMax; }
+  /** HP割合 0..1 */
+  get hpRatio() { return this.hp / this.maxHp; }
+}
