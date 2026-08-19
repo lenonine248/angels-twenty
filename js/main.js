@@ -31,6 +31,7 @@ import { Hud } from './ui/hud.js';
 import { ScreenManager } from './ui/briefing.js';
 import { isChangelogOpen, hideChangelog } from './ui/changelog.js';
 import { STAGES } from './data/stages.js';
+import { getType } from './data/aircraft.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -461,7 +462,7 @@ function spawnStage(world, stage, loadouts, terrain) {
     const u = world.spawn(new Aircraft({
       type: a.type, name: a.name, side: SIDE.RED, tags: a.tags,
       x: a.x, z: a.z, alt: Math.max(0, terrain.heightAt(a.x, a.z)) + (a.agl || 5000),
-      heading: Math.PI, loadout: a.loadout || (a.type === 'E-8' ? [] : ['AAM-M', 'AAM-S', 'AAM-S']),
+      heading: Math.PI, loadout: a.loadout || defaultEnemyLoadout(a.type),
       // 練度はステージ既定 → 機体ごとの指定 の順で上書きできる
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
@@ -517,6 +518,19 @@ function seedKnownContacts(world, units) {
     c.pos.copy(u.pos);
     map.set(u.id, c);
   }
+}
+
+/**
+ * 敵機の既定搭載。
+ * 機種を見ずに一律で空対空を積むと、爆撃機が爆弾を1発も持たないまま
+ * 目標上空へ飛んで対空砲に落ちるだけになる（実際そうなっていた）。
+ */
+function defaultEnemyLoadout(type) {
+  const spec = getType(type);
+  if (!spec || spec.hardpoints === 0) return [];
+  if (spec.role === '爆撃') return ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'];
+  if (spec.role === '対地') return ['AGM', 'AGM', 'AAM-S'];
+  return ['AAM-M', 'AAM-S', 'AAM-S'];
 }
 
 /** 敵飛行場からの増援 */

@@ -24,6 +24,8 @@ const LOOK_STEP = 150;
 const LOOK_NEAR = 3000;
 /** 先読み距離の設計根拠。これだけの高度差を登り切れる時間ぶん先まで見る。 */
 const RIDGE_CLIMB = 2200;
+/** 指令高度を下げるときの平滑化（1秒あたりの残存率）。小さいほど機敏。 */
+const ALT_SMOOTH = 0.02;
 /**
  * 登り切れないときに試す針路のずらし幅（ラジアン）。左右交互に、浅い角度から試す。
  * 引き返す角度まで含めないと、袋小路の谷に入ったときに出口が見つからない。
@@ -524,6 +526,7 @@ export class Aircraft extends Unit {
     if (o.type === 'orbit' && this.headingBias) desiredHeading += this.headingBias;
 
     // --- ミサイル回避（どの指示よりも優先して割り込む） ---
+    if (this.threats.length === 0) this._evadeSide = null;   // 脅威が消えたら選び直す
     const evade = this.threats.length > 0 ? this._evade(world, dt) : null;
     this.evading = !!evade;
     if (evade) {
@@ -564,7 +567,22 @@ export class Aircraft extends Unit {
     desiredAlt = clamp(desiredAlt, 100, this.spec.ceiling);
 
     this._desiredHeading = desiredHeading;
-    this.desiredAlt = desiredAlt;
+
+    // 指令高度は毎フレームそのまま渡さない。
+    //
+    // 地形先読みの結果は針路が変わるたびに動くし、回避の目標高度も状況で揺れる。
+    // 生の値を渡すと機首が上下に振動し、上昇率の大きい機種ほど激しく振れる。
+    // 爆弾の投下条件（弾道解の窓）が揃わなくなるのはこれが原因。
+    //
+    // ただし**上げる方向は即座に反映する**。地形回避は遅らせてはいけない。
+    if (desiredAlt >= this.desiredAlt) {
+      this.desiredAlt = desiredAlt;
+    } else {
+      const k = 1 - Math.pow(ALT_SMOOTH, dt);
+      this.desiredAlt += (desiredAlt - this.desiredAlt) * k;
+      if (this.desiredAlt < floor) this.desiredAlt = floor;
+    }
+    desiredAlt = this.desiredAlt;
     this.desiredSpeed = clamp(desiredSpeed, this.spec.minSpeed, this.altitudeMaxSpeed);
   }
 
@@ -628,11 +646,21 @@ export class Aircraft extends Unit {
     // ミサイルを真横に置く向きのうち、旋回量が少ない方を選ぶ
     const left = bearing - Math.PI / 2;
     const right = bearing + Math.PI / 2;
-    const heading = Math.abs(angleDiff(left, this.heading)) < Math.abs(angleDiff(right, this.heading))
-      ? left : right;
+    // 一度決めた回避方向は、その脅威が消えるまで保つ。
+    // 毎フレーム選び直すと、ミサイルが真後ろ／真正面に来たときに
+    // 左右がばたついて機動にならない（振動して見える）。
+    if (this._evadeSide == null) {
+      this._evadeSide = Math.abs(angleDiff(left, this.heading))
+        < Math.abs(angleDiff(right, this.heading)) ? -1 : 1;
+    }
+    const heading = this._evadeSide < 0 ? left : right;
 
-    // 終末では地面すれすれまで降ろす（地形回避側で下限がかかる）
-    const alt = tti < 8 ? 0 : this.pos.y;
+    // 終末に近いほど深く降ろす。
+    // 「tti<8 なら地面すれすれ、そうでなければ現在高度」のような段差にすると、
+    // ミサイルの機動で tti がそのしきい値をまたぐたびに
+    // 全力降下と維持が切り替わり、機首が上下に暴れる。
+    const dive = clamp(1 - tti / 12, 0, 1);
+    const alt = this.pos.y - dive * 2600;
 
     return { heading, alt, speed: this.spec.maxSpeed };
   }
