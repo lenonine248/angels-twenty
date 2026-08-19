@@ -8,6 +8,14 @@
 // 記録するのは結果だけでなく、**どこで何が起きたか**まで。
 // 位置が分かると、地形・防空・進入経路のどれが効いているのかを切り分けられる。
 //
+// 保存先は2つ。
+//   1. localStorage       … ゲーム内で集計を見るため
+//   2. playlog.jsonl      … 開発サーバー(devserver.py)へ送って**ファイルに残す**ため
+//
+// 2 が要るのは、localStorage が「そのブラウザのそのオリジン」に閉じていて、
+// 開発側からは読めないから。難易度調整の材料にするにはファイルに落ちている必要がある。
+// 送るのはローカルで遊んでいるときだけ（公開版は送り先が無いので送らない）。
+//
 //   AT.telemetry.text()     直近の記録を JSON 文字列で得る（コンソールから読む用）
 //   AT.telemetry.summary()  ステージごとの平均を表で見る
 //   AT.telemetry.clear()    記録を消す
@@ -81,8 +89,28 @@ export function end(result, stats) {
   current.pointsLeft = stats.pointsLeft ?? null;
   runs.push(current);
   if (runs.length > MAX_RUNS) runs = runs.slice(-MAX_RUNS);
+  const finished = current;
   current = null;
   save();
+  post(finished);
+}
+
+/** 開発サーバーへ送ってファイルに残す。失敗しても黙って諦める（遊びを止めない）。 */
+function post(record) {
+  if (!isLocal()) return;
+  try {
+    fetch('/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ at: new Date().toISOString(), ...record }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) { /* noop */ }
+}
+
+function isLocal() {
+  const h = location.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
 }
 
 export function all() { return runs; }

@@ -11,3 +11,6 @@ desktop.ini
 # Python
 __pycache__/
 *.pyc
+
+# ローカルのプレイ記録（難易度調整用・環境依存なので共有しない）
+playlog.jsonl

@@ -142,18 +142,31 @@ AT.difficulty.table()
 地上目標の重みはユニットデータ（HP・武装・レーダー）から作っているので、
 ユニットを足しても表を更新し忘れて狂うことはない。
 
-### プレイ記録（`AT.telemetry`）
+### プレイ記録
 
-実際に遊んだ内容を localStorage に残す。難易度調整の一次資料。
+難易度調整の一次資料。実際に遊んだ内容を2か所に残す。
 
-```js
-AT.telemetry.summary()   // ステージごとの平均（クリア率・時間・損失・損失地点）
-AT.telemetry.text()      // 生データ（JSON）
-AT.telemetry.clear()
+| 保存先 | 用途 | 読み方 |
+|---|---|---|
+| `localStorage` | ゲーム内で集計を見る | `AT.telemetry.summary()` |
+| `playlog.jsonl` | **開発側から読む** | `python tools/playlog.py` |
+
+**`localStorage` は開発側から読めない。** ブラウザのプロファイルとオリジンに
+閉じているため、プレイヤーの環境で遊んだ記録をこちらで見ることはできない。
+そこで `devserver.py` に受け口を設け、ミッションが終わるたびに
+`playlog.jsonl` へ1行1件で追記する。**localhost で遊んだときだけ送る**
+（公開版には送り先が無い）。
+
+```bash
+python tools/playlog.py            # ステージごとの傾向
+python tools/playlog.py --runs     # 1回ごとの結果
+python tools/playlog.py --events   # 損失・撃墜の起きた場所と時刻
+python tools/playlog.py --stage s2
 ```
 
 損失・撃墜は**時刻と座標と高度と原因**まで残るので、
 「毎回どのあたりで落ちているか」が分かる。兵装別の発射数と命中数も取れる。
+`playlog.jsonl` は環境依存のデータなので `.gitignore` に入れてある。
 
 ### ステージ難易度（代理プレイヤーによる自動周回）
 
