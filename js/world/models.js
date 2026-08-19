@@ -263,14 +263,19 @@ export function createGroundView(gu) {
       break;
     }
     case 'airbase': {
-      shape.add(boxMesh(1.7, 0.012, 0.20, 0x3a3a38, 0, 0, 0));       // 滑走路
-      shape.add(boxMesh(0.30, 0.02, 0.42, 0x44443f, -0.55, 0, 0.34));// エプロン
-      shape.add(boxMesh(0.10, 0.22, 0.10, c, -0.55, 0.02, 0.34));    // 管制塔
+      // 滑走路は**ローカル -Z 方向**に伸ばす。
+      // 表示は rotation.y = -heading で回すので、-Z が sim 側の
+      // runwayDir = (sin h, 0, -cos h) と一致する。機体モデルの機首も -Z。
+      // ここを X 方向に描くと、見た目の滑走路が実際の離着陸方向と90度ずれる。
+      shape.add(boxMesh(0.20, 0.012, 1.7, 0x3a3a38, 0, 0, 0));       // 滑走路
+      // エプロン・管制塔・格納庫は滑走路の脇（+X）、進入端の側（+Z）にまとめる
+      shape.add(boxMesh(0.42, 0.02, 0.30, 0x44443f, 0.34, 0, 0.55)); // エプロン
+      shape.add(boxMesh(0.10, 0.22, 0.10, c, 0.34, 0.02, 0.55));     // 管制塔
       for (let i = 0; i < 3; i++) {
-        shape.add(boxMesh(0.16, 0.09, 0.16, dark, -0.30 + i * 0.24, 0.02, 0.34));
+        shape.add(boxMesh(0.16, 0.09, 0.16, dark, 0.34, 0.02, 0.30 - i * 0.24));
       }
       // 滑走路灯。両端に置いて、点滅で「生きている飛行場」だと分かるようにする。
-      for (const sx of [-0.85, 0.85]) {
+      for (const sz of [-0.85, 0.85]) {
         const lamp = new THREE.Mesh(
           new THREE.SphereGeometry(0.05, 6, 4),
           new THREE.MeshBasicMaterial({
@@ -278,7 +283,7 @@ export function createGroundView(gu) {
             transparent: true, depthTest: false,
           }),
         );
-        lamp.position.set(sx, 0.05, 0);
+        lamp.position.set(0, 0.05, sz);
         lamp.renderOrder = 6;
         lamp.name = 'beacon';
         shape.add(lamp);
@@ -288,7 +293,7 @@ export function createGroundView(gu) {
         new THREE.SphereGeometry(0.055, 6, 4),
         new THREE.MeshBasicMaterial({ color: 0xffd070, transparent: true, depthTest: false }),
       );
-      beacon.position.set(-0.55, 0.27, 0.34);
+      beacon.position.set(0.34, 0.27, 0.55);
       beacon.renderOrder = 6;
       beacon.name = 'beacon';
       shape.add(beacon);
