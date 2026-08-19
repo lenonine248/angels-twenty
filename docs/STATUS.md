@@ -269,7 +269,46 @@ BGMとエンジン音を下げたぶん、爆発と警報が埋もれないよ�
 
 ---
 
-## 5. 動作確認の手順
+## 5. 公開（GitHub Pages）
+
+- 公開URL: <https://lenonine248.github.io/angels-twenty/>
+- リポジトリ: <https://github.com/lenonine248/angels-twenty>（Public）
+- `main` ブランチのルートをそのまま配信。ビルド工程は無い
+
+更新の反映は push するだけ。1〜2分でビルドされて反映される。
+
+```bash
+git add -A && git commit -m "..." && git push
+gh api repos/lenonine248/angels-twenty/pages/builds/latest --jq '{status,error:.error.message}'
+```
+
+**GitHub Pages で壊れやすいところ**
+
+- **import のパスは実ファイルと大文字小文字まで一致させる**。Windows のローカルでは
+  動いても、配信側（Linux）では 404 になる。追加時は次で確認できる:
+  ```bash
+  python - <<'EOF'
+  import os,re,io
+  for root,_,files in os.walk('js'):
+    for f in files:
+      if not f.endswith('.js'): continue
+      p=os.path.join(root,f)
+      for m in re.finditer(r"from\s+['\"](\.[^'\"]+)['\"]", io.open(p,encoding='utf-8').read()):
+        t=os.path.normpath(os.path.join(root,m.group(1))); d,n=os.path.split(t)
+        if not os.path.isdir(d) or n not in os.listdir(d): print('NG',p,m.group(1))
+  EOF
+  ```
+- **絶対パス（先頭 `/`）で参照しない**。サブパス配信（`/angels-twenty/`）で壊れる
+- `.nojekyll` を消さない。消すと `_` 始まりのファイルが無視される
+- 動作確認は「親ディレクトリを配信してサブパスで開く」と本番に近い:
+  ```bash
+  python -m http.server 8199 --directory D:/Claude_workspace
+  # → http://localhost:8199/angels_twenty/
+  ```
+
+---
+
+## 6. 動作確認の手順
 
 ```bash
 python D:/Claude_workspace/angels_twenty/devserver.py 8187
