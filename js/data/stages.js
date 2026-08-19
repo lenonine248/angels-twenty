@@ -34,7 +34,12 @@ export const STAGES = [
       ],
     },
     enemy: {
+      // 練度は下げない。時間制限のある防衛任務では、敵を弱くすると
+      // 消極的になって戦闘が長引き、その間に爆撃機が抜けてかえって難しくなる。
       aircraft: [
+        // 進発位置は自軍飛行場から約37km。爆撃機の到達まで約4分。
+        // これ以上遠ざけると迎撃が遠方になり、護衛と戦っている間に
+        // 爆撃機だけが抜けてくるため、かえって守りにくくなる。
         { type: 'J-7', name: 'BANDIT 1', x: 38000, z: 14000, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'] },
         { type: 'J-7', name: 'BANDIT 2', x: 39500, z: 15200, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'] },
         { type: 'B-9', name: 'RAIDER 1', x: 41000, z: 16500, agl: 5600, aiMode: 'STRIKE', tags: ['raid', 'bomber'],

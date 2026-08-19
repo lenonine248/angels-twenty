@@ -27,6 +27,8 @@ const MIN_SPEED_RATIO = 0.35;
 const LOS_INTERVAL = 0.25;
 /** ARM が電波を失ったときの慣性誘導の誤差（残距離に対する割合） */
 const ARM_MEMORY_ERROR = 0.018;
+/** 目標の大きさのうち、爆風判定で「当たり」とみなす割合 */
+const SIZE_FOOTPRINT = 0.25;
 
 let nextId = 1;
 
@@ -313,14 +315,21 @@ export class Missile {
     return true;
   }
 
-  /** 爆弾・対地ミサイルの爆風（範囲ダメージ） */
+  /**
+   * 爆弾・対地ミサイルの爆風（範囲ダメージ）。
+   *
+   * 距離は目標の大きさを差し引いて測る。中心からの距離だけで減衰させると、
+   * 全長900mの飛行場に100m外れただけの爆弾がほとんど効かない、という
+   * 実態と合わない結果になる（爆撃機が飛行場を壊せない原因だった）。
+   */
   _blast(world) {
     const radius = this.weapon.blastRadius;
     if (!radius) return;
     for (const u of world.units) {
       if (!u.alive || u.side === this.side) continue;
       if (u.kind === 'aircraft') continue;
-      const d = u.pos.distanceTo(this.pos);
+      const footprint = (u.spec && u.spec.size ? u.spec.size : 0) * SIZE_FOOTPRINT;
+      const d = Math.max(0, u.pos.distanceTo(this.pos) - footprint);
       if (d > radius) continue;
       u.damage(this.weapon.damage * (1 - d / radius), this);
     }

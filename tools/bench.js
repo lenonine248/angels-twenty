@@ -22,10 +22,14 @@
 
   function runOne(stageIndex, trace) {
     return new Promise((resolve) => {
+      // 直前の戦闘を覚えておく。
+      // startBattle は nextFrame を2回挟んでから戦闘を組むので、その間 AT.battle は
+      // **前の戦闘のまま**。「battle があるか」だけで待つと前の戦闘を計測してしまい、
+      // 別ステージの結果が混ざる（実際に混ざっていた）。
+      const prev = AT.battle;
       AT.startStage(stageIndex);
-      // startBattle は nextFrame を2回挟んでから戦闘を組む
       const wait = () => {
-        if (!AT.battle) { setTimeout(wait, 30); return; }
+        if (!AT.battle || AT.battle === prev) { setTimeout(wait, 30); return; }
         AT.loop.setSpeed(0);
         resolve(step(trace));
       };
@@ -183,20 +187,39 @@
       return out;
     }
 
-    /** 搭載兵装に合う目標を選ぶ（近い順）。撃てる相手がいなければ null。 */
+    /**
+     * 搭載兵装に合う目標を選ぶ。撃てる相手がいなければ null。
+     *
+     * 守るものがある任務では「自分に近い順」ではなく
+     * 「守る対象に近い順」で選ぶ。人間はそう判断する。
+     * 自分に近い順にすると、飛行場へ向かう爆撃機を放置して
+     * 手近な護衛機と戦い続け、その間に飛行場を失う。
+     */
     _pick(u, targets) {
       const ag = this._hasAg(u);
       const aa = u.loadout.some((id) => id.startsWith('AAM'));
+      const asset = this._asset();
       let best = null;
       let bestD = Infinity;
       for (const t of targets) {
         const air = t.kind === 'aircraft';
         if (air && !aa) continue;
         if (!air && !ag) continue;
-        const d = u.pos.distanceTo(t.pos);
+        const d = asset ? t.pos.distanceTo(asset.pos) : u.pos.distanceTo(t.pos);
         if (d < bestD) { bestD = d; best = t; }
       }
       return best;
+    }
+
+    /** protect 目標に指定されている自軍の資産（飛行場を含む） */
+    _asset() {
+      for (const o of this.b.mission.objectives) {
+        if (o.type !== 'protect' || o.failed) continue;
+        for (const x of this.w.units) {
+          if (x.alive && x.side === this.w.playerSide && x.tags && x.tags.includes(o.tag)) return x;
+        }
+      }
+      return null;
     }
   }
 

@@ -152,12 +152,18 @@ export class CombatSystem {
 
     if (shooter.fireCooldown > 0) return;
 
-    const inFlight = this.world.missiles.filter(
-      (m) => m.alive && m.target === target && m.side === shooter.side).length;
-    if (inFlight >= MAX_IN_FLIGHT_PER_TARGET) return;
-
     const weapon = this.selectWeapon(shooter, target);
     if (!weapon) return;
+
+    // 同一目標への同時発射数の制限。
+    // これは「高価な誘導ミサイルを1つの目標に浪費しない」ための規則なので、
+    // 爆弾には掛けない。掛けると一連（スティック）で落とせず、
+    // 2発だけ落として通り過ぎることになり、爆撃機が目標を壊せなくなる。
+    if (weapon.kind !== 'bomb') {
+      const inFlight = this.world.missiles.filter(
+        (m) => m.alive && m.target === target && m.side === shooter.side).length;
+      if (inFlight >= MAX_IN_FLIGHT_PER_TARGET) return;
+    }
 
     // 命中が見込めないうちは撃たない（乱射してミサイルを空にしないため）。
     //

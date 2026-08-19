@@ -528,7 +528,7 @@ function seedKnownContacts(world, units) {
 function defaultEnemyLoadout(type) {
   const spec = getType(type);
   if (!spec || spec.hardpoints === 0) return [];
-  if (spec.role === '爆撃') return ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'];
+  if (spec.role === '爆撃') return ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'];
   if (spec.role === '対地') return ['AGM', 'AGM', 'AAM-S'];
   return ['AAM-M', 'AAM-S', 'AAM-S'];
 }

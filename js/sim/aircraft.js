@@ -26,6 +26,8 @@ const LOOK_NEAR = 3000;
 const RIDGE_CLIMB = 2200;
 /** 指令高度を下げるときの平滑化（1秒あたりの残存率）。小さいほど機敏。 */
 const ALT_SMOOTH = 0.02;
+/** 爆撃機の進入高度（目標からの相対）。軽対空砲の射高1800mより上に置く。 */
+const BOMBER_RUN_ALT = 2100;
 /**
  * 登り切れないときに試す針路のずらし幅（ラジアン）。左右交互に、浅い角度から試す。
  * 引き返す角度まで含めないと、袋小路の谷に入ったときに出口が見つからない。
@@ -439,7 +441,11 @@ export class Aircraft extends Unit {
           // （高高度からの爆撃など、意図した高度で攻撃させるため）
           desiredAlt = o.alt;
         } else if (this.loadout.includes('BOMB')) {
-          desiredAlt = Math.max(t.pos.y + 900, this._terrainFloor(world, desiredHeading) + 300);
+          // 爆撃機は軽対空砲の射高より上から入る。攻撃機は低く入って正確に落とす。
+          // 目標+900m だと対空砲(射高1800m)の内側で、1回投下したら落とされて終わる。
+          // 高く入るぶん散布界が広がるので、そのぶん多く積ませて釣り合いを取る。
+          const run = this.spec.role === '爆撃' ? BOMBER_RUN_ALT : 900;
+          desiredAlt = Math.max(t.pos.y + run, this._terrainFloor(world, desiredHeading) + 300);
         } else {
           // 機銃掃射: 目標へ向かう緩い降下角を保つ。
           // 水平飛行のまま近づくと、目標が真下に来て機首が向かず撃てない。
@@ -659,8 +665,11 @@ export class Aircraft extends Unit {
     // 「tti<8 なら地面すれすれ、そうでなければ現在高度」のような段差にすると、
     // ミサイルの機動で tti がそのしきい値をまたぐたびに
     // 全力降下と維持が切り替わり、機首が上下に暴れる。
-    const dive = clamp(1 - tti / 12, 0, 1);
-    const alt = this.pos.y - dive * 2600;
+    // 終末に近いほど深く降ろす。
+    // 浅い降下では振り切れない（実測で生存率がはっきり落ちた）。
+    // 段差にしないことだけが要点で、深さそのものは元の設計どおり深く取る。
+    const dive = clamp(1 - tti / 9, 0, 1);
+    const alt = this.pos.y - dive * 4000;
 
     return { heading, alt, speed: this.spec.maxSpeed };
   }
