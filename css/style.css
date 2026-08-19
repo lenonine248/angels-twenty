@@ -371,11 +371,33 @@ button.chip.pick.picked {
 .pm-box button:hover { background: rgba(111, 216, 232, 0.22); }
 .pm-box button:first-of-type { border-color: #7ec87e; color: #7ec87e; }
 
-/* タイトル画面 */
-.title-screen { text-align: center; padding-top: 130px; }
+/* タイトル画面（＝モード選択） */
+.title-screen { text-align: center; padding-top: 110px; }
 .title-prog { color: var(--text-dim); font-size: 12px; margin-top: 30px; }
 .title-screen .screen-foot { justify-content: center; }
 .title-screen .screen-foot button { margin-left: 0; }
+
+.mode-grid {
+  display: flex; justify-content: center; flex-wrap: wrap;
+  gap: 14px; margin-top: 44px;
+}
+.mode-card {
+  width: 230px; padding: 20px 18px 18px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-line);
+  text-align: left; cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.mode-card:hover { border-color: var(--cyan); background: rgba(111, 216, 232, 0.10); }
+.mode-card.locked { opacity: 0.42; cursor: default; }
+.mode-card.locked:hover { border-color: var(--panel-line); background: var(--panel-bg); }
+.mc-name { color: var(--amber); font-size: 15px; letter-spacing: 0.14em; }
+.mc-sub { color: var(--text-dim); font-size: 11px; margin-top: 8px; line-height: 1.6; }
+.mc-state {
+  margin-top: 14px; padding-top: 10px;
+  border-top: 1px solid var(--panel-line);
+  color: var(--cyan-dim); font-size: 11px; letter-spacing: 0.08em;
+}
 
 /* バージョン表示（タイトル画面の左下・クリックで更新履歴） */
 .version-tag {

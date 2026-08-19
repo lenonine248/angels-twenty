@@ -7,6 +7,7 @@
 //   ・出撃編成と兵装（兵装ポイントの範囲内で自由に組める）
 
 import { STAGES, isUnlocked } from '../data/stages.js';
+import { TUTORIALS } from '../data/tutorials.js';
 import { VERSION, VERSION_DATE } from '../core/version.js';
 import { showChangelog } from './changelog.js';
 import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
@@ -37,16 +38,53 @@ export class ScreenManager {
 
   hide() { this.root.classList.add('hidden'); this.root.innerHTML = ''; }
 
+  /**
+   * タイトル＝モード選択（仕様 §17）。
+   *
+   * モードはここに並べるだけで増やせる形にしてある。
+   * キャンペーンを実装するときはカードを1枚足すだけで済む。
+   */
   showTitle() {
     const cleared = this.progress.cleared.length;
+    const done = this.progress.tutorial.length;
+
+    const modes = [
+      {
+        act: 'tutorial',
+        name: 'チュートリアル',
+        sub: '操作と仕組みを覚える',
+        state: TUTORIALS.length ? `${done} / ${TUTORIALS.length}` : '準備中',
+        ready: TUTORIALS.length > 0,
+      },
+      {
+        act: 'select',
+        name: 'ステージモード',
+        sub: 'ミッションを1つずつ攻略する',
+        state: `クリア済み ${cleared} / ${STAGES.length}`,
+        ready: true,
+      },
+      {
+        act: '',
+        name: 'キャンペーン',
+        sub: '連続したミッションを戦い抜く',
+        state: '準備中',
+        ready: false,
+      },
+    ];
+
+    const cards = modes.map((m) => `
+      <div class="mode-card${m.ready ? '' : ' locked'}"
+           ${m.ready ? `data-act="${m.act}"` : ''}>
+        <div class="mc-name">${m.name}</div>
+        <div class="mc-sub">${m.sub}</div>
+        <div class="mc-state">${m.state}</div>
+      </div>`).join('');
+
     this._show(`
       <div class="screen-inner title-screen">
         <h1 class="game-title">ANGELS TWENTY</h1>
         <div class="screen-sub">戦闘機による空戦／対地 リアルタイム戦略シミュレーション</div>
-        <div class="title-prog">クリア済み ${cleared} / ${STAGES.length}</div>
-        <div class="screen-foot">
-          <button data-act="select" class="go">ミッション選択</button>
-        </div>
+        <div class="mode-grid">${cards}</div>
       </div>
       <button class="version-tag" data-act="changelog" title="更新履歴を見る">
         ${VERSION}<span>${VERSION_DATE}</span>
@@ -70,12 +108,38 @@ export class ScreenManager {
     this._show(`
       <div class="screen-inner">
         <h1 class="game-title">ANGELS TWENTY</h1>
-        <div class="screen-sub">MISSION SELECT</div>
+        <div class="screen-sub">STAGE MODE — ステージモード</div>
         <div class="stage-grid">${cards}</div>
         <div class="screen-foot">
           <span>クリアすると次のミッションが解禁されます</span>
-          <button data-act="title" class="ghost">タイトルへ</button>
+          <button data-act="title" class="ghost">モード選択へ</button>
           <button data-act="reset" class="ghost">進行状況をリセット</button>
+        </div>
+      </div>`);
+  }
+
+  /**
+   * チュートリアル選択（仕様 §19）。
+   * 中身は P12 で入れる。ここが空のあいだはタイトルから入れない。
+   */
+  showTutorialSelect() {
+    const done = this.progress.tutorial;
+    const cards = TUTORIALS.map((t, i) => `
+      <div class="stage-card${done.includes(t.id) ? ' cleared' : ''}" data-tutorial="${t.id}">
+        <div class="sc-no">TUTORIAL ${String(i + 1).padStart(2, '0')}</div>
+        <div class="sc-name">${t.name}</div>
+        <div class="sc-title">${t.title}</div>
+        <div class="sc-state">${done.includes(t.id) ? '受講済み' : '未受講'}</div>
+      </div>`).join('');
+
+    this._show(`
+      <div class="screen-inner">
+        <h1 class="game-title">ANGELS TWENTY</h1>
+        <div class="screen-sub">TUTORIAL — チュートリアル</div>
+        <div class="stage-grid">${cards || '<div class="panel-empty">準備中</div>'}</div>
+        <div class="screen-foot">
+          <span>好きな順番で、何度でも受けられます</span>
+          <button data-act="title" class="ghost">モード選択へ</button>
         </div>
       </div>`);
   }
@@ -193,7 +257,7 @@ export class ScreenManager {
         </div>
         ${clear && next ? `<div class="res-next">次の任務「${next.name}」が解禁されました</div>` : ''}
         <div class="screen-foot">
-          <button data-act="select" class="ghost">ミッション選択へ</button>
+          <button data-act="select" class="ghost">ステージモードへ</button>
           <button data-act="retry" class="go">${clear ? 'もう一度' : '再挑戦'}</button>
         </div>
       </div>`);
@@ -234,6 +298,7 @@ export class ScreenManager {
       case 'back':   this.showStageSelect(); break;
       case 'title':  this.showTitle(); break;
       case 'select': this.showStageSelect(); break;
+      case 'tutorial': this.showTutorialSelect(); break;
       case 'launch':
         if (!act.hasAttribute('disabled')) {
           this._rememberLoadouts();
