@@ -193,6 +193,15 @@ export class Airbase extends GroundUnit {
     const pi = this.parked.indexOf(ac);
     if (pi >= 0) this.parked.splice(pi, 1);
 
+    // 帰投にまつわる状態をすべて解く。
+    // 残したまま発進させると、AI が「帰投中」のつもりのまま
+    // 離陸直後にまた飛行場へ引き返す。
+    if (ac.aiMode === 'RTB') ac.aiMode = 'PATROL';
+    ac._winchester = false;
+    ac._rtbTriggered = false;
+    ac.withdrawing = false;
+    if (ac.order && ac.order.type === 'rtb') ac.clearOrders();
+
     ac.state = 'takeoff';
     ac._rotated = false;
     ac.pos.copy(this.runwayStart);

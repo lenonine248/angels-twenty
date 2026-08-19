@@ -112,7 +112,7 @@ export class PilotAI {
       case 'COORDINATE': this._coordinate(u, attackers, true); break;
       case 'EVADE':      this._evadeMode(u); break;
       case 'ESCORT':     this._escort(u, attackers); break;
-      case 'STRIKE':     this._strike(u); break;
+      case 'STRIKE':     this._strike(u, attackers); break;
       case 'RTB':        this._rtb(u); break;
       // 経路飛行: 指示に一切割り込まない。ミサイル回避だけは機体側が行う。
       case 'TRANSIT':    u.headingBias = 0; break;
@@ -199,14 +199,23 @@ export class PilotAI {
     u.headingBias = Math.sin((this.time / SWEEP_PERIOD) * Math.PI * 2 + u.id) * (30 * DEG);
   }
 
-  _strike(u) {
+  _strike(u, attackers) {
     u.headingBias = 0;
-    const target = u.strikeTarget;
-    if (!target || !target.alive) {
-      // 目標を失ったら帰投する（対地兵装を撃ち尽くしている可能性が高い）
-      u.aiMode = 'RTB';
+
+    // 目標が無ければ、探知している地上目標から選び直す。
+    //
+    // ここで帰投にしてはいけない。ステージ側で目標を仕込まれた機体しか
+    // strikeTarget を持たないので、プレイヤーが対地攻撃モードにしただけで
+    // 勝手に帰ってしまう（実際そうなっていた）。
+    // 兵装を撃ち尽くしたときの帰投は _checkWinchester が別に見ている。
+    let target = u.strikeTarget;
+    if (!target || !target.alive) target = this._nearestGroundTarget(u);
+    if (!target) {
+      u.strikeTarget = null;
+      this._patrol(u, attackers);       // 目標が見つかるまでは哨戒
       return;
     }
+    u.strikeTarget = target;
     if (u.order.type !== 'attack' || u.order.target !== target) {
       u.setOrder({ type: 'attack', target });
     }
@@ -225,6 +234,20 @@ export class PilotAI {
         u.order.alt = Math.max(0, this.world.terrain.heightAt(u.pos.x, u.pos.z)) + 600;
       }
     }
+  }
+
+  /** 探知している敵の地上・水上目標のうち最も近いもの */
+  _nearestGroundTarget(u) {
+    const contacts = this.world.detection.contactsFor(u.side);
+    let best = null;
+    let bestD = Infinity;
+    for (const c of contacts.values()) {
+      const t = c.unit;
+      if (!t.alive || t.kind === 'aircraft' || t.side === u.side) continue;
+      const d = u.pos.distanceTo(t.pos);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    return best;
   }
 
   /** ARM を積んでいて、目標が電波を出しているか（＝撃てるか） */

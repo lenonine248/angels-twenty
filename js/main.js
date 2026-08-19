@@ -653,6 +653,7 @@ function updateHudBar() {
     renderObjectives();
   }
   el('pauseOverlay').classList.toggle('hidden', !loop.paused);
+  syncSpeedButtons();
   el('weaponPoints').textContent = `${battle.world.weaponPoints} / ${battle.world.weaponPointsMax}`;
 }
 
@@ -773,11 +774,24 @@ function setupAudioUi() {
   }, true);
 }
 
+/**
+ * 倍速ボタンの表示。
+ *
+ * 押したときだけ更新すると、押していない経路で速度が変わったときに表示だけ取り残される。
+ * 実際、前のミッションで x4 のまま次を始めると buildBattle が x1 に戻すのに
+ * ボタンは x4 のままで、「x4 表示なのに等速」という状態になっていた。
+ * 表示は常に loop.speed から作る。
+ */
+let speedButtons = null;
+function syncSpeedButtons() {
+  if (!speedButtons) return;
+  for (const b of speedButtons) b.classList.toggle('active', Number(b.dataset.speed) === loop.speed);
+}
+
 function setupTimeControls() {
   const buttons = [...document.querySelectorAll('#speedCtl button')];
-  const sync = () => {
-    for (const b of buttons) b.classList.toggle('active', Number(b.dataset.speed) === loop.speed);
-  };
+  speedButtons = buttons;
+  const sync = syncSpeedButtons;
   for (const b of buttons) {
     b.addEventListener('click', () => { loop.setSpeed(Number(b.dataset.speed)); sync(); });
   }
