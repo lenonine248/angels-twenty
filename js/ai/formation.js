@@ -9,6 +9,17 @@
 const MAX_MEMBERS = 4;
 /** 編隊に付けられる番号。数字キーでそのまま呼び出す。 */
 export const MAX_FORMATION_NUMBER = 9;
+
+/**
+ * 隊形。仕様書 §22.4。
+ *
+ * プレイヤーが選ぶのは**隊形だけ**。誰がどこへ回り込むかは AI が決める。
+ * 「密集か、開くか」は指揮官の判断だが、そこから先は操縦の話になる。
+ */
+export const SHAPE = {
+  TIGHT:  { id: 'TIGHT',  label: '密集', back: 700,  lateral: 550,  desc: '互いを近くに置く。護衛や、まとめて動かしたいときに' },
+  SPREAD: { id: 'SPREAD', label: '横隊', back: 250,  lateral: 1800, desc: '横に開く。探知の幅が広がり、挟み撃ちに移りやすい' },
+};
 let nextId = 1;
 
 /**
@@ -26,9 +37,21 @@ export class Formation {
   constructor(members, number = 1) {
     this.id = nextId++;          // 内部の一意キー（表示には使わない）
     this.setNumber(number);
+    /** 隊形。既定は横隊（連携で組むことが多いため） */
+    this.shape = SHAPE.SPREAD.id;
     this.members = [];
     for (const m of members.slice(0, MAX_MEMBERS)) this.add(m);
   }
+
+  /** 隊形を切り替える */
+  setShape(id) {
+    if (!SHAPE[id]) return this;
+    this.shape = id;
+    for (const m of this.members) m.formationShape = id;
+    return this;
+  }
+
+  get shapeSpec() { return SHAPE[this.shape] || SHAPE.SPREAD; }
 
   /** 表示・数字キーで使う番号を付け替える */
   setNumber(n) {
@@ -64,7 +87,10 @@ export class Formation {
   }
 
   _reindex() {
-    this.members.forEach((m, i) => { m.formationSlot = i; });
+    this.members.forEach((m, i) => {
+      m.formationSlot = i;
+      m.formationShape = this.shape;
+    });
   }
 
   /** 死んだ機体を落とす。空になったら false を返す。 */

@@ -13,6 +13,7 @@ import { Unit, headingOf, angleDiff, DEG } from './unit.js';
 import { getType } from '../data/aircraft.js';
 import { loadoutSlots, loadoutFuelBonus } from '../data/weapons.js';
 import { attackManeuver, defensiveManeuver } from './acm.js';
+import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
 import { clamp } from '../core/rng.js';
 import { thrustFactor, turnFactor, maxSpeedFactor } from '../core/atmosphere.js';
 import { APPROACH_DISTANCE } from './airbase.js';
@@ -487,7 +488,9 @@ export class Aircraft extends Unit {
         const rank = Math.ceil(slot / 2);
         const f = t.forward();
         const rx = -f.z, rz = f.x;                 // 右手方向
-        const back = 700 * rank, lat = 550 * rank * side;
+        // 隊形で間隔が変わる（§22.4）。密集は護衛向き、横隊は相互支援向き。
+        const shape = FORMATION_SHAPE[this.formationShape] || FORMATION_SHAPE.SPREAD;
+        const back = shape.back * rank, lat = shape.lateral * rank * side;
         const tx = t.pos.x - f.x * back + rx * lat;
         const tz = t.pos.z - f.z * back + rz * lat;
         const dx = tx - this.pos.x, dz = tz - this.pos.z;

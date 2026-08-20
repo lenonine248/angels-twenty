@@ -46,6 +46,14 @@ const HOLD_RANGE = 450;
 const TRACK_RANGE = 950;
 /** ラグの最大オフセット角。大きすぎると目標を扇から外す */
 const LAG_MAX = 32 * DEG;
+/**
+ * ラグを使ってよい速度優位(m/s)。
+ *
+ * ラグは**追い越しそうなときに外側を回る**機動なので、
+ * 速度が同じ相手にやると、機首を外したぶんだけ接近が遅れて永久に詰められない
+ * （実測で同速の相手に 1,270m で止まったまま2分粘った）。
+ */
+const LAG_MIN_ADVANTAGE = 25;
 /** 追い越さないための余剰速度の上限(m/s)。物理の逆算にかぶせる蓋 */
 const CLOSURE_CAP = 70;
 /**
@@ -172,7 +180,11 @@ function choosePursuit(self, target, flat, tailAspect, angleOff) {
   if (tailAspect >= 70 * DEG) return PURSUIT.PURE;
 
   // 後方に付けている。まだ遠ければラグで詰める（行き過ぎを防ぐ）。
-  if (flat > TRACK_RANGE) return PURSUIT.LAG;
+  // ただし速度優位が無いならラグにしない。詰められなくなる。
+  if (flat > TRACK_RANGE) {
+    return self.speed > (target.speed || 0) + LAG_MIN_ADVANTAGE
+      ? PURSUIT.LAG : PURSUIT.PURE;
+  }
 
   // 撃てる位置に入った。狙いに切り替える。
   return PURSUIT.TRACK;

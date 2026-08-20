@@ -22,6 +22,7 @@
 //   speed         倍速を変えた
 //   pause         一時停止した／解除した
 //   formation     編隊を組んだ
+//   shape         隊形を変えた（detail.shape）
 //   aimode        AIモードを変えた（detail.mode）
 //   threshold     自動発射のしきい値を変えた（detail.value）
 //   guard         「誘導中に回避するか」を切り替えた

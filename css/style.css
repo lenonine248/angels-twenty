@@ -570,6 +570,8 @@ button.chip.pick.picked {
 button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 
 .ur-fm { color: var(--cyan); }
+.ur-brk { color: var(--amber); }
+.fm-tag.hot { color: var(--amber); border-color: var(--amber); }
 
 /* 発進ボタンの警告。ホバーで内訳を出す（クリックする前に気づけるように） */
 #screens .go.warn, #detailBody button.go.warn {

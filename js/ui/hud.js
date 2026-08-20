@@ -10,6 +10,7 @@ import { formatTime } from '../core/loop.js';
 import { altitudeProfile } from '../core/atmosphere.js';
 import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
 import { AI_MODES } from '../ai/pilot.js';
+import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
 import { notify } from './actions.js';
 
 const REFRESH_INTERVAL = 1 / 10;
@@ -55,6 +56,13 @@ export class Hud {
       if (alt) { this.commands.setAltitude(Number(alt.dataset.alt)); this._detailKey = null; return; }
       const mode = e.target.closest('button[data-mode]');
       if (mode) { this._setMode(mode.dataset.mode); this._detailKey = null; return; }
+      const shape = e.target.closest('button[data-shape]');
+      if (shape) {
+        for (const u of this.commands.selection) u.formation?.setShape(shape.dataset.shape);
+        notify('shape', { shape: shape.dataset.shape });
+        this._detailKey = null;
+        return;
+      }
       const cmd = e.target.closest('button[data-cmd]');
       if (cmd) { this._runCommand(cmd.dataset.cmd); this._detailKey = null; return; }
       const add = e.target.closest('button[data-load-add]');
@@ -184,7 +192,8 @@ export class Hud {
     // 「実行内容」は指示が変わるたびに変わる“値”なので、ここ（構造のキー）には入れない。
     // 入れないまま値の更新もしないと、指示を変えても表示が古いまま残る（実際に起きた）。
     const key = mine.map((u) => `${u.id}${u.alive ? 1 : 0}${u.state}${this.commands.isSelected(u) ? 1 : 0}`
-      + `${u.aiMode}${u.formation ? u.formation.number : 0}${u.threats.length ? 1 : 0}`).join('|');
+      + `${u.aiMode}${u.formation ? u.formation.number + u.formation.shape : 0}`
+      + `${u.threats.length ? 1 : 0}`).join('|');
     if (key !== this._rosterKey) {
       this._rosterKey = key;
       this.roster.innerHTML = mine.map((u) => this._rosterRow(u)).join('');
@@ -220,7 +229,7 @@ export class Hud {
     const mode = u.alive && !u.onGround
       ? ` · <span class="ur-mode">${(AI_MODES[u.aiMode] || {}).label || ''}</span>` : '';
     const fm = u.formation
-      ? ` · <span class="ur-fm">${u.formation.name}</span>` : '';
+      ? ` · <span class="ur-fm">${u.formation.name} ${u.formation.shapeSpec.label}</span>` : '';
     return `<div class="unit-row${sel}${dead}${threat}" data-id="${u.id}">
       <div class="ur-top"><span class="ur-name">${u.name}</span><span class="ur-state">${state}</span></div>
       <div class="ur-meta"></div>
@@ -260,7 +269,8 @@ export class Hud {
     const key = [
       u.id, u.state, u.aiMode, u.loadout.join(','), (u.plannedLoadout || []).join(','),
       u.onGround && u.airbase ? (u.airbase.pendingService(u)?.kinds.join('') ?? '') : '',
-      u.formation ? u.formation.number : 0, Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
+      u.formation ? `${u.formation.number}${u.formation.shape}` : 0,
+      Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
       u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.fireThreshold,
       u.autoWeapons.GUN === false ? 1 : 0,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
@@ -419,8 +429,16 @@ export class Hud {
       const m = AI_MODES[id];
       return `<button data-mode="${id}" class="${cur === id ? 'active' : ''}" title="${m.desc}">${m.label}</button>`;
     }).join('');
-    const f = u && u.formation
-      ? `<span class="fm-tag">${u.formation.name} #${(u.formationSlot ?? 0) + 1}</span>` : '';
+    // 編隊を組んでいるときだけ隊形を選べるようにする（§22.4）。
+    // プレイヤーが決めるのは隊形まで。誰がどこへ回り込むかは AI が決める。
+    let f = '';
+    if (u && u.formation) {
+      const fm = u.formation;
+      const shapes = Object.values(FORMATION_SHAPE).map((sp) =>
+        `<button data-shape="${sp.id}" class="${fm.shape === sp.id ? 'active' : ''}"
+          title="${sp.desc}">${sp.label}</button>`).join('');
+      f = `<span class="fm-tag">${fm.name} #${(u.formationSlot ?? 0) + 1}</span>${shapes}`;
+    }
     return `<div class="dt-mode"><label>AI</label>${btns}${f}</div>`;
   }
 
