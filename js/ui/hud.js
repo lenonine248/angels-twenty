@@ -215,7 +215,7 @@ export class Hud {
       if (hp) hp.style.width = `${Math.round(u.hpRatio * 100)}%`;
       const st = row.querySelector('.ur-state');
       if (st) {
-        const html = rosterState(u);
+        const html = rosterState(u, this.world.combat);
         if (st.innerHTML !== html) st.innerHTML = html;
       }
     }
@@ -225,7 +225,7 @@ export class Hud {
     const sel = this.commands.isSelected(u) ? ' selected' : '';
     const dead = u.alive ? '' : ' dead';
     const threat = u.alive && u.threats.length ? ' threat' : '';
-    const state = rosterState(u);
+    const state = rosterState(u, this.world.combat);
     const mode = u.alive && !u.onGround
       ? ` · <span class="ur-mode">${(AI_MODES[u.aiMode] || {}).label || ''}</span>` : '';
     const fm = u.formation
@@ -475,11 +475,23 @@ export class Hud {
  * ロースター1行の「実行内容」。
  * 指示が変わるたびに変わるので、構造ではなく値として毎フレーム書き込む。
  */
-function rosterState(u) {
+/**
+ * @param {?object} combat 撃てない理由を出すために使う（無ければ出さない）
+ */
+function rosterState(u, combat) {
   if (!u.alive) return '撃墜';
   if (u.threats.length) return `<span class="ur-warn">⚠ ミサイル×${u.threats.length}</span>`;
   if (u.onGround || u.state === 'landing') return STATE_LABEL[u.state] || u.state;
-  return orderLabel(u);
+
+  const label = orderLabel(u);
+  // 攻撃指示を出しているのに撃たないときは、その理由を添える。
+  // 「撃てるはずなのに撃たない」に見える状態を、ここで言葉にする。
+  const o = u.order;
+  if (combat && o && o.type === 'attack' && o.target && o.target.alive) {
+    const why = combat.fireBlockReason(u, o.target);
+    if (why) return `${label} <span class="ur-why">${why}</span>`;
+  }
+  return label;
 }
 
 function orderLabel(u) {

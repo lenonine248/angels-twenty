@@ -570,6 +570,7 @@ button.chip.pick.picked {
 button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 
 .ur-fm { color: var(--cyan); }
+.ur-why { color: var(--amber); font-size: 10px; margin-left: 4px; }
 .ur-brk { color: var(--amber); }
 .fm-tag.hot { color: var(--amber); border-color: var(--amber); }
 

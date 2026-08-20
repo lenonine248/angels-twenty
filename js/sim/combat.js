@@ -308,6 +308,81 @@ export class CombatSystem {
     return best;
   }
 
+  /**
+   * いま撃てない理由を1つ返す（撃てるなら null）。
+   *
+   * 命中期待度が「高」と出ているのに撃たない、ということが起きる。
+   * 期待度は**当たるかどうか**の見積りで、**撃ってよいかどうか**は別の条件。
+   * 同一目標への同時誘導数と再装填はどちらも画面に出ていなかったため、
+   * プレイヤーからは「撃てるはずなのに撃たない」としか見えなかった。
+   *
+   * @param {?object} weapon 省略時は自動選択と同じ規則で選ぶ
+   */
+  fireBlockReason(shooter, target, weapon = null) {
+    if (!shooter || !shooter.alive || !target || !target.alive) return null;
+    if (shooter.onGround) return '地上';
+    if (!this.world.detection.isVisible(shooter.side, target)) return '未探知';
+
+    const isAir = target.kind === 'aircraft' && !target.onGround;
+    let w = weapon;
+    if (!w) {
+      // 自動で使える兵装があるか。無ければ理由を分ける。
+      const usable = shooter.loadout.filter((id) => {
+        const x = WEAPONS[id];
+        if (!x) return false;
+        return isAir ? x.kind === 'aam' : (x.kind === 'agm' || x.kind === 'bomb');
+      });
+      if (!usable.length) return '兵装なし';
+      const allowed = usable.filter((id) => !(shooter.autoWeapons && shooter.autoWeapons[id] === false));
+      if (!allowed.length) return '自動使用オフ';
+      // 条件を満たすものがあればそれを使う。無ければ最初のもので理由を出す。
+      w = WEAPONS[allowed.find((id) => this.inEnvelope(shooter, target, WEAPONS[id])) || allowed[0]];
+    }
+
+    if (!this.inEnvelope(shooter, target, w)) return this._envelopeReason(shooter, target, w);
+
+    if (w.kind !== 'bomb') {
+      const inFlight = this.world.missiles.filter(
+        (m) => m.alive && m.target === target && m.side === shooter.side).length;
+      if (inFlight >= MAX_IN_FLIGHT_PER_TARGET) {
+        return `誘導中${inFlight}発`;
+      }
+    }
+    if (shooter.fireCooldown > 0) return `再装填 ${shooter.fireCooldown.toFixed(1)}秒`;
+
+    if (w.kind !== 'bomb') {
+      const need = FIRE_THRESHOLD[shooter.fireThreshold || 'mid'] ?? FIRE_THRESHOLD.mid;
+      if (estimateHitChance(shooter, target, w) < need) return '期待度不足';
+    }
+    return null;
+  }
+
+  /** エンベロープのどこで落ちたかを言葉にする */
+  _envelopeReason(shooter, target, w) {
+    const dx = target.pos.x - shooter.pos.x;
+    const dz = target.pos.z - shooter.pos.z;
+    const dy = target.pos.y - shooter.pos.y;
+    const flat = Math.hypot(dx, dz);
+    const dist = Math.hypot(flat, dy);
+
+    if (w.maxLaunchAlt != null && shooter.pos.y > w.maxLaunchAlt) return '高度が高い';
+    if (w.minLaunchAlt != null && shooter.pos.y < w.minLaunchAlt) return '高度が低い';
+    if (w.kind !== 'bomb') {
+      const minR = MIN_RANGE[w.id] ?? MIN_RANGE.default;
+      const eff = effectiveMissileRange(w, (shooter.pos.y + target.pos.y) * 0.5);
+      if (dist < minR) return '近すぎ';
+      if (dist > eff * 0.85) return '射程外';
+    }
+    if (w.guidance === 'arm' && !target.emitting) return '電波なし';
+    const off = offBoresight(shooter, dx, dz, dy) / DEG;
+    if (w.guidance === 'sarh' || w.guidance === 'arh') {
+      if (!inRadarFan(shooter, dx, dz, dy, flat)) return `扇の外 ${Math.round(off)}度`;
+    } else if (off > 45) {
+      return `射角外 ${Math.round(off)}度`;
+    }
+    return '視線なし';
+  }
+
   /** 発射エンベロープの判定 */
   inEnvelope(shooter, target, w) {
     const dx = target.pos.x - shooter.pos.x;

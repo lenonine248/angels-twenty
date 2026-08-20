@@ -153,6 +153,16 @@ export class CommandController {
           const l = hitLabel(p);
           rows.push(`<span class="hi-hit ${l.cls}">${wid} 命中期待 ${l.text}</span>`);
         }
+        // **なぜ撃たないのか**を出す。
+        // 命中期待度は「当たるか」の見積りで、「撃ってよいか」は別の条件。
+        // 同一目標への同時誘導数や再装填は画面に出ていなかったため、
+        // 期待度が高いまま撃たない状態が不具合にしか見えなかった。
+        // 兵装を指定していないときは null を渡す。
+        // AI と同じ規則で選ばせないと、表示の兵装だけが射程外で
+        // 「射程外」と出るのに実際は別の兵装で撃つ、という食い違いが起きる。
+        const block = this.world.combat && this.world.combat.fireBlockReason(
+          best.u, u, best.u.selectedWeapon ? WEAPONS[best.u.selectedWeapon] : null);
+        if (block) rows.push(`<span class="hi-hit bad">撃てない: ${block}</span>`);
         // 機銃は実体弾なので「今この距離・この向きで当たるか」が刻々変わる。
         // 撃てる位置に付けたかどうかが読めないと、機銃で仕留める判断ができない。
         const gp = estimateGunHit(best.u, u);
