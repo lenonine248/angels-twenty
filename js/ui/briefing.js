@@ -7,7 +7,7 @@
 //   ・出撃編成と兵装（兵装ポイントの範囲内で自由に組める）
 
 import { STAGES, isUnlocked } from '../data/stages.js';
-import { TUTORIALS } from '../data/tutorials.js';
+import { TUTORIALS, getTutorial } from '../data/tutorials.js';
 import { VERSION, VERSION_DATE } from '../core/version.js';
 import { showChangelog } from './changelog.js';
 import { ratingTargets } from '../data/rating.js';
@@ -24,6 +24,7 @@ export class ScreenManager {
    */
   constructor(o) {
     this.onStart = o.onStart;
+    this.onStartTutorial = o.onStartTutorial;
     this.progress = o.progress;
     this.root = document.getElementById('screens');
     this._terrainCache = new Map();
@@ -131,6 +132,7 @@ export class ScreenManager {
     const cards = TUTORIALS.map((t, i) => `
       <div class="stage-card${done.includes(t.id) ? ' cleared' : ''}" data-tutorial="${t.id}">
         <div class="sc-no">TUTORIAL ${String(i + 1).padStart(2, '0')}</div>
+        ${done.includes(t.id) ? '<div class="sc-rank done-mark">✔</div>' : ''}
         <div class="sc-name">${t.name}</div>
         <div class="sc-title">${t.title}</div>
         <div class="sc-state">${done.includes(t.id) ? '受講済み' : '未受講'}</div>
@@ -144,6 +146,76 @@ export class ScreenManager {
         <div class="screen-foot">
           <span>好きな順番で、何度でも受けられます</span>
           <button data-act="title" class="ghost">モード選択へ</button>
+        </div>
+      </div>`);
+  }
+
+  /**
+   * チュートリアルのブリーフィング。
+   * ステージと違って兵装は組ませない（覚えることを1本に絞るため）。
+   * 何をする回なのかと、手順の全体像だけを先に見せる。
+   */
+  showTutorialBriefing(t) {
+    this.stage = t;
+    const done = this.progress.tutorial.includes(t.id);
+    const steps = t.steps.map((s, i) =>
+      `<li><span class="tb-no">${i + 1}</span>${s.text}</li>`).join('');
+
+    this._show(`
+      <div class="screen-inner briefing tutorial-brief">
+        <div class="bf-top">
+          <div>
+            <div class="screen-sub">TUTORIAL</div>
+            <h1 class="bf-name">${t.name}<small>${t.title}</small></h1>
+          </div>
+          <div class="bf-points">${done ? '<span class="bf-best">受講済み</span>' : ''}</div>
+        </div>
+
+        <div class="bf-body">
+          <div class="bf-left">
+            <div class="bf-section">この回で覚えること</div>
+            <p class="bf-text">${t.brief.replace(/\n/g, '<br>')}</p>
+            ${t.hint ? `<div class="bf-section">補足</div><p class="bf-hint">${t.hint}</p>` : ''}
+            <div class="bf-section">手順</div>
+            <ol class="tb-steps">${steps}</ol>
+          </div>
+          <div class="bf-right">
+            <div class="bf-section">戦域図</div>
+            <canvas id="bfMap" width="${CELLS}" height="${CELLS}"></canvas>
+            <div class="bf-legend">
+              <span class="lg blue">■</span> 自軍飛行場
+              <span class="lg red">■</span> 判明している敵
+              <span class="lg dim">□</span> 未確認地域
+            </div>
+            <div class="bf-legend">失敗はありません。何度でもやり直せます</div>
+          </div>
+        </div>
+
+        <div class="screen-foot">
+          <button data-act="tutorial" class="ghost">戻る</button>
+          <button data-act="startTutorial" class="go">開始</button>
+        </div>
+      </div>`);
+
+    this._drawMap(t);
+  }
+
+  /** 全手順を終えたときの画面。評価は付けない（§19.1）。 */
+  showTutorialResult(t) {
+    const i = TUTORIALS.indexOf(t);
+    const next = TUTORIALS[i + 1];
+    const done = this.progress.tutorial.length;
+    this._show(`
+      <div class="screen-inner result">
+        <div class="res-badge clear">TUTORIAL COMPLETE</div>
+        <h1 class="bf-name">${t.name}<small>${t.title}</small></h1>
+        <div class="res-reason">すべての手順を終えました（受講済み ${done} / ${TUTORIALS.length}）</div>
+        ${next ? `<div class="res-next">次は「${next.name} — ${next.title}」です</div>` : `
+        <div class="res-next">これで全部です。ステージモードへ進んでください</div>`}
+        <div class="screen-foot">
+          <button data-act="tutorial" class="ghost">チュートリアル一覧へ</button>
+          ${next ? `<button data-act="nextTutorial" data-id="${next.id}" class="go">次へ</button>`
+            : '<button data-act="select" class="go">ステージモードへ</button>'}
         </div>
       </div>`);
   }
@@ -314,6 +386,9 @@ export class ScreenManager {
     const card = e.target.closest('[data-stage]');
     if (card) { this.showBriefing(STAGES.find((s) => s.id === card.dataset.stage)); return; }
 
+    const tut = e.target.closest('[data-tutorial]');
+    if (tut) { this.showTutorialBriefing(getTutorial(tut.dataset.tutorial)); return; }
+
     const add = e.target.closest('[data-add]');
     if (add && !add.classList.contains('disabled')) {
       const [i, id] = add.dataset.add.split(':');
@@ -339,6 +414,12 @@ export class ScreenManager {
       case 'title':  this.showTitle(); break;
       case 'select': this.showStageSelect(); break;
       case 'tutorial': this.showTutorialSelect(); break;
+      case 'startTutorial':
+        if (this.onStartTutorial) this.onStartTutorial(this.stage);
+        break;
+      case 'nextTutorial':
+        this.showTutorialBriefing(getTutorial(act.dataset.id));
+        break;
       case 'launch':
         if (!act.hasAttribute('disabled')) {
           this._rememberLoadouts();
@@ -391,8 +472,8 @@ export class ScreenManager {
     }
     for (const g of enemy.ground || []) if (g.known) mark(g.x, g.z, '#ff5b44', 5);
 
-    // 到達目標
-    for (const o of stage.objectives) {
+    // 到達目標（チュートリアルには目標が無い）
+    for (const o of stage.objectives || []) {
       if (o.type !== 'reach') continue;
       ctx.strokeStyle = '#ffb648';
       ctx.lineWidth = 1.5;

@@ -45,6 +45,11 @@ export class Mission {
   _evaluate() {
     const w = this.world;
 
+    // 敗北条件を置かないステージ（チュートリアルなど）。
+    // 目標も敗北条件も無いので、この任務は自分からは終わらない。
+    // 終わらせるのは画面側の仕事になる。
+    if (this.stage.noFail) return;
+
     // --- 敗北条件（仕様 §12） ---
     const myAircraft = w.units.filter(
       (u) => u.kind === 'aircraft' && u.side === w.playerSide);

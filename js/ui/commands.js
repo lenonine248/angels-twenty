@@ -13,6 +13,7 @@ import { getLabelMaterial } from '../world/models.js';
 import { WEAPONS } from '../data/weapons.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 import { estimateHitChance, hitLabel } from '../sim/combat.js';
+import { notify } from './actions.js';
 
 const PICK_RADIUS_PX = 26;
 const DRAG_THRESHOLD_PX = 6;
@@ -177,6 +178,7 @@ export class CommandController {
       if (!next.includes(u)) u.selectedWeapon = null;
     }
     this.selection = next;
+    if (next.length) notify('select', { units: next });
   }
 
   toggle(unit) {
@@ -246,6 +248,7 @@ export class CommandController {
           u.setOrder({ type: 'attack', target, player: true }, append);
         }
       }
+      notify('order:attack', { target });
       return;
     }
     if (target && target.side === this.world.playerSide) {
@@ -254,6 +257,7 @@ export class CommandController {
         if (u === target) continue;
         u.setOrder({ type: 'follow', target, slot: slot++, player: true }, append);
       }
+      notify('order:follow', { target });
       return;
     }
 
@@ -268,6 +272,7 @@ export class CommandController {
       for (const u of formation.members) {
         u.patrolArea = { x: p.x, z: p.z, alt: leader.desiredAlt, radius: 4500 };
       }
+      notify('order:move', { x: p.x, z: p.z });
       return;
     }
     // 複数機は目標点の周囲に散らす（同一点に殺到しないように）
@@ -283,6 +288,7 @@ export class CommandController {
       // 到達後の待機・哨戒もそこで行う
       u.patrolArea = { x: tx, z: tz, alt: u.order?.alt ?? u.desiredAlt, radius: 4500 };
     }
+    notify('order:move', { x: p.x, z: p.z });
   }
 
   /** 選択中の機体（最大4機）で編隊を組む */
@@ -293,6 +299,7 @@ export class CommandController {
     this.world.formations.push(f);
     f.setMode('COORDINATE');
     this.world.log?.(`${f.name} 編成（${members.map((m) => m.name).join(', ')}）`);
+    notify('formation', { formation: f });
   }
 
   /** 選択機が属する編隊を解散する */
@@ -318,30 +325,43 @@ export class CommandController {
 
   /** 選択機を最寄りの自軍飛行場へ帰投させる */
   orderRtb() {
+    let ordered = false;
     for (const u of this.selection) {
       if (u.onGround || !u.nearestBase) continue;
       const ab = u.nearestBase(this.world);
-      if (ab) u.setOrder({ type: 'rtb', airbase: ab });
+      if (ab) { u.setOrder({ type: 'rtb', airbase: ab }); ordered = true; }
     }
+    if (ordered) notify('order:rtb', {});
   }
 
   adjustAltitude(delta) {
+    if (this.selection.length) notify(delta > 0 ? 'alt:up' : 'alt:down', { delta });
     for (const u of this.selection) {
       const base = u.order?.alt ?? u.desiredAlt;
-      const alt = clamp(base + delta, 300, u.spec.ceiling);
-      if (u.order) u.order.alt = alt;
-      for (const q of u.queue) q.alt = alt;
-      u.desiredAlt = alt;
+      this._applyAltitude(u, base + delta);
     }
   }
 
   setAltitude(alt) {
-    for (const u of this.selection) {
-      const a = clamp(alt, 300, u.spec.ceiling);
-      if (u.order) u.order.alt = a;
-      for (const q of u.queue) q.alt = a;
-      u.desiredAlt = a;
-    }
+    const cur = this.selection[0] ? (this.selection[0].order?.alt ?? this.selection[0].desiredAlt) : alt;
+    if (this.selection.length && alt !== cur) notify(alt > cur ? 'alt:up' : 'alt:down', { alt });
+    for (const u of this.selection) this._applyAltitude(u, alt);
+  }
+
+  /**
+   * 指示高度を1機に反映する。
+   *
+   * **哨戒エリアの高度も一緒に書き換えるのが要点。**
+   * AI は待機旋回中の機体を「手が空いている」とみなして毎回 orbit 指示を出し直し、
+   * その高度に哨戒エリアの値を使う。ここを直さないと、Z/X で上げた高度が
+   * 数秒で元に戻る（実際に戻っていた）。
+   */
+  _applyAltitude(u, alt) {
+    const a = clamp(alt, 300, u.spec.ceiling);
+    if (u.order) u.order.alt = a;
+    for (const q of u.queue) q.alt = a;
+    u.desiredAlt = a;
+    if (u.patrolArea) u.patrolArea.alt = a;
   }
 
   // ------------------------------------------------------------ ピック

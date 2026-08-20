@@ -30,6 +30,10 @@ import { pruneFormations } from './ai/formation.js';
 import { CommandController } from './ui/commands.js';
 import { Hud } from './ui/hud.js';
 import { ScreenManager } from './ui/briefing.js';
+import { notify, onAction } from './ui/actions.js';
+import { TutorialRunner } from './ui/tutorial.js';
+import { TUTORIALS, getTutorial } from './data/tutorials.js';
+import { markTutorialDone } from './core/save.js';
 import { isChangelogOpen, hideChangelog } from './ui/changelog.js';
 import { STAGES } from './data/stages.js';
 import { getType } from './data/aircraft.js';
@@ -51,6 +55,9 @@ let audio = null;
 
 /** 現在の戦闘。ステージを開始するたびに作り直す。 */
 let battle = null;
+
+/** チュートリアル進行（§19）。通常のステージでは null。 */
+let tutorial = null;
 
 boot().catch(showFatal);
 
@@ -82,7 +89,11 @@ async function boot() {
   screens = new ScreenManager({
     progress,
     onStart: (stage, loadouts) => startBattle(stage, loadouts),
+    onStartTutorial: (t) => startBattle(t, null, t),
   });
+
+  // チュートリアルは UI 側の操作通知だけで進む（§19.2）
+  onAction((kind, detail) => { if (tutorial) tutorial.handleAction(kind, detail); });
   screens.onReset = () => { progress = resetProgress(); screens.progress = progress; };
 
   audio = new AudioManager(progress.settings);
@@ -103,7 +114,8 @@ async function boot() {
     get commands() { return commands; },
     get hud() { return hud; },
     get minimap() { return minimap; },
-    scene, loop, screens, progress, audio, stages: STAGES, telemetry,
+    get tutorial() { return tutorial; },
+    scene, loop, screens, progress, audio, stages: STAGES, tutorials: TUTORIALS, telemetry,
     /** 検証用: ステージを直接開始する（ブリーフィング既定の兵装で出撃） */
     startStage(i) { screens.showBriefing(STAGES[i]); startBattle(STAGES[i], screens.loadouts.map((l) => l.slice())); },
   };
@@ -164,6 +176,12 @@ function render(alpha, realDt) {
     minimap.draw();
     hud.update(realDt, loop);
     updateHudBar();
+    // 一時停止を覚える手順があるので、ポーズ中も進める
+    if (tutorial && !battle.finished) {
+      tutorial.update({
+        world: battle.world, commands, loop, rig: scene.rig,
+      }, realDt);
+    }
   }
 }
 
@@ -249,7 +267,7 @@ function updateAudio(realDt) {
 
 // ================================================================ 戦闘の構築
 
-function startBattle(stage, loadouts) {
+function startBattle(stage, loadouts, asTutorial) {
   screens.hide();
   el('loading').classList.remove('hidden');
   el('loading').querySelector('.loading-msg').textContent = 'GENERATING TERRAIN...';
@@ -258,7 +276,7 @@ function startBattle(stage, loadouts) {
   // （nextFrame は rAF が止まるバックグラウンドタブでもタイマーで進む）
   nextFrame().then(() => nextFrame()).then(() => {
     try {
-      buildBattle(stage, loadouts);
+      buildBattle(stage, loadouts, asTutorial);
       el('loading').classList.add('hidden');
       el('hud').classList.remove('hidden');
       audio.startMusic('battle');
@@ -266,7 +284,7 @@ function startBattle(stage, loadouts) {
   });
 }
 
-function buildBattle(stage, loadouts) {
+function buildBattle(stage, loadouts, asTutorial) {
   const terrain = new Terrain(stage.terrain);
   scene.reset();
   scene.setTerrain(terrain);
@@ -328,6 +346,7 @@ function buildBattle(stage, loadouts) {
     if (shooter.side === world.playerSide) {
       world.log(`${shooter.name} ${weapon.id} 発射`);
       telemetry.markShot(weapon.id);
+      notify('fire', { weapon: weapon.id, shooter, target });
     }
     world.effects.launchFlash(shooter.pos, missile ? missile.dir : null);
     audio.missileLaunch(shooter.pos);
@@ -367,8 +386,9 @@ function buildBattle(stage, loadouts) {
 
   logLines.length = 0;
   objectivesKey = null;
-  telemetry.begin(stage, loadouts);
-  pushLog(`任務 ${stage.name} 開始`);
+  // チュートリアルはプレイ記録に残さない（難易度調整の資料が濁る）
+  if (!asTutorial) telemetry.begin(stage, loadouts);
+  pushLog(asTutorial ? `チュートリアル ${stage.name} 開始` : `任務 ${stage.name} 開始`);
 
   battle = {
     stage, world, terrain, detection: world.detection, combat, pilotAI,
@@ -390,6 +410,41 @@ function buildBattle(stage, loadouts) {
   loop.simTime = 0;
   loop.setSpeed(1);
   renderObjectives();
+
+  destroyTutorial();
+  if (asTutorial) {
+    tutorial = new TutorialRunner(asTutorial, {
+      onFinish: () => finishTutorial(),
+      onRestart: () => startBattle(asTutorial, null, asTutorial),
+    });
+  }
+}
+
+// ================================================================ チュートリアル
+
+function destroyTutorial() {
+  if (!tutorial) return;
+  tutorial.destroy();
+  tutorial = null;
+}
+
+/** 全手順を終えた。評価は付けず、受講済みとして記録するだけ（§19.1）。 */
+function finishTutorial() {
+  const t = tutorial && tutorial.tutorial;
+  if (!t || !battle || battle.finished) return;
+  battle.finished = true;
+  progress = markTutorialDone(progress, t.id);
+  screens.progress = progress;
+  audio.setAlarm(0);
+  audio.setEngine(0, 1);
+  setTimeout(() => {
+    destroyTutorial();
+    el('hud').classList.add('hidden');
+    battle = null;
+    loop.setSpeed(1);
+    audio.startMusic('menu');
+    screens.showTutorialResult(t);
+  }, 1600);
 }
 
 /** ステージ定義からユニットを並べる */
@@ -679,6 +734,12 @@ function renderObjectives() {
   const box = el('objectives');
   if (!box || !battle) return;
   const status = battle.mission.status();
+  // 目標を持たないステージ（チュートリアル）では箱ごと出さない。
+  // 空の OBJECTIVES 枠が残ると、手順パネルの置き場所と取り合いになる。
+  if (status.length === 0) {
+    if (objectivesKey !== 'none') { box.innerHTML = ''; objectivesKey = 'none'; }
+    return;
+  }
   const ready = battle.world.units.filter((u) => u.state === 'ready').length;
   // 内容が変わらないうちは作り直さない（作り直すとホバー中のボタンが点滅する）
   const key = status.map((s) => s.state).join(',') + '|' + ready;
@@ -709,6 +770,7 @@ function setupPauseMenu() {
   const leave = () => {
     menu.classList.add('hidden');
     el('hud').classList.add('hidden');
+    destroyTutorial();
     battle = null;
     loop.setSpeed(1);
     audio.setAlarm(0);
@@ -724,10 +786,18 @@ function setupPauseMenu() {
     const b = e.target.closest('button[data-menu]');
     if (!b) return;
     const stage = battle && battle.stage;
+    const asTutorial = !!tutorial;
     switch (b.dataset.menu) {
       case 'resume':   close(); break;
-      case 'briefing': leave(); if (stage) screens.showBriefing(stage); break;
-      case 'select':   leave(); screens.showStageSelect(); break;
+      case 'briefing':
+        leave();
+        if (asTutorial && stage) screens.showTutorialBriefing(stage);
+        else if (stage) screens.showBriefing(stage);
+        break;
+      case 'select':
+        leave();
+        if (asTutorial) screens.showTutorialSelect(); else screens.showStageSelect();
+        break;
       case 'title':    leave(); screens.showTitle(); break;
       default: break;
     }
@@ -810,22 +880,31 @@ function setupTimeControls() {
   speedButtons = buttons;
   const sync = syncSpeedButtons;
   for (const b of buttons) {
-    b.addEventListener('click', () => { loop.setSpeed(Number(b.dataset.speed)); sync(); });
+    b.addEventListener('click', () => {
+      const v = Number(b.dataset.speed);
+      loop.setSpeed(v); sync();
+      notify(v === 0 ? 'pause' : 'speed', { speed: v });
+    });
   }
   document.addEventListener('click', (e) => {
     if (e.target && e.target.id === 'launchAll' && battle) {
+      let launched = false;
       for (const u of battle.world.units) {
-        if (u.state === 'ready' && u.airbase) u.airbase.launch(u, battle.world);
+        if (u.state === 'ready' && u.airbase) { u.airbase.launch(u, battle.world); launched = true; }
       }
+      if (launched) notify('takeoff', {});
       renderObjectives();
     }
   });
   window.addEventListener('keydown', (e) => {
     if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
     switch (e.code) {
-      case 'Space':        e.preventDefault(); loop.togglePause(); sync(); break;
-      case 'BracketLeft':  loop.stepSpeed(-1); sync(); break;
-      case 'BracketRight': loop.stepSpeed(1); sync(); break;
+      case 'Space':
+        e.preventDefault(); loop.togglePause(); sync();
+        notify('pause', { paused: loop.paused });
+        break;
+      case 'BracketLeft':  loop.stepSpeed(-1); sync(); notify('speed', { speed: loop.speed }); break;
+      case 'BracketRight': loop.stepSpeed(1); sync(); notify('speed', { speed: loop.speed }); break;
       case 'KeyH':         el('helpBox').classList.toggle('hidden'); break;
       default: break;
     }

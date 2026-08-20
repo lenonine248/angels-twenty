@@ -1,29 +1,363 @@
 // チュートリアルの定義。仕様書 §19。
 //
-// 中身は P12 で入れる。ここが空のあいだ、タイトルのチュートリアルは
-// 「準備中」として押せない状態で並ぶ（枠だけ先に作ってある）。
+// 1本のチュートリアルは **ステージ定義とまったく同じ形** に steps を足したもの。
+// 戦闘の組み立て（main.js の buildBattle）はそのまま使い回せる。
+//
+// 通常のステージと違う点:
+//   ・objectives ではなく steps で進む
+//   ・noFail: true（敗北条件を置かない。機体を失っても手順をやり直せる）
+//   ・評価は付けない
 //
 // 手順の形（§19.1）:
 //
-//   {
-//     id: 't1',
-//     name: '指揮の基本',
-//     title: '選択と移動指示',
-//     terrain: { seed: 90001, ... },
-//     friendly: { ... },            // ステージ定義と同じ形
-//     enemy: { ... },
-//     steps: [
-//       { text: '機体をクリックして選択する',        done: 'select' },
-//       { text: '地面を右クリックして移動を指示する', done: 'order:move' },
-//     ],
-//   }
+//   { text: '説明', note: '補足（任意）', done: 'select' }        操作で達成
+//   { text: '説明', check: (ctx) => boolean }                     状態で達成
 //
-// 通常のステージと違い、目標(objectives)ではなく steps で進む。
-// 全手順を終えたらクリア。評価は付けない。失敗条件も置かない。
+// **状態で判定できるものは check を使う。**
+// done を増やすほど本編のコードにチュートリアル都合の通知が増える。
+// check なら ui/tutorial.js が毎フレーム見るだけで済み、
+// sim/ には一行も手を入れずにいられる。
+//
+// ctx = { world, commands, loop, rig, mem, elapsed }
+//   mem は手順ごとの覚え書き（次の手順へ進むと空になる）
 
-export const TUTORIALS = [];
+import { LEVEL } from '../sim/detection.js';
+
+// ---------------------------------------------------------------- 小道具
+
+/** 自軍の生きている機体 */
+const mine = (ctx) => ctx.world.units.filter(
+  (u) => u.kind === 'aircraft' && u.side === ctx.world.playerSide && u.alive);
+
+/** 名前でユニットを引く（死んでいても返す） */
+const unit = (ctx, name) => ctx.world.units.find((u) => u.name === name);
+
+/** 自軍が持っているそのユニットのコンタクト */
+const contactOf = (ctx, u) =>
+  u && ctx.world.detection.contactsFor(ctx.world.playerSide).get(u.id);
+
+/** 対地高度 */
+const agl = (ctx, u) =>
+  u.pos.y - Math.max(0, ctx.world.terrain.heightAt(u.pos.x, u.pos.z));
+
+/** カメラが動かされたか（初回呼び出し時の位置を覚えて比べる） */
+function cameraMoved(ctx) {
+  const r = ctx.rig;
+  const now = { x: r.target.x, z: r.target.z, a: r.azimuth, d: r.distance };
+  if (!ctx.mem.cam) { ctx.mem.cam = now; return false; }
+  const c = ctx.mem.cam;
+  return Math.hypot(now.x - c.x, now.z - c.z) > 3000
+    || Math.abs(now.a - c.a) > 0.35
+    || Math.abs(now.d - c.d) / c.d > 0.25;
+}
+
+// ---------------------------------------------------------------- 定義
+
+export const TUTORIALS = [
+  // ================================================================ 1
+  {
+    id: 't1',
+    name: '指揮の基本',
+    title: '選択・移動指示・視点・時間',
+    brief: 'この作戦では、あなたは機体を直接操縦しません。\n'
+      + '機体に指示を出し、パイロットがそれをこなすのを見届けるのが仕事です。\n'
+      + 'まずは選択と移動指示、視点の動かし方、時間の進め方を覚えます。',
+    terrain: { seed: 90001, mountainAmount: 0.5, coast: 'none', valleyDepth: 0.6, rivers: 1, baseAltitude: 340 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 12000, z: 38000 },
+      startAirborne: true,
+      startAlt: 4000,
+      aircraft: [
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-S'] },
+      ],
+    },
+    enemy: { aircraft: [], ground: [] },
+    steps: [
+      { text: '自軍機をクリックして選択する',
+        note: '画面左の FLIGHT ROSTER の行をクリックしても選べます',
+        done: 'select' },
+      { text: '地面を右クリックして移動を指示する',
+        note: '指示した経路は線で表示されます。Shift+右クリックで経路を継ぎ足せます',
+        done: 'order:move' },
+      { text: 'Space キーで一時停止する',
+        note: '一時停止中も視点を動かしたり指示を出したりできます',
+        done: 'pause' },
+      { text: '一時停止を解除し、] キーで倍速を上げる',
+        note: '画面上部の x1 / x2 / x4 / x8 のボタンでも変えられます',
+        done: 'speed' },
+      { text: 'WASD キーで視点を動かして、機体を追う',
+        note: 'Q E で旋回、R F で仰角、ホイールで拡大縮小。C キーで選択機に寄れます',
+        check: cameraMoved },
+      { text: 'ドラッグで2機ともまとめて選択する',
+        note: '空いている場所から左ボタンでドラッグすると範囲選択になります',
+        check: (ctx) => ctx.commands.selection.filter((u) => u.alive).length >= 2 },
+      { text: '2機まとめて移動を指示する',
+        note: '複数機に同じ地点を指示すると、殺到しないよう自動で散開します',
+        done: 'order:move' },
+    ],
+  },
+
+  // ================================================================ 2
+  {
+    id: 't2',
+    name: '高度',
+    title: '高度が変えるもの',
+    brief: '高度はこのゲームでいちばん効く要素です。\n'
+      + '高いほど推力と旋回率は落ちますが、ミサイルはよく飛びます。\n'
+      + '降下すれば位置エネルギーを速度に変えられます。',
+    terrain: { seed: 90002, mountainAmount: 0.7, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 380 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 12000, z: 38000 },
+      startAirborne: true,
+      startAlt: 4000,
+      aircraft: [
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-S'] },
+      ],
+    },
+    enemy: { aircraft: [], ground: [] },
+    steps: [
+      { text: '機体を選択する', done: 'select' },
+      { text: 'X キーで指示高度を上げる',
+        note: '下の SELECTED パネルの高度ボタンでも指定できます',
+        done: 'alt:up' },
+      { text: '高度 8,000 m まで上昇させる',
+        note: '上がるほど推力と旋回率が落ちます。時間がかかるので倍速を上げてください',
+        check: (ctx) => mine(ctx).some((u) => u.pos.y >= 8000) },
+      { text: 'Z キーで指示高度を 2,000 m 以下まで下げる',
+        note: '降下は「高度を速度に変える」操作でもあります',
+        check: (ctx) => mine(ctx).some((u) => (u.order?.alt ?? u.desiredAlt) <= 2000) },
+      // 240 m/s は実測から。指示高度を下げただけの降下では 260 m/s 前後が上限で、
+      // 340 m/s のような値は出ない（機首を突っ込ませる操作は無いため）。
+      { text: '降下の勢いで 240 m/s 以上まで加速させる',
+        note: 'F-1 の巡航は 220 m/s。降下は高度を速度に変える操作でもあります',
+        check: (ctx) => mine(ctx).some((u) => u.speed >= 240) },
+      { text: '高度 1,500 m 以下まで降りる',
+        note: '低空は探知されにくい反面、対空砲の射程に入ります',
+        check: (ctx) => mine(ctx).some((u) => agl(ctx, u) <= 1500) },
+    ],
+  },
+
+  // ================================================================ 3
+  {
+    id: 't3',
+    name: '探知',
+    title: '見えているもの・見えていないもの',
+    brief: '画面に出ているのは「真の配置」ではなく「こちらが把握できている情報」です。\n'
+      + '機体のレーダーは機首前方の扇しか見ていませんが、味方飛行場のレーダーは\n'
+      + '全方位・60km を見ています。空にいる敵はたいてい飛行場が見つけてくれます。\n'
+      + '指揮官が気にするのは「識別できているか」と「こちらが見られていないか」です。',
+    hint: '敵機は武装していません。落とす必要はありません。',
+    terrain: { seed: 90003, mountainAmount: 1.4, coast: 'none', valleyDepth: 1.2, rivers: 2, baseAltitude: 480 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 11000, z: 38000 },
+      startAirborne: true,
+      startAlt: 5000,
+      aircraft: [
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-S'] },
+      ],
+    },
+    enemy: {
+      skill: 0.2,
+      aircraft: [
+        // 無武装。探知を覚えるための的で、撃ってこない。
+        { type: 'J-7', name: 'BANDIT 1', x: 22000, z: 24000, agl: 5200,
+          aiMode: 'PATROL', loadout: [], tags: ['target'] },
+      ],
+      ground: [],
+    },
+    // 手順にできるのは「指示で必ず起こせること」だけ。
+    //
+    // 「機首を向けて捉える」「扇から外してロストさせる」は手順にしていない。
+    // **自軍飛行場が半径60kmの全方位レーダーを持っている**ため、
+    // マップ（51.2km四方）にいる空中目標はほぼ常に飛行場が捉えており、
+    // 機体の向きを変えても探知は切れない（実測で確認した）。
+    // 扇の話は説明で伝え、手順には低空・距離といった確実に作れる状態を使う。
+    steps: [
+      { text: '機体を選択して、前方に出るレーダーの扇を確認する',
+        note: 'これは機体自身のレーダー。味方飛行場はこれとは別に全方位を見ています',
+        done: 'select' },
+      { text: '敵機を識別する（機種が判明するまで追尾する）',
+        note: '捉えた直後は「機種不明」です。追い続けると識別されます。'
+          + '扇から外れると機体側の探知は切れ、推測位置の表示に変わります',
+        check: (ctx) => { const c = contactOf(ctx, unit(ctx, 'BANDIT 1')); return !!c && c.level >= LEVEL.IDENTIFIED; } },
+      { text: '高度 1,000 m 以下まで降りる',
+        note: '地上レーダーは低い目標ほど遠くからは見えません（最大で4割まで落ちます）。'
+          + '山が視線を遮るのも低空のほうがよく効きます',
+        check: (ctx) => mine(ctx).some((u) => agl(ctx, u) <= 1000) },
+      { text: '敵機まで 7km 以内に近づき、目視の距離に入る',
+        note: '目視はレーダーと違って機首の向きに縛られませんが、届くのは 8km までです',
+        check: (ctx) => {
+          const e = unit(ctx, 'BANDIT 1');
+          return !!e && mine(ctx).some((u) => u.pos.distanceTo(e.pos) <= 7000);
+        } },
+    ],
+  },
+
+  // ================================================================ 4
+  {
+    id: 't4',
+    name: '空対空',
+    title: 'ミサイルの撃ち方',
+    brief: 'ミサイルは実体として飛びます。撃てば当たるものではありません。\n'
+      + '射程の内側でも、遠すぎれば燃え尽きて届かず、回避されれば外れます。\n'
+      + '命中期待度を見て、撃つ距離を選ぶのが指揮官の仕事です。',
+    hint: '敵は1機だけ、練度も低く設定してあります。落ち着いて手順を進めてください。',
+    terrain: { seed: 90004, mountainAmount: 0.8, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 400 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 12000, z: 38000 },
+      startAirborne: true,
+      startAlt: 5500,
+      aircraft: [
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+      ],
+    },
+    enemy: {
+      skill: 0.3,
+      aircraft: [
+        { type: 'J-7', name: 'BANDIT 1', x: 30000, z: 24000, agl: 5500,
+          aiMode: 'PATROL', loadout: ['AAM-S'], tags: ['target'] },
+      ],
+      ground: [],
+    },
+    steps: [
+      { text: '機体を選択し、地図で敵機の位置を確かめる',
+        note: '敵はおよそ 22km 北東。味方飛行場のレーダーが捉えているので位置は分かります',
+        done: 'select' },
+      { text: '敵機を右クリックして攻撃を指示する',
+        note: 'カーソルを敵に重ねると距離と命中期待度が出ます',
+        done: 'order:attack' },
+      { text: '下のパネルで使用兵装に AAM-M を指定する',
+        note: '指定すると「その兵装で撃て」という射撃指示になり、攻撃目標は変わりません',
+        done: 'weapon', when: (d) => d.weapon === 'AAM-M' },
+      { text: '「誘導中も回避／誘導を優先」を切り替えてみる',
+        note: '誘導を続ければ当たりやすく、回避を選べば自分が助かりやすい。その場で選びます',
+        done: 'guard' },
+      { text: 'AAM-M を発射する',
+        note: '敵を右クリックすると、指定した兵装での射撃指示になります。'
+          + 'AAM-M は撃った側が誘導を続ける必要があり、逃げると誘導が切れます',
+        done: 'fire', when: (d) => d.weapon === 'AAM-M' },
+      { text: '敵機を撃墜する',
+        note: '外れたら距離を詰めて撃ち直せます。短距離の AAM-S は近距離で強力です',
+        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+    ],
+  },
+
+  // ================================================================ 5
+  {
+    id: 't5',
+    name: '編隊とAI',
+    title: '任せ方を決める',
+    brief: '機体は放っておいても自分で戦います。\n'
+      + '指揮官が決めるのは「どこまで任せるか」です。\n'
+      + '編隊を組めばレーダーの扇を分担し、AIモードで動き方が変わります。',
+    terrain: { seed: 90005, mountainAmount: 0.9, coast: 'none', valleyDepth: 0.9, rivers: 2, baseAltitude: 420 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 11000, z: 38000 },
+      startAirborne: true,
+      startAlt: 5000,
+      aircraft: [
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S'] },
+        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-S'] },
+      ],
+    },
+    enemy: {
+      skill: 0.2,
+      aircraft: [
+        { type: 'J-7', name: 'BANDIT 1', x: 32000, z: 22000, agl: 5500,
+          aiMode: 'PATROL', loadout: [], tags: ['target'] },
+      ],
+      ground: [],
+    },
+    steps: [
+      { text: 'ドラッグで2機以上を選択する',
+        check: (ctx) => ctx.commands.selection.filter((u) => u.alive).length >= 2 },
+      { text: 'G キーで編隊を組む',
+        note: '最大4機まで。Shift+G で解散します',
+        done: 'formation' },
+      { text: 'AIモードを「連携」にする',
+        note: '連携中はレーダーの扇を左右に分担し、同じ敵に重複して撃たなくなります',
+        done: 'aimode', when: (d) => d.mode === 'COORDINATE' },
+      { text: '1機だけを選び、別の自軍機を右クリックして随伴させる',
+        note: '護衛につけた機体は、守る相手を追い抜かないよう速度を合わせます',
+        done: 'order:follow' },
+      { text: '自動発射のしきい値を変える',
+        note: '「高」にすると確実な機会しか撃たなくなり、ミサイルは節約できますが決め手を欠きます',
+        done: 'threshold' },
+    ],
+  },
+
+  // ================================================================ 6
+  {
+    id: 't6',
+    name: '飛行場と対地',
+    title: '出して、撃って、帰す',
+    brief: '飛行場は補給と積み替えの拠点です。\n'
+      + '兵装ポイントは作戦全体の共有資源で、積み替えるたびに減ります。\n'
+      + '地上目標への攻撃と、帰投・補給までをひと通り通します。',
+    hint: '敵はレーダーサイト1つだけ。撃ってこないので落ち着いて進められます。',
+    terrain: { seed: 90006, mountainAmount: 0.8, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 400 },
+    weaponPoints: 20,
+    noFail: true,
+    friendly: {
+      base: { x: 12000, z: 36000 },
+      startAirborne: false,
+      aircraft: [
+        { type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AAM-S'] },
+      ],
+    },
+    enemy: {
+      aircraft: [],
+      ground: [
+        { type: 'RADAR', name: 'レーダーサイト', x: 26000, z: 27000, tags: ['target'], known: true },
+      ],
+    },
+    steps: [
+      { text: '機体を選択して発進させる',
+        note: '下のパネルの「発進」か、目標欄の「全機発進」。滑走路を使うので少し時間がかかります',
+        done: 'takeoff' },
+      { text: 'レーダーサイトを右クリックして攻撃を指示する',
+        note: '地上目標はブリーフィングで判明していたので、最初から地図に出ています',
+        done: 'order:attack' },
+      { text: 'レーダーサイトを破壊する',
+        note: 'AGM は射程外から撃てます。無誘導爆弾なら目標の真上を通る必要があります',
+        check: (ctx) => { const u = unit(ctx, 'レーダーサイト'); return !!u && !u.alive; } },
+      // done と check の併用。燃料が尽きかけると AI が自分で帰投を始めるため、
+      // プレイヤーが B を押す前に着いてしまうことがある。
+      // 降りてしまうと B は効かない（orderRtb は地上の機体を無視する）ので、
+      // その場合だけ check 側で次へ送る。行き止まりを作らないための保険。
+      { text: 'B キーで帰投を指示する',
+        note: '燃料が尽きる前に帰すのも指揮官の仕事です',
+        done: 'order:rtb',
+        check: (ctx) => mine(ctx).some((u) => u.onGround) },
+      { text: '飛行場に着陸させる',
+        note: '進入・接地・滑走まで自動で行います。倍速を上げて待つとよいでしょう',
+        check: (ctx) => ctx.world.units.some((u) => u.kind === 'aircraft'
+          && u.side === ctx.world.playerSide && u.alive
+          && (u.state === 'parked' || u.state === 'servicing' || u.state === 'ready')) },
+      { text: '搭載を積み替える',
+        note: '下のパネルで兵装を足す／降ろす。足すと兵装ポイントが減り、降ろすと戻ります',
+        done: 'loadout' },
+    ],
+  },
+];
 
 /** 終えたチュートリアルか */
 export function isTutorialDone(id, done) {
   return Array.isArray(done) && done.includes(id);
+}
+
+export function getTutorial(id) {
+  return TUTORIALS.find((t) => t.id === id) || null;
 }

@@ -10,6 +10,7 @@ import { formatTime } from '../core/loop.js';
 import { altitudeProfile } from '../core/atmosphere.js';
 import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
 import { AI_MODES } from '../ai/pilot.js';
+import { notify } from './actions.js';
 
 const REFRESH_INTERVAL = 1 / 10;
 
@@ -65,7 +66,10 @@ export class Hud {
       const pick = e.target.closest('button[data-pick]');
       if (pick) {
         const u = this.commands.selection[0];
-        if (u) u.selectedWeapon = u.selectedWeapon === pick.dataset.pick ? null : pick.dataset.pick;
+        if (u) {
+          u.selectedWeapon = u.selectedWeapon === pick.dataset.pick ? null : pick.dataset.pick;
+          if (u.selectedWeapon) notify('weapon', { weapon: u.selectedWeapon, unit: u });
+        }
         this._detailKey = null;
         return;
       }
@@ -83,6 +87,7 @@ export class Hud {
       const guard = e.target.closest('button[data-guard]');
       if (guard) {
         for (const u of this.commands.selection) u.evadeWhileGuiding = !u.evadeWhileGuiding;
+        notify('guard', {});
         this._detailKey = null;
         return;
       }
@@ -90,6 +95,7 @@ export class Hud {
       const thr = e.target.closest('button[data-thr]');
       if (thr) {
         for (const u of this.commands.selection) u.fireThreshold = thr.dataset.thr;
+        notify('threshold', { value: thr.dataset.thr });
         this._detailKey = null;
         return;
       }
@@ -113,6 +119,7 @@ export class Hud {
   // -------------------------------------------------------------- 操作
 
   _setMode(mode) {
+    if (this.commands.selection.length) notify('aimode', { mode });
     for (const u of this.commands.selection) {
       if (u.formation) u.formation.setMode(mode);
       else u.aiMode = mode;
@@ -134,9 +141,11 @@ export class Hud {
           const ab = u.nearestBase(this.world);
           if (ab) u.setOrder({ type: 'rtb', airbase: ab, player: true });
         }
+        notify('order:rtb', {});
         break;
       case 'launch':
         for (const u of sel) if (u.airbase) u.airbase.launch(u, this.world);
+        notify('takeoff', {});
         break;
       default: break;
     }
@@ -155,6 +164,7 @@ export class Hud {
     }
     u.plannedLoadout = plan;
     if (u.airbase) u.airbase.replan(u, this.world);
+    notify('loadout', { unit: u, plan });
   }
 
   // -------------------------------------------------------------- ロースター

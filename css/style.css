@@ -569,6 +569,52 @@ button.chip.pick.picked {
 .obj-row.active { color: var(--text); }
 button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 
+/* ===== チュートリアルの手順（§19） =====
+   上部、目標パネルと同じ場所。チュートリアルには目標が無いので取り合いにならない。
+   下部に置くと操作ヘルプ（#helpBox）と重なる。 */
+#tutorial {
+  position: absolute;
+  top: 48px; left: 230px; right: 242px;
+  max-width: 620px;
+  pointer-events: none;
+}
+.tut-box {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-line);
+  border-left: 3px solid var(--amber);
+  padding: 8px 12px 10px;
+  pointer-events: auto;
+}
+.tut-box.hit { border-left-color: #7ec87e; }
+.tut-box.done { border-left-color: #7ec87e; }
+.tut-head {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 10px; letter-spacing: 0.2em; color: var(--cyan);
+  border-bottom: 1px solid var(--panel-line);
+  padding-bottom: 4px; margin-bottom: 7px;
+}
+.tut-count { color: var(--text-dim); letter-spacing: 0.1em; }
+.tut-restart {
+  margin-left: auto; letter-spacing: 0.06em;
+  font-size: 10px; padding: 2px 9px; cursor: pointer;
+  font-family: inherit;
+  color: var(--text-dim);
+  background: rgba(111, 216, 232, 0.06);
+  border: 1px solid var(--panel-line);
+}
+.tut-restart:hover { color: var(--text); background: rgba(111, 216, 232, 0.2); }
+.tut-step { font-size: 14px; color: var(--amber); line-height: 1.5; }
+.tut-box.hit .tut-step, .tut-box.done .tut-step { color: #7ec87e; }
+.tut-note { font-size: 11px; color: var(--text-dim); line-height: 1.6; margin-top: 4px; }
+
+/* チュートリアル一覧の受講済み印・ブリーフィングの手順一覧 */
+.sc-rank.done-mark { font-size: 20px; color: #7ec87e; }
+.tb-steps { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.9; }
+.tb-steps li { color: var(--text); }
+.tb-no {
+  display: inline-block; width: 20px; color: var(--cyan-dim);
+}
+
 /* ===== 画面（選択・ブリーフィング・戦果） ===== */
 #screens {
   position: fixed;
