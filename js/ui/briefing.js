@@ -387,6 +387,7 @@ export class ScreenManager {
         ${clear && next ? `<div class="res-next">次の任務「${next.name}」が解禁されました</div>` : ''}
         <div class="screen-foot">
           <button data-act="select" class="ghost">ステージモードへ</button>
+          <button data-act="review" class="ghost">戦闘を振り返る</button>
           <button data-act="retry" class="go">${clear ? 'もう一度' : '再挑戦'}</button>
         </div>
       </div>`);
@@ -427,6 +428,7 @@ export class ScreenManager {
     if (!act) return;
     switch (act.dataset.act) {
       case 'changelog': showChangelog(); break;
+      case 'review': this.onReview?.(); break;
       case 'back':   this.showStageSelect(); break;
       case 'title':  this.showTitle(); break;
       case 'select': this.showStageSelect(); break;

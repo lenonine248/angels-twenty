@@ -124,6 +124,7 @@ angels_twenty/
     core/save.js           進行状況・音量設定の保存（localStorage）
     core/audio.js          BGM / SE の手続き生成（Web Audio・音源ファイル不要）
     core/telemetry.js      プレイ記録（難易度調整の一次資料）
+    core/recorder.js       戦闘の記録（振り返り・受け渡し用）
     data/stages.js         全6ステージの定義
     data/rating.js         クリア評価（3軸 ◎○△ と総合ランク）
     data/tutorials.js      チュートリアル6本の定義（手順・地形・配置）
@@ -153,6 +154,7 @@ angels_twenty/
     ui/changelog.js        更新履歴の表示（CHANGELOG.md を読んで組み立てる）
     ui/actions.js          「今これをした」の通知口（チュートリアルの手順判定用）
     ui/tutorial.js         チュートリアルの進行と手順パネル
+    ui/review.js           振り返り画面（記録を地図に開く）
   tools/bench.js           バランス検証用のバッチ実行（コンソールから読み込む）
   tools/difficulty.js      ステージ定義からの難易度見積り
   tools/_tut_harness.js    チュートリアルを手順どおり通して確かめる（同上）

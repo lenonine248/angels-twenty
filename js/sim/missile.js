@@ -60,6 +60,9 @@ const GROUND_DIVE_START = 1200;
 
 let nextId = 1;
 
+/** ID を振り直す（`sim/unit.js` の `resetUnitIds` と同じ理由） */
+export function resetMissileIds() { nextId = 1; }
+
 export class Missile {
   constructor({ weapon, launcher, target, world }) {
     this.id = nextId++;

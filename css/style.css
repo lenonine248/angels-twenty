@@ -859,3 +859,58 @@ button.go.warn:hover + .dt-warn { display: block; }
 .ap-row input { flex: 1; accent-color: #6fd8e8; height: 14px; min-width: 0; }
 .ap-row b { width: 26px; text-align: right; font-weight: normal; color: var(--text); }
 .ap-hint { color: var(--text-dim); font-size: 10px; margin-top: 7px; }
+
+/* ================================================================ 振り返り画面（§23.3） */
+#review {
+  position: fixed; inset: 0; z-index: 80;
+  /* 透けさせない。戦果画面(#screens)が下に残ったままなので、
+     わずかでも透かすと地図の上に別の枠が浮いて見える。 */
+  background: #050810;
+  display: flex; align-items: center; justify-content: center;
+  overflow: auto;
+}
+.rv-wrap { width: min(1180px, 96vw); padding: 14px 18px 18px; }
+.rv-head {
+  display: flex; align-items: baseline; gap: 16px;
+  border-bottom: 1px solid var(--panel-line); padding-bottom: 8px; margin-bottom: 12px;
+}
+.rv-title { font-size: 15px; letter-spacing: 0.18em; color: var(--cyan); }
+.rv-title small { display: block; font-size: 11px; letter-spacing: 0.1em; color: var(--text-dim); }
+.rv-res { font-size: 11px; letter-spacing: 0.16em; }
+.rv-res.clear { color: #7ec87e; }
+.rv-res.fail { color: #ff5f5f; }
+.rv-meta { font-size: 11px; color: var(--text-dim); }
+.rv-close {
+  margin-left: auto; font-family: inherit; font-size: 11px; padding: 4px 14px; cursor: pointer;
+  color: var(--text); background: rgba(111, 216, 232, 0.1); border: 1px solid var(--panel-line);
+}
+.rv-close:hover { background: rgba(111, 216, 232, 0.24); }
+
+.rv-body { display: flex; gap: 16px; align-items: flex-start; }
+.rv-map {
+  width: min(720px, 62vw); height: auto; aspect-ratio: 1;
+  border: 1px solid var(--panel-line); background: #060a10;
+}
+.rv-side { flex: 1; min-width: 210px; display: flex; flex-direction: column; gap: 14px; }
+.rv-group label {
+  display: block; font-size: 10px; letter-spacing: 0.18em; color: var(--cyan);
+  margin-bottom: 5px;
+}
+.rv-group button {
+  font-family: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer;
+  color: var(--text-dim); background: transparent;
+  border: 1px solid var(--panel-line); margin: 0 4px 4px 0;
+}
+.rv-group button:hover { color: var(--text); }
+.rv-group button.on { color: var(--bg); background: var(--amber); border-color: var(--amber); }
+/* 出来事のボタンは地図の印と同じ色にする。
+   `.rv-ev.on` だけでは上の `.rv-group button.on` に詳細度で負けて全部琥珀色になる。 */
+.rv-group button.rv-ev.on { color: var(--bg); background: var(--c); border-color: var(--c); }
+.rv-unit.side-red { border-left: 3px solid #ff7676; }
+.rv-unit.side-blue { border-left: 3px solid #5aa9ff; }
+.rv-file { color: var(--text-dim); }
+.rv-msg { font-size: 10px; margin-top: 6px; line-height: 1.5; }
+
+.rv-foot { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.rv-clock { font-size: 13px; color: var(--amber); min-width: 52px; }
+.rv-foot input[type=range] { flex: 1; accent-color: var(--amber); }

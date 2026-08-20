@@ -18,6 +18,7 @@
       b.combat.update(DT);
       b.mission.update(DT);
       AT.loop.simTime += DT;
+      b.recorder?.tick(AT.loop.simTime);      // 手で進めるときも記録を取る（§23）
       if (AT.tutorial && !AT.tutorial.finished) {
         AT.tutorial.update({
           world: b.world, commands: AT.commands, loop: AT.loop, rig: AT.scene.rig,

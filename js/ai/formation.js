@@ -22,6 +22,9 @@ export const SHAPE = {
 };
 let nextId = 1;
 
+/** ID を振り直す（`sim/unit.js` の `resetUnitIds` と同じ理由） */
+export function resetFormationIds() { nextId = 1; }
+
 /**
  * 空いている最小の番号を返す。
  * 通し番号を振ると、解散を繰り返すうちに「編隊7」しか無い状態になり、

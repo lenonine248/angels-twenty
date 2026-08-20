@@ -18,15 +18,17 @@ import { loadProgress, markCleared, markRating, resetProgress, saveSettings } fr
 import { evaluate, isBetterRank, RANKS } from './data/rating.js';
 import { AudioManager } from './core/audio.js';
 import * as telemetry from './core/telemetry.js';
+import { Recorder } from './core/recorder.js';
 import { Aircraft } from './sim/aircraft.js';
 import { GroundUnit, findFlatSpot } from './sim/ground.js';
 import { Airbase, pickRunwayHeading } from './sim/airbase.js';
 import { DetectionSystem, Contact, LEVEL } from './sim/detection.js';
 import { CombatSystem } from './sim/combat.js';
+import { resetMissileIds } from './sim/missile.js';
 import { Mission, MISSION } from './sim/mission.js';
-import { SIDE } from './sim/unit.js';
+import { SIDE, resetUnitIds } from './sim/unit.js';
 import { PilotAI } from './ai/pilot.js';
-import { pruneFormations } from './ai/formation.js';
+import { pruneFormations, resetFormationIds } from './ai/formation.js';
 import { CommandController } from './ui/commands.js';
 import { Hud } from './ui/hud.js';
 import { ScreenManager } from './ui/briefing.js';
@@ -35,6 +37,7 @@ import { TutorialRunner } from './ui/tutorial.js';
 import { TUTORIALS, getTutorial } from './data/tutorials.js';
 import { markTutorialDone } from './core/save.js';
 import { isChangelogOpen, hideChangelog } from './ui/changelog.js';
+import { ReviewScreen } from './ui/review.js';
 import { STAGES } from './data/stages.js';
 import { getType } from './data/aircraft.js';
 
@@ -49,6 +52,9 @@ let loop = null;
 let commands = null;
 let hud = null;
 let minimap = null;
+/** 直近に終わった戦闘の記録（§23）。戦果画面の「振り返り」が使う */
+let lastRecording = null;
+let review = null;
 let updateCameraInput = null;
 let progress = loadProgress();
 let audio = null;
@@ -93,8 +99,21 @@ async function boot() {
   });
 
   // チュートリアルは UI 側の操作通知だけで進む（§19.2）
-  onAction((kind, detail) => { if (tutorial) tutorial.handleAction(kind, detail); });
+  onAction((kind, detail) => {
+    if (tutorial) tutorial.handleAction(kind, detail);
+    // 「自分が何をしたから何が起きたのか」を並べて見るため、指示も残す（§23.2）。
+    if (battle && !battle.finished && kind.startsWith('order:')) {
+      const u = commands.selection[0];
+      battle.recorder.event('order', loop.simTime, {
+        unit: u, target: detail.target, pos: u ? u.pos : null,
+        label: kind.slice(6),
+      });
+    }
+  });
   screens.onReset = () => { progress = resetProgress(); screens.progress = progress; };
+
+  review = new ReviewScreen(el('review'));
+  screens.onReview = () => { if (lastRecording) review.open(lastRecording); };
 
   audio = new AudioManager(progress.settings);
   setupAudioUi();
@@ -116,6 +135,8 @@ async function boot() {
     get minimap() { return minimap; },
     get tutorial() { return tutorial; },
     scene, loop, screens, progress, audio, stages: STAGES, tutorials: TUTORIALS, telemetry,
+    get recording() { return lastRecording; },
+    get review() { return review; },
     /** 検証用: ステージを直接開始する（ブリーフィング既定の兵装で出撃） */
     startStage(i) { screens.showBriefing(STAGES[i]); startBattle(STAGES[i], screens.loadouts.map((l) => l.slice())); },
   };
@@ -133,6 +154,10 @@ function fixedUpdate(dt) {
   handleDeaths(world);
   pruneFormations(world);
   mission.update(dt);
+
+  // 記録は**全部が動いたあと**に取る。途中で取ると、
+  // 同じ時刻のはずのユニットとコンタクトが1ステップずれる。
+  battle.recorder?.tick(loop.simTime);
 
   if (mission.state !== MISSION.ACTIVE && !battle.finished) finishBattle();
 }
@@ -286,6 +311,13 @@ function startBattle(stage, loadouts, asTutorial) {
 }
 
 function buildBattle(stage, loadouts, asTutorial) {
+  // ID を振り直す。ID はレーダーの扇の分担や逆探知の誤差に効くので、
+  // 通し番号のままだと「同じステージ・同じシードでも、その回までに何戦したか」で
+  // 経過が変わる。同じ条件からは同じ戦闘が始まるようにしておく。
+  resetUnitIds();
+  resetMissileIds();
+  resetFormationIds();
+
   const terrain = new Terrain(stage.terrain);
   scene.reset();
   scene.setTerrain(terrain);
@@ -346,6 +378,8 @@ function buildBattle(stage, loadouts, asTutorial) {
   world.effects.onExplosion = (pos, size, kind) => audio.explosion(pos, size, kind);
 
   world.onFire = (shooter, target, weapon, missile) => {
+    world.recorder?.event('fire', loop.simTime,
+      { unit: shooter, target, weapon: weapon.id, pos: shooter.pos });
     if (shooter.side === world.playerSide) {
       world.log(`${shooter.name} ${weapon.id} 発射`);
       telemetry.markShot(weapon.id);
@@ -358,7 +392,10 @@ function buildBattle(stage, loadouts, asTutorial) {
     if (m.target && m.target.side === world.playerSide) world.log(`${m.target.name} デコイ有効`);
   };
   world.onDecoy = (unit) => audio.flare(unit.pos);
-  world.onMissileHit = (m) => {
+  world.onMissileHit = (m, target, dist) => {
+    world.recorder?.event('hit', loop.simTime,
+      { unit: m.launcher, target, weapon: m.weapon.id, pos: m.pos,
+        label: dist != null && dist > 25 ? '至近弾' : '直撃' });
     if (m.side === world.playerSide) telemetry.markHit(m.weapon.id);
   };
   // 機銃は実体弾（§22.2）。曳光は毎フレーム弾の位置から描かれるので、
@@ -399,7 +436,11 @@ function buildBattle(stage, loadouts, asTutorial) {
     stage, world, terrain, detection: world.detection, combat, pilotAI,
     mission, contacts, objectiveMarkers, finished: false,
     kills: 0, losses: 0,
+    // 振り返り用の記録（§23）。チュートリアルでも取る — 手順の検証に使えるため。
+    recorder: new Recorder(stage, world),
   };
+  world.recorder = battle.recorder;
+  battle.recorder.sample(0);          // 開始時の配置を1枚残す
 
   // 初期カメラ
   const lead = world.units.find((u) => u.side === SIDE.BLUE && u.kind === 'aircraft');
@@ -657,6 +698,12 @@ function finishBattle() {
     pointsLeft: world.weaponPoints,
     rank: rating ? rating.rank : null,
   });
+  battle.recorder.sample(loop.simTime);        // 最後の配置を残す
+  battle.recorder.finish(clear ? 'clear' : 'fail', {
+    sec: Math.round(loop.simTime), kills: battle.kills, losses: battle.losses,
+    pointsLeft: world.weaponPoints, rank: rating ? rating.rank : null,
+  });
+  lastRecording = battle.recorder.toJSON();
   audio.setAlarm(0);
   audio.setEngine(0, 1);
   setTimeout(() => {
@@ -686,6 +733,9 @@ function handleDeaths(world) {
 
     telemetry.mark(u.deathCause === 'withdraw' ? 'withdraw' : (mine ? 'loss' : 'kill'),
       loop.simTime, u, { cause: u.deathCause || '被弾', kind: u.kind });
+    battle?.recorder?.event(
+      u.deathCause === 'withdraw' ? 'withdraw' : (mine ? 'loss' : 'kill'),
+      loop.simTime, { unit: u, pos: u.pos, cause: u.deathCause || '被弾' });
 
     // 戦域離脱は撃墜ではない。爆発も戦果カウントもしない。
     if (u.deathCause === 'withdraw') {

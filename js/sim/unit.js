@@ -5,6 +5,16 @@ import * as THREE from 'three';
 
 let nextId = 1;
 
+/**
+ * ID を振り直す。**戦闘を組むたびに呼ぶ**。
+ *
+ * ID は見分けのためだけの数字ではない。レーダーの扇の分担や逆探知の位置誤差が
+ * ID から決まるので、通し番号のままだと**同じステージを同じシードで始めても、
+ * その回までに何戦したかで経過が変わる**（`tools/bench.js` の注意書きはこれ）。
+ * 記録した戦闘をあとから追う土台として、ここは毎回同じところから始める。
+ */
+export function resetUnitIds() { nextId = 1; }
+
 export const SIDE = { BLUE: 'blue', RED: 'red' };
 
 export class Unit {
