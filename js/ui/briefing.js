@@ -66,6 +66,13 @@ export class ScreenManager {
         ready: true,
       },
       {
+        act: 'openReplay',
+        name: 'リプレイ',
+        sub: '保存した記録を読み込んで見返す',
+        state: 'ファイルを開く',
+        ready: true,
+      },
+      {
         act: '',
         name: 'キャンペーン',
         sub: '連続したミッションを戦い抜く',
@@ -453,6 +460,10 @@ export class ScreenManager {
       // 同じ種でやり直す（§24.3）。運が違うと、指示を変えた効果を比べられない
       case 'rerun':
         this.onRerun?.();
+        break;
+      // タイトルから、保存した記録を開く（§23.5）
+      case 'openReplay':
+        this.onOpenReplay?.();
         break;
       case 'reset':
         if (this.onReset) this.onReset();

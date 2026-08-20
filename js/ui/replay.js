@@ -50,8 +50,13 @@ export class ReplayPlayer {
     /** 追いかける機体（null なら自由） */
     this.followId = null;
 
+    /** 時間のつまみを掴んでいるあいだ true。掴んでいる間はパネルを作り直さない */
+    this._dragging = false;
+
     this._onClick = (e) => this._click(e);
     this._onInput = (e) => this._input(e);
+    this._onChange = (e) => this._change(e);
+    this._onKey = (e) => this._key(e);
     this._lastBarKey = null;
   }
 
@@ -116,6 +121,9 @@ export class ReplayPlayer {
     this.bar.classList.remove('hidden');
     this.bar.addEventListener('click', this._onClick);
     this.bar.addEventListener('input', this._onInput);
+    this.bar.addEventListener('change', this._onChange);
+    // 戦闘中と同じく Space で止める／動かす。操作を覚え直させない
+    window.addEventListener('keydown', this._onKey);
     this._lastBarKey = null;
     this._apply(0);
     this._renderBar(true);
@@ -125,6 +133,9 @@ export class ReplayPlayer {
     this.bar.classList.add('hidden');
     this.bar.removeEventListener('click', this._onClick);
     this.bar.removeEventListener('input', this._onInput);
+    this.bar.removeEventListener('change', this._onChange);
+    window.removeEventListener('keydown', this._onKey);
+    this._dragging = false;
     this.bar.innerHTML = '';
     this.scene.reset();
     this.units = [];
@@ -150,10 +161,35 @@ export class ReplayPlayer {
     }
   }
 
+  /**
+   * つまみを動かしている最中。
+   *
+   * **ここでパネルを組み直してはいけない。** `innerHTML` を入れ替えると
+   * 掴んでいた `<input>` ごと作り直されるので、その場でドラッグが切れる。
+   * 動かせるのは1目盛りずつ、という状態になっていた。
+   */
   _input(e) {
     if (e.target.dataset.rp !== 'time') return;
-    this._seek(Number(e.target.value));
+    this._dragging = true;
     this.playing = false;
+    this._seek(Number(e.target.value));
+    this._lightBar();
+  }
+
+  /** つまみを離した。ここで初めて組み直す */
+  _change(e) {
+    if (e.target.dataset.rp !== 'time') return;
+    this._dragging = false;
+    this._renderBar(true);
+  }
+
+  _key(e) {
+    if (!this.data) return;
+    if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+    if (e.code !== 'Space') return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.playing = !this.playing;
     this._renderBar(true);
   }
 
@@ -270,16 +306,21 @@ export class ReplayPlayer {
 
   // -------------------------------------------------------------- 操作パネル
 
+  /** 時計とつまみだけ動かす（組み直さない） */
+  _lightBar() {
+    const cl = this.bar.querySelector('.rp-clock');
+    if (cl) cl.textContent = `${fmt(this.time)} / ${fmt(this.duration)}`;
+    if (this._dragging) return;          // つまみはプレイヤーが握っている
+    const sl = this.bar.querySelector('[data-rp="time"]');
+    if (sl) sl.value = String(this.time);
+  }
+
   _renderBar(force) {
+    // 掴んでいるあいだは何があっても組み直さない
+    if (this._dragging) { this._lightBar(); return; }
     // つまみと時計以外は変わらないので、変わったときだけ組み直す
     const key = `${this.playing}|${this.speed}|${this.followId}`;
-    if (!force && key === this._lastBarKey) {
-      const sl = this.bar.querySelector('[data-rp="time"]');
-      if (sl) sl.value = String(this.time);
-      const cl = this.bar.querySelector('.rp-clock');
-      if (cl) cl.textContent = `${fmt(this.time)} / ${fmt(this.duration)}`;
-      return;
-    }
+    if (!force && key === this._lastBarKey) { this._lightBar(); return; }
     this._lastBarKey = key;
 
     const sp = SPEEDS.map((v) => `<button data-rp="speed" data-v="${v}"
@@ -291,7 +332,7 @@ export class ReplayPlayer {
     this.bar.innerHTML = `
       <div class="rp-row rp-top">
         <span class="rp-title">REPLAY — ${this.data.stage.name}</span>
-        <span class="rp-hint">WASD 視点移動 / QE 旋回 / RF 仰角 / ホイール 拡大</span>
+        <span class="rp-hint">Space 再生／一時停止 / WASD 視点移動 / QE 旋回 / RF 仰角 / ホイール 拡大</span>
         <button data-rp="close" class="rp-close">閉じる</button>
       </div>
       <div class="rp-row">

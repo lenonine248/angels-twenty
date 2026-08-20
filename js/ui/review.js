@@ -14,7 +14,7 @@
 // どちらかが最後まで分からない。
 
 import { Terrain, MAP_SIZE, CELLS } from '../world/terrain.js';
-import { downloadRecording, parseRecording } from '../core/recorder.js';
+import { downloadRecording, pickRecordingFile } from '../core/recorder.js';
 
 /** 出来事の見た目 */
 const EVENT_STYLE = {
@@ -112,23 +112,15 @@ export class ReviewScreen {
     this._render();
   }
 
-  _pickFile() {
-    const inp = document.createElement('input');
-    inp.type = 'file';
-    inp.accept = '.json,application/json';
-    inp.addEventListener('change', async () => {
-      const f = inp.files && inp.files[0];
-      if (!f) return;
-      try {
-        const data = parseRecording(await f.text());
-        this.open(data);
-      } catch (err) {
-        // 黙って開かない。読めない理由が分からないほうが困る
-        const box = this.root.querySelector('.rv-msg');
-        if (box) box.textContent = `読み込めません: ${err.message}`;
-      }
-    });
-    inp.click();
+  async _pickFile() {
+    try {
+      const data = await pickRecordingFile();
+      if (data) this.open(data);
+    } catch (err) {
+      // 黙って開かない。読めない理由が分からないほうが困る
+      const box = this.root.querySelector('.rv-msg');
+      if (box) box.textContent = `読み込めません: ${err.message}`;
+    }
   }
 
   // -------------------------------------------------------------- 描画

@@ -173,6 +173,28 @@ export function downloadRecording(rec, filename) {
 }
 
 /**
+ * ファイルを選ばせて記録を読む。
+ * 振り返り画面からもタイトルからも呼ぶので、口はここ1つにしておく。
+ *
+ * @returns {Promise<object|null>} 選ばなければ null。読めなければ throw
+ */
+export function pickRecordingFile() {
+  return new Promise((resolve, reject) => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.json,application/json';
+    inp.addEventListener('change', async () => {
+      const f = inp.files && inp.files[0];
+      if (!f) { resolve(null); return; }
+      try { resolve(parseRecording(await f.text())); } catch (e) { reject(e); }
+    });
+    // 選ばずに閉じた場合。ブラウザによっては change が来ないので保険を置く
+    inp.addEventListener('cancel', () => resolve(null));
+    inp.click();
+  });
+}
+
+/**
  * 読み込む。壊れた・古い記録は理由を付けて弾く。
  * 黙って半端に開くと、振り返り画面が空で出て原因が分からなくなる。
  */

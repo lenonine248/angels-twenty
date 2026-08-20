@@ -18,7 +18,7 @@ import { loadProgress, markCleared, markRating, resetProgress, saveSettings } fr
 import { evaluate, isBetterRank, RANKS } from './data/rating.js';
 import { AudioManager } from './core/audio.js';
 import * as telemetry from './core/telemetry.js';
-import { Recorder } from './core/recorder.js';
+import { Recorder, pickRecordingFile } from './core/recorder.js';
 import { Aircraft } from './sim/aircraft.js';
 import { GroundUnit, findFlatSpot } from './sim/ground.js';
 import { Airbase, pickRunwayHeading, flattenRunway } from './sim/airbase.js';
@@ -57,6 +57,10 @@ let minimap = null;
 let lastRecording = null;
 /** 直近の戦果画面の中身。振り返りから戻ったときに出し直すために覚えておく */
 let lastResult = null;
+/** 振り返り画面をどこから開いたか。閉じたときの戻り先が変わる */
+let viewingFrom = 'result';
+/** いま見ている記録（3D再生から戻るときに使う） */
+let viewingData = null;
 let review = null;
 let replay = null;
 let updateCameraInput = null;
@@ -117,7 +121,30 @@ async function boot() {
   screens.onReset = () => { progress = resetProgress(); screens.progress = progress; };
 
   review = new ReviewScreen(el('review'));
-  screens.onReview = () => { if (lastRecording) review.open(lastRecording); };
+  screens.onReview = () => {
+    if (!lastRecording) return;
+    viewingFrom = 'result';
+    viewingData = lastRecording;
+    review.open(lastRecording);
+  };
+  // タイトルから、保存した記録を開く（§23.5）。
+  // 戻り先はタイトル。戦果画面から開いたときと戻り先が違うので、来た場所を覚える。
+  screens.onOpenReplay = async () => {
+    let data = null;
+    try {
+      data = await pickRecordingFile();
+    } catch (err) {
+      screens.showTitle();
+      pushLog(`記録を読み込めません: ${err.message}`);
+      window.alert(`記録を読み込めません
+${err.message}`);
+      return;
+    }
+    if (!data) return;
+    viewingFrom = 'title';
+    viewingData = data;
+    review.open(data);
+  };
   // 同じ種で戦い直す（§24.3）。搭載も同じものを使う
   screens.onRerun = () => {
     if (!lastResult) return;
@@ -129,21 +156,31 @@ async function boot() {
   review.onClose = () => {
     if (replay && replay.isOpen) return;                 // 3D再生へ移るところ
     if (!el('screens').classList.contains('hidden')) return;
-    if (lastResult) screens.showResult(lastResult.stage, lastResult.result, lastResult.stats);
-    else screens.showTitle();
+    if (viewingFrom === 'result' && lastResult) {
+      screens.showResult(lastResult.stage, lastResult.result, lastResult.stats);
+    } else {
+      screens.showTitle();
+    }
   };
 
   replay = new ReplayPlayer(el('replayBar'), scene);
   // 振り返り画面から3D再生へ。
   // 戦果画面(#screens)は開いたままなので、3Dを見せるには畳む必要がある。
   review.onReplay = (data) => {
+    viewingData = data;
     review.close();
     screens.hide();
     el('hud').classList.add('hidden');
     replay.open(data);
   };
-  // 再生を終えたら、来た場所（振り返り画面）へ戻す
-  replay.onClose = () => { scene.reset(); if (lastRecording) review.open(lastRecording); };
+  // 再生を終えたら、来た場所（振り返り画面）へ戻す。
+  // **いま見ていた記録**を開き直す。lastRecording を使うと、
+  // ファイルから読んだ記録を見ていたのに直近の戦闘へすり替わる。
+  replay.onClose = () => {
+    scene.reset();
+    if (viewingData) review.open(viewingData);
+    else screens.showTitle();
+  };
 
   audio = new AudioManager(progress.settings);
   setupAudioUi();
@@ -1057,6 +1094,8 @@ function setupTimeControls() {
     if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
     switch (e.code) {
       case 'Space':
+        // リプレイ中は再生の一時停止に使う（ui/replay.js が受ける）
+        if (replay && replay.isOpen) break;
         e.preventDefault(); loop.togglePause(); sync();
         notify('pause', { paused: loop.paused });
         break;
