@@ -27,7 +27,14 @@ export function lostLifetimeOf(unit) {
 }
 /** 電波逆探知の距離(m) */
 const RWR_RANGE = 60000;
-/** 逆探知の位置誤差(m) */
+/**
+ * 逆探知の位置誤差(m)。**最大距離のときの値**で、近づくほど縮む（§25.2）。
+ *
+ *     誤差 = RWR_POS_ERROR × (距離 / RWR_RANGE)
+ *
+ * 60km で 1,000m、30km で 500m、14km（AGM射程）で 233m。
+ * 目視(8km)まで詰めれば 0 になる。
+ */
 export const RWR_POS_ERROR = 1000;
 /** ルックダウン減衰: 目標が自機より低く、地表からこの高度以下なら探知距離が半減 */
 const LOOKDOWN_AGL = 1000;
@@ -66,6 +73,15 @@ export class Contact {
      * 一度目視した静止目標の記憶）と区別できない。表示を分けるにはこれが要る。
      */
     this.approx = false;
+    /**
+     * いま持っている座標の誤差(m)。0 なら正確。
+     *
+     * **いちばん良かった測定値を残す**（§25.3）。一度詰めて掴んだ精度は、
+     * 離れても保つ。これで「一度詰めて測り、離れて撃つ」が成立する。
+     * ただし**静止目標だけ**。動くものの位置は覚えていても古くなるだけなので、
+     * そのつどの測定で置き換える。
+     */
+    this.err = Infinity;
     this.ever = false;
     this.firstSeen = time;
     this.trackStart = time;
@@ -87,7 +103,7 @@ export class Contact {
     return !this.detected && this.attacked && this.unit.static;
   }
 
-  observe(unit, time, level, exact) {
+  observe(unit, time, level, exact, dist = 0) {
     if (!this.detected) this.trackStart = time;      // 追尾開始
     this.detected = true;
     this.ever = true;
@@ -100,16 +116,34 @@ export class Contact {
     this.exactNow = exact;
     if (exact) {
       this.pos.copy(unit.pos);
-      this.approx = false;
+      this.err = 0;
     } else {
-      // 逆探知だけの間は位置がぶれる。毎回同じズレになるよう固定オフセットを使う。
-      if (!this._offset) this._offset = deterministicOffset(unit.id, RWR_POS_ERROR);
-      this.pos.set(unit.pos.x + this._offset.x, unit.pos.y, unit.pos.z + this._offset.z);
-      this.approx = true;
+      // 逆探知だけの間は位置がぶれる。ズレの向きは機体IDから決まる固定値で、
+      // 大きさだけが距離で縮む。向きまで揺らすと印がふらついて読めない。
+      if (!this._offset) this._offset = deterministicOffset(unit.id, 1);
+      const mag = RWR_POS_ERROR * clamp(dist / RWR_RANGE, 0, 1);
+      if (!unit.static) {
+        // 動く目標は覚えても古くなる。そのつど置き換える
+        this._place(unit, mag);
+      } else if (mag < this.err) {
+        // 静止目標は「これまででいちばん良い測定」を残す
+        this._place(unit, mag);
+      }
     }
+    this.approx = this.err > 0;
     this.heading = unit.heading;
     this.speed = unit.speed || 0;
     this.attacked = false;      // 見えている＝状態は確定している
+  }
+
+  /** 誤差 mag で座標を置く */
+  _place(unit, mag) {
+    this.err = mag;
+    this.pos.set(
+      unit.pos.x + this._offset.x * mag,
+      unit.pos.y,
+      unit.pos.z + this._offset.z * mag,
+    );
   }
 
   /** ロスト中の推測進路（デッドレコニング） */
@@ -173,21 +207,26 @@ export class DetectionSystem {
         const trackable = target.alive || (target.static && map.has(target.id));
         if (!trackable) continue;
 
-        let best = -1, exact = false;
+        let best = -1, exact = false, near = Infinity;
         for (const s of sensors) {
           const r = evaluate(s, target, terrain, this.stats);
+          if (r.level < 0) continue;
+          // 誤差は距離で決まるので、**捉えているうちで最も近い**センサーを使う
+          const d = s.pos.distanceTo(target.pos);
+          if (d < near) near = d;
           if (r.level > best) { best = r.level; exact = r.exact; }
           else if (r.level === best && r.exact) exact = true;
+          // DETAILED は目視でしか出ず、目視は必ず exact なのでここで打ち切ってよい
           if (best === LEVEL.DETAILED) break;
         }
 
         const c = map.get(target.id);
         if (best >= 0) {
           if (!target.alive) { map.delete(target.id); continue; }   // 破壊を確認した
-          if (c) c.observe(target, this.time, best, exact);
+          if (c) c.observe(target, this.time, best, exact, near);
           else {
             const nc = new Contact(target, this.time);
-            nc.observe(target, this.time, best, exact);
+            nc.observe(target, this.time, best, exact, near);
             map.set(target.id, nc);
           }
         } else if (c) {
@@ -314,7 +353,11 @@ function byRwr(sensor, target, terrain, stats) {
   return LEVEL.IDENTIFIED;
 }
 
-/** ユニットIDから決まる固定のズレ。逆探知の位置がふらつかないようにする。 */
+/**
+ * ユニットIDから決まる固定のズレの**向き**（長さは 0.45〜1.0 の係数）。
+ * 逆探知の位置がふらつかないようにするため、向きは最後まで変えない。
+ * 大きさは呼ぶ側が距離から決める（§25.2）。
+ */
 function deterministicOffset(id, magnitude) {
   let h = Math.imul(id ^ 0x9e3779b9, 0x85ebca6b);
   h ^= h >>> 13;

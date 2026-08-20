@@ -184,7 +184,10 @@ function syncMarker(g, c, camera, terrain, size, time) {
   err.visible = !!c.approx;
   if (err.visible) {
     err.position.y = -agl;                      // 地表に敷く
-    err.scale.set(RWR_POS_ERROR, 1, RWR_POS_ERROR);
+    // 円の大きさは**いま持っている誤差**。近づくほど縮むので、
+    // 「掴めてきている」ことが画面から分かる（§25.2）
+    const r = Number.isFinite(c.err) ? Math.max(60, c.err) : RWR_POS_ERROR;
+    err.scale.set(r, 1, r);
     err.material.color.copy(color);
     err.material.opacity = opacity * 0.45;
   }
@@ -242,7 +245,7 @@ function labelFor(c) {
     if (c.level >= LEVEL.DETAILED && c.detected) base += ` ${Math.round(c.speed)}m/s`;
   }
 
-  if (c.approx) base += ' [逆探知 ±1km]';
+  if (c.approx) base += ` [逆探知 ±${Math.round(c.err)}m]`;
   if (c.unconfirmed) base += ' ?';
   else if (c.state === 'memory') base += ' [記憶]';
   return base;

@@ -457,7 +457,10 @@ export class Aircraft extends Unit {
         // ここから先は地上目標。
         // 進入と離脱を分ける（§22.5）。真っ直ぐ向かうだけだと、通り過ぎた瞬間に
         // 方位が反転して引き返し、目標の周りを回り続けることになる。
-        const run = groundAttackRun(this, t);
+        // 地上目標は**そこに居ると思っている位置**へ向かう（§25.4）。
+        // 逆探知だけで掴んでいる相手なら、そのぶんずれた場所へ入っていく。
+        const aim = (world.believedPosOf && world.believedPosOf(this.side, t)) || t.pos;
+        const run = groundAttackRun(this, t, aim);
         desiredHeading = run.heading;
         this.attackRun = run.phase;
         const egress = run.phase === 'out';

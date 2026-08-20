@@ -388,6 +388,8 @@ export class ScreenManager {
         <div class="screen-foot">
           <button data-act="select" class="ghost">ステージモードへ</button>
           <button data-act="review" class="ghost">戦闘を振り返る</button>
+          <button data-act="rerun" class="ghost"
+            title="同じ乱数の種で、まったく同じ状況をもう一度">同じ条件で</button>
           <button data-act="retry" class="go">${clear ? 'もう一度' : '再挑戦'}</button>
         </div>
       </div>`);
@@ -447,6 +449,10 @@ export class ScreenManager {
         break;
       case 'retry':
         this.showBriefing(this.stage);
+        break;
+      // 同じ種でやり直す（§24.3）。運が違うと、指示を変えた効果を比べられない
+      case 'rerun':
+        this.onRerun?.();
         break;
       case 'reset':
         if (this.onReset) this.onReset();

@@ -118,6 +118,12 @@ async function boot() {
 
   review = new ReviewScreen(el('review'));
   screens.onReview = () => { if (lastRecording) review.open(lastRecording); };
+  // 同じ種で戦い直す（§24.3）。搭載も同じものを使う
+  screens.onRerun = () => {
+    if (!lastResult) return;
+    startBattle(lastResult.stage, lastResult.loadouts.map((l) => l.slice()),
+      false, lastResult.seed);
+  };
   // 3D再生へ行くときに戦果画面を畳んでいるので、閉じたら出し直す。
   // 出し直さないと、何も無い画面に取り残される（実際にそうなった）。
   review.onClose = () => {
@@ -162,8 +168,14 @@ async function boot() {
     get recording() { return lastRecording; },
     get review() { return review; },
     get replay() { return replay; },
-    /** 検証用: ステージを直接開始する（ブリーフィング既定の兵装で出撃） */
-    startStage(i) { screens.showBriefing(STAGES[i]); startBattle(STAGES[i], screens.loadouts.map((l) => l.slice())); },
+    /**
+     * 検証用: ステージを直接開始する（ブリーフィング既定の兵装で出撃）。
+     * seed を渡すと同じ乱数で始められる（§24.3）。
+     */
+    startStage(i, seed) {
+      screens.showBriefing(STAGES[i]);
+      startBattle(STAGES[i], screens.loadouts.map((l) => l.slice()), false, seed);
+    },
   };
 }
 
@@ -325,7 +337,7 @@ function updateAudio(realDt) {
 
 // ================================================================ 戦闘の構築
 
-function startBattle(stage, loadouts, asTutorial) {
+function startBattle(stage, loadouts, asTutorial, seed) {
   screens.hide();
   el('loading').classList.remove('hidden');
   el('loading').querySelector('.loading-msg').textContent = 'GENERATING TERRAIN...';
@@ -334,7 +346,7 @@ function startBattle(stage, loadouts, asTutorial) {
   // （nextFrame は rAF が止まるバックグラウンドタブでもタイマーで進む）
   nextFrame().then(() => nextFrame()).then(() => {
     try {
-      buildBattle(stage, loadouts, asTutorial);
+      buildBattle(stage, loadouts, asTutorial, seed);
       el('loading').classList.add('hidden');
       el('hud').classList.remove('hidden');
       audio.startMusic('battle');
@@ -342,13 +354,27 @@ function startBattle(stage, loadouts, asTutorial) {
   });
 }
 
-function buildBattle(stage, loadouts, asTutorial) {
+/**
+ * 戦闘ごとの乱数の種を引く（§24.2）。
+ *
+ * **ここは `Math.random()` を使ってよい唯一の場所**。
+ * `core/rng.js` の「Math.random() は経由しない」という決まりは
+ * シミュレーションの中の話で、その外側で出発点を1つ引くのは別。
+ * 引いた種は記録に残すので、あとから同じ戦闘をやり直せる（§24.3）。
+ */
+function drawBattleSeed() {
+  return (Math.random() * 0xffffffff) >>> 0;
+}
+
+function buildBattle(stage, loadouts, asTutorial, seed) {
   // ID を振り直す。ID はレーダーの扇の分担や逆探知の誤差に効くので、
   // 通し番号のままだと「同じステージ・同じシードでも、その回までに何戦したか」で
   // 経過が変わる。同じ条件からは同じ戦闘が始まるようにしておく。
   resetUnitIds();
   resetMissileIds();
   resetFormationIds();
+
+  const battleSeed = seed != null ? (seed >>> 0) : drawBattleSeed();
 
   const terrain = new Terrain(stage.terrain);
   scene.reset();
@@ -364,7 +390,9 @@ function buildBattle(stage, loadouts, asTutorial) {
     rig: scene.rig,
     detection: null,
     effects: null,
-    rng: makeRng((stage.terrain.seed ^ 0x7f3d9a) >>> 0),
+    // 地形の種とは分ける。地形まで毎回変わると覚えた地形が使えず、
+    // ミッションの個性も消える。**地図は同じ、戦闘の綾は毎回違う**（§24.2）。
+    rng: makeRng(battleSeed),
     log: pushLog,
     weaponPoints: stage.weaponPoints,
     weaponPointsMax: stage.weaponPoints,
@@ -376,6 +404,20 @@ function buildBattle(stage, loadouts, asTutorial) {
       if (u.side === this.playerSide || !this.detection) return u.pos;
       const c = this.detection.contactsFor(this.playerSide).get(u.id);
       return c ? c.pos : u.pos;
+    },
+    /**
+     * その陣営が「そこに居ると思っている」座標。**真の位置と一致するなら null**（§25.4）。
+     *
+     * null を返す形にしているのは、呼ぶ側に「ずれているのか」を必ず意識させるため。
+     * 常に座標を返すと、正確に見えている相手にまで**座標を狙う兵装**を撃つことになり、
+     * 動く目標を追えなくなる（実際にそうなっていた）。
+     */
+    believedPosOf(side, u) {
+      if (u.side === side || !this.detection) return null;
+      const c = this.detection.contactsFor(side).get(u.id);
+      if (!c) return null;
+      if (c.detected && !c.approx) return null;      // いま正確に見えている
+      return c.pos;
     },
     spawn(unit) {
       this.units.push(unit);
@@ -468,8 +510,10 @@ function buildBattle(stage, loadouts, asTutorial) {
     stage, world, terrain, detection: world.detection, combat, pilotAI,
     mission, contacts, objectiveMarkers, finished: false,
     kills: 0, losses: 0,
+    seed: battleSeed,
+    loadouts: (loadouts || []).map((l) => l.slice()),
     // 振り返り用の記録（§23）。チュートリアルでも取る — 手順の検証に使えるため。
-    recorder: new Recorder(stage, world),
+    recorder: new Recorder(stage, world, battleSeed),
   };
   world.recorder = battle.recorder;
   battle.recorder.sample(0);          // 開始時の配置を1枚残す
@@ -665,6 +709,9 @@ function seedKnownContacts(world, units) {
     c.ever = true;
     c.detected = false;
     c.exactNow = false;
+    // ブリーフィングの座標は正確。誤差0で入れておけば、そのあと逆探知だけで
+    // 捉え直しても**精度が落ちない**（§25.3 の「良かった測定を残す」が効く）。
+    c.err = 0;
     c.pos.copy(u.pos);
     map.set(u.id, c);
   }
@@ -738,6 +785,8 @@ function finishBattle() {
     audio.startMusic('menu');
     lastResult = {
       stage,
+      seed: battle.seed,
+      loadouts: battle.loadouts || [],
       result: clear ? 'clear' : 'fail',
       stats: {
         reason: mission.failReason || (clear ? '全目標を達成' : ''),

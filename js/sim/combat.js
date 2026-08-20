@@ -131,7 +131,10 @@ function scatter(dir, sigma, rng, out) {
  * 終末でエネルギーを失い、逃げる目標には届かない。
  * プレイヤーの判断材料と、AIの乱射抑制の両方に使う。
  */
-export function estimateHitChance(shooter, target, weapon) {
+/**
+ * @param {number} aimError 狙点のずれ(m)。掴めていない相手を撃つときに効く（§25.4）
+ */
+export function estimateHitChance(shooter, target, weapon, aimError = 0) {
   if (!weapon || !target || !target.alive) return 0;
   if (weapon.kind === 'bomb') return 0.5;      // 投下点まで行けるかどうかの話なので固定
 
@@ -162,6 +165,21 @@ export function estimateHitChance(shooter, target, weapon) {
     // 静止目標では「当たるか」ではなく「弾が届くか」だけを見る。
     p = clamp(1.15 - frac * 0.85, 0.05, 0.95);
   }
+
+  // 掴みの甘さ。**撃ちっぱなしは撃ったあと修正できない**ので、
+  // 座標がずれていればそのぶん外れる（§25.4）。
+  //
+  // これを入れないと、AI は掴めていない相手にも射程いっぱいで撃ってしまう。
+  // 実測（ミッション5・同じ種で4回）: 上陸部隊へのダメージが 332 → 163、
+  // 撃破 1 → 0 に落ちた。当たらない弾を撃ち尽くしていただけだった。
+  // 期待度に織り込めば「詰めてから撃つ」を自分で選ぶ。
+  //
+  // ARM は除く。電波そのものを追うので座標のずれを受けない。
+  if (aimError > 0 && weapon.fireAndForget && weapon.guidance !== 'arm') {
+    const reach = (weapon.blastRadius || 40)
+      + (target.spec && target.spec.size ? target.spec.size * 0.25 : 0);
+    p *= clamp(1 - (aimError * 0.7) / Math.max(30, reach), 0.05, 1);
+  }
   return clamp(p, 0.02, 0.97);
 }
 
@@ -173,6 +191,18 @@ export function hitLabel(p) {
 }
 
 export class CombatSystem {
+  /**
+   * その陣営がこの目標を狙うときの、狙点のずれ(m)。
+   * 正確に見えていれば 0（§25.4）。
+   */
+  aimErrorOf(shooter, target) {
+    const c = this.world.detection
+      && this.world.detection.contactsFor(shooter.side).get(target.id);
+    if (!c) return 0;
+    if (c.detected && !c.approx) return 0;
+    return Number.isFinite(c.err) ? c.err : 0;
+  }
+
   constructor(world) {
     this.world = world;
     world.missiles = [];
@@ -264,7 +294,8 @@ export class CombatSystem {
     // ので強くなる。どちらへ動かしても強くなるため、難易度の軸として使えない。
     // 練度は発射間隔・照準精度・反応速度・回避の質で効かせる（単調に効く軸だけ使う）。
     const need = FIRE_THRESHOLD[shooter.fireThreshold || 'mid'] ?? FIRE_THRESHOLD.mid;
-    if (weapon.kind !== 'bomb' && estimateHitChance(shooter, target, weapon) < need) return;
+    if (weapon.kind !== 'bomb'
+      && estimateHitChance(shooter, target, weapon, this.aimErrorOf(shooter, target)) < need) return;
 
     this.fire(shooter, target, weapon);
     // 練度が低いほど次弾までが遅い。手数そのものを減らす、副作用の少ない効かせ方。
@@ -360,7 +391,9 @@ export class CombatSystem {
 
     if (w.kind !== 'bomb') {
       const need = FIRE_THRESHOLD[shooter.fireThreshold || 'mid'] ?? FIRE_THRESHOLD.mid;
-      if (estimateHitChance(shooter, target, w) < need) return '期待度不足';
+      if (estimateHitChance(shooter, target, w, this.aimErrorOf(shooter, target)) < need) {
+        return '期待度不足';
+      }
     }
     return null;
   }
@@ -409,9 +442,16 @@ export class CombatSystem {
     if (w.kind === 'bomb') {
       // 無誘導爆弾は弾道解で投下点を決める。
       // 機首角度で判定すると、水平飛行では目標が常に下方にあって永久に投下できない。
-      const h = shooter.pos.y - target.pos.y;
+      //
+      // **狙うのは「信じている位置」**（§25.4）。誘導しないので、
+      // 投下点は掴んでいる座標から計算するほかない。逆探知だけで掴んでいる
+      // 目標なら、そのぶんずれたところへ落ちる。
+      const aim = this.world.believedPosOf(shooter.side, target) || target.pos;
+      const bdx = aim.x - shooter.pos.x, bdz = aim.z - shooter.pos.z;
+      const bflat = Math.hypot(bdx, bdz);
+      const h = shooter.pos.y - aim.y;
       if (h < 60 || h > w.dropAltMax) return false;
-      if (Math.abs(angleDiff(headingOf(dx, dz), shooter.heading)) > 16 * DEG) return false;
+      if (Math.abs(angleDiff(headingOf(bdx, bdz), shooter.heading)) > 16 * DEG) return false;
       // 母機の上下速度を含めた落下時間 h = -vy*t + g*t^2/2 を解く
       const pitch = shooter.pitch || 0;
       const vy = shooter.speed * Math.sin(pitch);
@@ -419,7 +459,7 @@ export class CombatSystem {
       const fallTime = (vy + Math.sqrt(vy * vy + 2 * 9.8 * h)) / 9.8;
       const throwRange = vh * fallTime;               // 投下点から着弾点までの水平距離
       // 爆風半径と同程度の窓で投下する。狭すぎると投下機会を逃し続ける。
-      return Math.abs(flat - throwRange) < 130;
+      return Math.abs(bflat - throwRange) < 130;
     }
 
     // 実効射程は高度で変わる。撃ち下ろしは終末が濃い空気になるので、
@@ -479,6 +519,17 @@ export class CombatSystem {
     if (weapon.kind === 'bomb' && weapon.dispersionPerKm) {
       const h = Math.max(0, shooter.pos.y - target.pos.y);
       m.bombDispersion = weapon.dispersionPerKm * (h / 1000);
+    }
+
+    // 撃ちっぱなしの対地兵装は**信じている座標**へ向かう（§25.4）。
+    // 撃ったあとに修正できないので、掴み違えていればそのぶん外れる。
+    //
+    // ARM は例外。電波そのものを追う兵装なので、放射源を外したら意味が消える。
+    // 「電波を出している目標には ARM、黙っている目標には詰めてから AGM」
+    // という使い分けは、この例外があって初めて生まれる。
+    if (weapon.kind === 'agm' && weapon.guidance !== 'arm' && weapon.fireAndForget) {
+      const believed = this.world.believedPosOf(shooter.side, target);
+      if (believed) m.seekTarget = { pos: believed.clone(), alive: true, speed: 0, isPoint: true };
     }
     this.world.missiles.push(m);
 

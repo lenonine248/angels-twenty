@@ -149,7 +149,9 @@ export class CommandController {
             return w && (u.kind === 'aircraft' ? w.kind === 'aam' : w.kind !== 'aam');
           });
         if (wid) {
-          const p = estimateHitChance(best.u, u, WEAPONS[wid]);
+          // 表示も同じ見積りにする。撃たない理由と食い違うと混乱するだけ
+          const aimErr = this.world.combat ? this.world.combat.aimErrorOf(best.u, u) : 0;
+          const p = estimateHitChance(best.u, u, WEAPONS[wid], aimErr);
           const l = hitLabel(p);
           rows.push(`<span class="hi-hit ${l.cls}">${wid} 命中期待 ${l.text}</span>`);
         }

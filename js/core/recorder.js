@@ -27,9 +27,11 @@ export const SAMPLE_DT = 0.5;
 export const FORMAT = 1;
 
 export class Recorder {
-  constructor(stage, world) {
+  constructor(stage, world, seed) {
     this.stage = stage;
     this.world = world;
+    /** その戦闘の乱数の種（§24）。同じ状況をやり直すために残す */
+    this.seed = seed ?? null;
     this.enabled = true;
 
     /** 静的な名簿。サンプル側は id だけ持てば済む */
@@ -127,6 +129,7 @@ export class Recorder {
     return {
       v: FORMAT,
       version: VERSION,
+      seed: this.seed,
       stage: {
         id: this.stage.id,
         name: this.stage.name,

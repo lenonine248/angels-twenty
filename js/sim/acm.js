@@ -426,11 +426,14 @@ const REATTACK_RANGE = 3500;
  * 通り抜けたら**いったん真っ直ぐ離れ、距離を取ってから入り直す**。
  * 直線の進入区間ができるので、機銃も爆弾も狙いが安定する。
  *
+ * `aimPos` は「そこに居ると思っている位置」（§25.4）。掴み違えていれば
+ * そこへ向かう。真の位置へ飛びながら別の座標へ投下する、という食い違いを避ける。
+ *
  * @returns {{heading:number, phase:'in'|'out', flat:number}}
  */
-export function groundAttackRun(self, target) {
-  const dx = target.pos.x - self.pos.x;
-  const dz = target.pos.z - self.pos.z;
+export function groundAttackRun(self, target, aimPos = target.pos) {
+  const dx = aimPos.x - self.pos.x;
+  const dz = aimPos.z - self.pos.z;
   const flat = Math.hypot(dx, dz);
   const bearing = headingOf(dx, dz);
 
