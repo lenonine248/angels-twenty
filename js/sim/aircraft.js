@@ -28,6 +28,16 @@ const RIDGE_CLIMB = 2200;
 const ALT_SMOOTH = 0.02;
 /** 爆撃機の進入高度（目標からの相対）。軽対空砲の射高1800mより上に置く。 */
 const BOMBER_RUN_ALT = 2100;
+/** 後ろに付いたと見なす距離(m)。機銃の射程800mより広く取って、手前で速度を合わせ始める */
+const TRAIL_RANGE = 2600;
+/** 後ろに付いたと見なす角度。combat.js の GUN_REAR_CONE(30度)より緩くする */
+const TRAIL_CONE = 55 * DEG;
+/** 保つ距離(m)。機銃の射程(800m)の内側で、当たりやすく、ぶつからない位置 */
+const TRAIL_HOLD = 420;
+/** 詰めるときに相手より出してよい速度差(m/s) */
+const TRAIL_OVERSPEED = 22;
+/** 近づきすぎたときに落としてよい速度差(m/s) */
+const TRAIL_UNDERSPEED = 18;
 /**
  * 登り切れないときに試す針路のずらし幅（ラジアン）。左右交互に、浅い角度から試す。
  * 引き返す角度まで含めないと、袋小路の谷に入ったときに出口が見つからない。
@@ -462,6 +472,17 @@ export class Aircraft extends Unit {
           : (Math.hypot(dx, dz) > 15000
             ? this.spec.cruiseSpeed * 1.05
             : this.altitudeMaxSpeed * 0.92);
+
+        // 後ろに付いたら、機銃の射程内に**留まる**よう速度を合わせる。
+        // 機銃は目標の後方800m・後方コーン30度でしか当たらない。
+        // 全速のまま突っ込むと数秒で撃てる窓を抜けて前へ出てしまい、
+        // 速度差ぶんだけ出し続けても最後はぶつかる位置まで詰めてしまう
+        // （爆撃機のような遅い相手ほど顕著。実際に追い抜いていた）。
+        if (t.kind === 'aircraft' && this._inTrailOf(t, dx, dz)) {
+          const err = Math.hypot(dx, dz) - TRAIL_HOLD;
+          const corr = clamp(err * 0.05, -TRAIL_UNDERSPEED, TRAIL_OVERSPEED);
+          desiredSpeed = Math.min(desiredSpeed, t.speed + corr);
+        }
         break;
       }
 
@@ -823,6 +844,20 @@ export class Aircraft extends Unit {
    *
    * @returns {boolean} 離脱行動を取ったか（true ならマップ外への引き戻しはしない）
    */
+  /**
+   * 目標の後方（機銃を当てられる位置関係）に付いているか。
+   * dx,dz は目標へのベクトル。
+   */
+  _inTrailOf(t, dx, dz) {
+    const flat = Math.hypot(dx, dz);
+    if (flat > TRAIL_RANGE) return false;
+    if (Math.abs(t.pos.y - this.pos.y) > TRAIL_RANGE) return false;
+    // 目標から見て自分が後方にいるか（目標の進行方向と、目標→自分 の向きの角度）
+    const toMe = headingOf(-dx, -dz);
+    const behind = Math.abs(angleDiff(toMe, t.heading + Math.PI));
+    return behind < TRAIL_CONE;
+  }
+
   _checkWithdraw(world) {
     if (!this.withdrawing) {
       const leaving = this.fuel <= 0 || this.aiMode === 'RTB'

@@ -657,6 +657,23 @@ button.go.warn:hover + .dt-warn { display: block; }
   color: var(--text-dim); font-size: 11px;
 }
 .screen-foot button { margin-left: auto; }
+/*
+ * 一覧画面（ステージ選択・チュートリアル）の足元。
+ *
+ * flex + margin-left:auto だと、余白がボタンの数で分配されるため
+ * 「モード選択へ」の位置がボタン1個の画面と2個の画面でずれる
+ * （実際、ステージ選択では中央、チュートリアルでは右端に出ていた）。
+ * 説明・主ボタン・副ボタンの3枠に固定して、同じボタンが同じ場所に来るようにする。
+ */
+.screen-foot.list {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+}
+.screen-foot.list > * { margin-left: 0; }
+.screen-foot.list > :first-child { justify-self: start; text-align: left; }
+.screen-foot.list > :nth-child(2) { justify-self: center; }
+.screen-foot.list > :last-child { justify-self: end; }
 #screens button {
   background: rgba(111, 216, 232, 0.09);
   border: 1px solid var(--panel-line);

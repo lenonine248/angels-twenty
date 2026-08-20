@@ -8,7 +8,7 @@ import { Terrain, MAP_SIZE, CELLS } from './world/terrain.js';
 import { SceneManager, attachCameraControls } from './world/scene.js';
 import {
   createAircraftView, syncAircraftView, aircraftDisplayLength,
-  createGroundView, syncGroundView, groundDisplayScale,
+  createGroundView, syncGroundView, groundDisplayScale, makeLabelSprite,
 } from './world/models.js';
 import { ContactRenderer } from './world/contacts.js';
 import { Effects } from './world/effects.js';
@@ -164,6 +164,7 @@ function render(alpha, realDt) {
       else syncGroundView(u, groundDisplayScale(scene.rig.distance, scene.camera, u.spec.size), visible);
     }
     contacts.update(scene.camera, terrain, size, battle.detection.time);
+    scaleObjectiveLabels(battle.objectiveMarkers, scene.camera);
     // 一時停止中は演出も止める（煙だけ流れ続けると停止しているように見えない）
     world.effects.update(loop.paused ? 0 : realDt, world, size);
     commands.update(scene.camera);
@@ -323,6 +324,8 @@ function buildBattle(stage, loadouts, asTutorial) {
 
   scene.add(terrain.buildMesh());
   scene.add(buildMapBoundary());
+  const objectiveMarkers = buildObjectiveMarkers(stage, terrain);
+  for (const marker of objectiveMarkers) scene.add(marker);
 
   world.detection = new DetectionSystem(world);
   world.effects = new Effects(scene.world);
@@ -382,7 +385,7 @@ function buildBattle(stage, loadouts, asTutorial) {
   if (!hud) hud = new Hud({ world, commands });
   else { hud.world = world; hud.commands = commands; }
 
-  minimap = new Minimap(el('minimap'), terrain, scene.rig, world, commands);
+  minimap = new Minimap(el('minimap'), terrain, scene.rig, world, commands, stage);
 
   logLines.length = 0;
   objectivesKey = null;
@@ -392,7 +395,7 @@ function buildBattle(stage, loadouts, asTutorial) {
 
   battle = {
     stage, world, terrain, detection: world.detection, combat, pilotAI,
-    mission, contacts, finished: false,
+    mission, contacts, objectiveMarkers, finished: false,
     kills: 0, losses: 0,
   };
 
@@ -922,13 +925,14 @@ function setupTimeControls() {
 // ================================================================ ミニマップ
 
 class Minimap {
-  constructor(canvas, terrain, rig, world, cmds) {
+  constructor(canvas, terrain, rig, world, cmds, stage) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.terrain = terrain;
     this.rig = rig;
     this.world = world;
     this.commands = cmds;
+    this.stage = stage;
 
     this.base = document.createElement('canvas');
     this.base.width = CELLS;
@@ -989,6 +993,18 @@ class Minimap {
       }
     }
 
+    // 到達目標（護衛の行き先など）
+    for (const o of this.stage?.objectives || []) {
+      if (o.type !== 'reach') continue;
+      const x = (o.x / MAP_SIZE) * W, y = (o.z / MAP_SIZE) * H;
+      const r = ((o.radius || 3000) / MAP_SIZE) * W;
+      ctx.strokeStyle = '#ffb648';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(3, r), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     const t = this.rig.target;
     const px = (t.x / MAP_SIZE) * W, py = (t.z / MAP_SIZE) * H;
     ctx.save();
@@ -1011,6 +1027,75 @@ class Minimap {
 }
 
 // ================================================================ その他
+
+/**
+ * 到達目標（objectives の reach）を戦場に描く。
+ *
+ * ブリーフィングの地図には出しているが、戦闘中は何も出ていなかった。
+ * 「どこまで護衛するのか」が画面から読めないと、輸送機を自分で誘導したときに
+ * どこへ向ければいいのか分からなくなる（実際に分からなくなった）。
+ */
+function buildObjectiveMarkers(stage, terrain) {
+  const out = [];
+  for (const o of stage.objectives || []) {
+    if (o.type !== 'reach') continue;
+    const radius = o.radius || 3000;
+    const ground = Math.max(0, terrain.heightAt(o.x, o.z));
+    const group = new THREE.Group();
+    group.name = `objective-${o.id}`;
+    group.position.set(o.x, ground, o.z);
+
+    // 地表の円と、そこから立ち上がる柱。上空からでも横からでも見つかるように。
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(radius * 0.94, radius, 64),
+      new THREE.MeshBasicMaterial({
+        color: 0xffb648, transparent: true, opacity: 0.5,
+        side: THREE.DoubleSide, depthTest: false,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 30;
+    ring.renderOrder = 4;
+    group.add(ring);
+
+    const pillar = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 6000, 0)]),
+      new THREE.LineBasicMaterial({
+        color: 0xffb648, transparent: true, opacity: 0.28, depthTest: false,
+      }),
+    );
+    pillar.renderOrder = 4;
+    group.add(pillar);
+
+    // ラベルは画面上で一定の大きさにする（毎フレーム scaleObjectiveLabels で合わせる）。
+    // ワールド単位で固定すると、寄れば画面いっぱい、引けば粒になる。
+    const label = makeLabelSprite('到達地点', '#ffb648');
+    label.name = 'objLabel';
+    label.position.y = 6200;
+    label.renderOrder = 8;
+    group.add(label);
+
+    out.push(group);
+  }
+  return out;
+}
+
+/** 到達目標のラベルを画面上で一定の大きさに保つ（他のラベルと同じ方式） */
+const OBJ_LABEL_PX = 16;
+function scaleObjectiveLabels(markers, camera) {
+  if (!markers) return;
+  for (const g of markers) {
+    const label = g.getObjectByName('objLabel');
+    if (!label) continue;
+    label.getWorldPosition(_labelPos);
+    const dist = camera.position.distanceTo(_labelPos);
+    const mpp = 2 * dist * Math.tan((camera.fov * Math.PI / 180) / 2) / window.innerHeight;
+    const h = OBJ_LABEL_PX * mpp;
+    label.scale.set(h * (label.material.userData.aspect || 4), h, 1);
+  }
+}
+const _labelPos = new THREE.Vector3();
 
 function buildMapBoundary() {
   const y = 60;

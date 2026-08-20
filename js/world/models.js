@@ -97,6 +97,26 @@ export function getJetGeometry(shape, key) {
   return geo;
 }
 
+/**
+ * 路面用のマテリアル。
+ *
+ * 滑走路の天面は飛行場の標高＝整地された地形とちょうど同じ高さにある
+ * （そうしないと駐機中の機体が路面に埋まる）。同一平面のままだと
+ * 深度の取り合いでちらつくので、**深度だけ手前へずらす**。
+ * 位置を持ち上げて逃げると、こんどは機体が浮いて見える。
+ */
+const pavementCache = new Map();
+function getPavementMaterial(color) {
+  if (!pavementCache.has(color)) {
+    const emissive = new THREE.Color(color).multiplyScalar(0.28);
+    pavementCache.set(color, new THREE.MeshLambertMaterial({
+      color, emissive, flatShading: true, side: THREE.DoubleSide,
+      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
+    }));
+  }
+  return pavementCache.get(color);
+}
+
 function getMaterial(color) {
   if (!materialCache.has(color)) {
     // 影側でも機影が黒く潰れないよう、わずかに自発光させる
@@ -232,8 +252,8 @@ export function groundDisplayScale(cameraDistance, camera, realSize) {
   return Math.max(1, (metersPerPixel * TARGET_PX_GROUND) / realSize);
 }
 
-function boxMesh(w, h, d, color, x = 0, y = 0, z = 0) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), getMaterial(color));
+function boxMesh(w, h, d, color, x = 0, y = 0, z = 0, material = null) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material || getMaterial(color));
   m.position.set(x, y + h / 2, z);
   return m;
 }
@@ -284,9 +304,11 @@ export function createGroundView(gu) {
       // boxMesh は「与えた y に底面を置く」。滑走路とエプロンは
       // **天面**を飛行場の標高（y=0）に合わせないと、その厚みぶんだけ
       // 路面が持ち上がり、駐機中の機体が路面に埋まって見える。
-      shape.add(boxMesh(0.20, 0.012, 1.7, 0x3a3a38, 0, -0.012, 0));   // 滑走路
+      shape.add(boxMesh(0.20, 0.012, 1.7, 0x3a3a38, 0, -0.012, 0,
+        getPavementMaterial(0x3a3a38)));                                // 滑走路
       // エプロン・管制塔・格納庫は滑走路の脇（+X）、進入端の側（+Z）にまとめる
-      shape.add(boxMesh(0.42, 0.02, 0.30, 0x44443f, 0.34, -0.02, 0.55)); // エプロン
+      shape.add(boxMesh(0.42, 0.02, 0.30, 0x44443f, 0.34, -0.02, 0.55,
+        getPavementMaterial(0x44443f)));                                // エプロン
       shape.add(boxMesh(0.10, 0.22, 0.10, c, 0.34, 0, 0.55));         // 管制塔
       for (let i = 0; i < 3; i++) {
         shape.add(boxMesh(0.16, 0.09, 0.16, dark, 0.34, 0, 0.30 - i * 0.24));

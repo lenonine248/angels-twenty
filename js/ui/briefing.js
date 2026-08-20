@@ -115,7 +115,7 @@ export class ScreenManager {
         <h1 class="game-title">ANGELS TWENTY</h1>
         <div class="screen-sub">STAGE MODE — ステージモード</div>
         <div class="stage-grid">${cards}</div>
-        <div class="screen-foot">
+        <div class="screen-foot list">
           <span>クリアすると次のミッションが解禁されます</span>
           <button data-act="title" class="ghost">モード選択へ</button>
           <button data-act="reset" class="ghost">進行状況をリセット</button>
@@ -143,9 +143,10 @@ export class ScreenManager {
         <h1 class="game-title">ANGELS TWENTY</h1>
         <div class="screen-sub">TUTORIAL — チュートリアル</div>
         <div class="stage-grid">${cards || '<div class="panel-empty">準備中</div>'}</div>
-        <div class="screen-foot">
+        <div class="screen-foot list">
           <span>好きな順番で、何度でも受けられます</span>
           <button data-act="title" class="ghost">モード選択へ</button>
+          <button data-act="select" class="ghost">ステージモードへ</button>
         </div>
       </div>`);
   }
