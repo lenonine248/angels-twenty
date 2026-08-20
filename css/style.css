@@ -639,6 +639,22 @@ button.go.warn:hover + .dt-warn { display: block; }
 .tut-box.hit .tut-step, .tut-box.done .tut-step { color: #7ec87e; }
 .tut-note { font-size: 11px; color: var(--text-dim); line-height: 1.6; margin-top: 4px; }
 
+/* 手順が指す場所を囲む枠（§19.5）。
+   クリックを邪魔しないよう pointer-events は無し。位置は毎フレーム JS が入れる。 */
+.tut-hi {
+  position: fixed;
+  border: 2px solid var(--amber);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 60;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45), 0 0 14px rgba(230, 168, 76, 0.55);
+  animation: tut-pulse 1.25s ease-in-out infinite;
+}
+@keyframes tut-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
 /* チュートリアル一覧の受講済み印・ブリーフィングの手順一覧 */
 .sc-rank.done-mark { font-size: 20px; color: #7ec87e; }
 .tb-steps { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 1.9; }

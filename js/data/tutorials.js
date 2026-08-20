@@ -250,7 +250,11 @@ export const TUTORIALS = [
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AAM-M を指定する',
         note: '指定すると「その兵装で撃て」という射撃指示になり、攻撃目標は変わりません',
-        done: 'weapon', when: (d) => d.weapon === 'AAM-M' },
+        done: 'weapon', when: (d) => d.weapon === 'AAM-M',
+        pause: true, highlight: '[data-pick="AAM-M"]',
+        // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-M')) },
       { text: '「誘導中も回避／誘導を優先」を切り替えてみる',
         note: '誘導を続ければ当たりやすく、回避を選べば自分が助かりやすい。その場で選びます',
         done: 'guard' },
@@ -387,7 +391,10 @@ export const TUTORIALS = [
     friendly: {
       base: { x: 12000, z: 38000 },
       startAirborne: true,
-      startAlt: 4500,
+      // **低空から始める**。掃射する的は 8km 先にあるので、4,500m から入ると
+      // 降下角が30度になり、機首を突っ込ませないと届かない。1,200m なら 9度で、
+      // そのまま浅く入っていける。
+      startAlt: 1200,
       // ミサイルを積まない。機銃だけの戦い方を覚えてもらう
       aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: [] }],
     },
@@ -472,16 +479,25 @@ export const TUTORIALS = [
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AAM-S を指定する',
         note: 'コスト0。スロット1つ。積めるだけ積んでも兵装ポイントは減りません',
-        done: 'weapon', when: (d) => d.weapon === 'AAM-S' },
-      { text: '敵機の後方に回り込み、命中期待度を「中」以上にする',
-        note: '赤外線は排気を見るので**後ろから撃つほど当たります**。'
-          + 'カーソルを敵に重ねると期待度が読めます',
+        done: 'weapon', when: (d) => d.weapon === 'AAM-S',
+        pause: true, highlight: '[data-pick="AAM-S"]',
+        // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-S')) },
+      // 正面から出会う配置なので「後方に回り込め」とは言えない。
+      // 後ろから撃つほど当たる、という**性質のほうは別に伝える**。
+      { text: '命中期待度が「中」以上になるまで近づく',
+        note: 'カーソルを敵に重ねると期待度が読めます。'
+          + '赤外線シーカーは排気を追うので、本当は**後ろから撃つほどよく当たります**。'
+          + '正面から入るこの状況では、そのぶん近づいて補う必要があります',
         check: (ctx) => {
           const e = unit(ctx, 'BANDIT 1');
           return !!e && mine(ctx).some((u) => estimateHitChance(u, e, WEAPONS['AAM-S']) >= 0.32);
         } },
       { text: 'AAM-S を発射する',
-        note: '撃ちっぱなしです。撃った瞬間に離脱しても当たります',
+        note: '射程に入れば自動で撃ちます。急ぐなら、兵装を指定した状態で'
+          + '敵を右クリックすると射撃指示になります。'
+          + '撃ちっぱなしなので、撃った瞬間に離脱しても当たります',
         done: 'fire', when: (d) => d.weapon === 'AAM-S' },
       { text: '敵機を撃墜する',
         note: '外れても構いません。安いので何発でも撃てます',
@@ -521,7 +537,8 @@ export const TUTORIALS = [
         note: '射程20km。高度が高いほど実効射程は伸びます',
         done: 'weapon', when: (d) => d.weapon === 'AAM-M' },
       { text: 'AAM-M を発射する',
-        note: '射程に入れば自動で撃ちます。急ぐなら敵を右クリックして射撃指示を出せます',
+        note: '射程(20km)に入れば自動で撃ちます。急ぐなら、兵装を指定した状態で'
+          + '敵を右クリックすると射撃指示になります',
         done: 'fire', when: (d) => d.weapon === 'AAM-M' },
       { text: '誘導が続いているあいだ、機体の動きを見る',
         note: '目標をレーダーの扇に入れたまま斜めに飛ぶ「クランク」をします。'
@@ -532,7 +549,7 @@ export const TUTORIALS = [
       { text: '「誘導中も回避／誘導を優先」を切り替えてみる',
         note: '撃たれたときに、誘導を続けるか自分の身を守るかの選択です。'
           + '中距離AAMを使うということは、この判断を毎回することになります',
-        done: 'guard' },
+        done: 'guard', pause: true, highlight: '[data-guard]' },
       { text: '敵機を撃墜する',
         check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
     ],
@@ -567,7 +584,11 @@ export const TUTORIALS = [
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AAM-A を指定する',
         note: 'スロット2つを使います。4スロットのF-1には2発しか積めません',
-        done: 'weapon', when: (d) => d.weapon === 'AAM-A' },
+        done: 'weapon', when: (d) => d.weapon === 'AAM-A',
+        pause: true, highlight: '[data-pick="AAM-A"]',
+        // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-A')) },
       { text: 'AAM-A を発射する',
         note: '射程は中距離AAMと同じ20km。撃ち方も同じです',
         done: 'fire', when: (d) => d.weapon === 'AAM-A' },
@@ -575,9 +596,13 @@ export const TUTORIALS = [
         note: 'ここが中距離AAMとの決定的な差。誘導が要らないので、'
           + '撃った瞬間に背を向けて構いません。ミサイルは自分で当たりに行きます',
         done: 'order:move' },
-      { text: '離れたまま敵機が墜ちるのを見届ける',
-        note: '中距離AAMなら、ここで背を向けた時点で外れています',
-        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+      // 「撃墜」までは求めない。相手はフレアを撒き、回避もする。
+      // 2発しか積めない兵装（スロット2×2）なので、外れ続けると行き止まりになる。
+      // ここで見せたいのは**背を向けても誘導が続いていること**なので、命中で足りる。
+      { text: '離れたまま、ミサイルが当たるのを見届ける',
+        note: '中距離AAMなら、ここで背を向けた時点で外れています。'
+          + '外れたらもう1発撃ってください',
+        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && (!u.alive || u.hp < u.maxHp); } },
     ],
   },
 
@@ -614,9 +639,15 @@ export const TUTORIALS = [
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AGM を指定する',
         note: 'コスト5・スロット2。A-3 は6スロットなので3発積めます',
-        done: 'weapon', when: (d) => d.weapon === 'AGM' },
+        done: 'weapon', when: (d) => d.weapon === 'AGM',
+        pause: true, highlight: '[data-pick="AGM"]',
+        // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AGM')) },
       { text: 'AGM を発射する',
-        note: '射程14km。目標の対空砲（射程3km）の外から撃てます',
+        note: '射程(14km)に入れば自動で撃ちます。目標の対空砲（射程3km）の'
+          + '外から撃てます。急ぐなら、兵装を指定した状態で目標を右クリックすると'
+          + '射撃指示になります',
         done: 'fire', when: (d) => d.weapon === 'AGM' },
       { text: '目標を破壊する',
         note: '撃ちっぱなしなので、撃ったあとは離脱して構いません。'
@@ -644,7 +675,8 @@ export const TUTORIALS = [
       base: { x: 10000, z: 42000 },
       startAirborne: true,
       startAlt: 3000,
-      aircraft: [{ type: 'F-2', name: 'HAMMER 1', loadout: ['ARM', 'ARM'] }],
+      aircraft: [{ type: 'F-2', name: 'HAMMER 1', loadout: ['ARM', 'ARM'],
+        autoWeapons: { ARM: false } }],
     },
     enemy: {
       aircraft: [],
@@ -656,15 +688,18 @@ export const TUTORIALS = [
       { text: '高度を「高々度」（7,000 m）まで上げる',
         note: '2,500m 未満では撃てません。高いほど射程が伸びるので、'
           + 'SAM の外から一方的に叩くには高度が要ります',
+        highlight: '[data-alt="7000"]',
         check: (ctx) => mine(ctx).some((u) => u.pos.y >= 6500) },
       { text: 'レーダーサイトへ攻撃を指示する',
         note: '**攻撃指示が先**。兵装の指定はそのあとで行います',
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に ARM を指定する',
         note: 'コスト6・スロット2。高価なので外したくない兵装です',
-        done: 'weapon', when: (d) => d.weapon === 'ARM' },
-      { text: 'レーダーサイトへ ARM を発射する',
-        note: '電波を出している目標にしか誘導しません。'
+        done: 'weapon', when: (d) => d.weapon === 'ARM',
+        pause: true, highlight: '[data-pick="ARM"]' },
+      { text: 'レーダーサイトを右クリックして ARM を撃つ',
+        note: '兵装を指定した状態で目標を右クリックすると射撃指示になります。'
+          + '電波を出している目標にしか誘導しません。'
           + '電波を出していない対空砲などには使えません',
         done: 'fire', when: (d) => d.weapon === 'ARM' },
       { text: '目標を破壊する',
@@ -707,7 +742,11 @@ export const TUTORIALS = [
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に BOMB を指定する',
         note: 'コスト0・スロット1。兵装ポイントを一切使いません',
-        done: 'weapon', when: (d) => d.weapon === 'BOMB' },
+        done: 'weapon', when: (d) => d.weapon === 'BOMB',
+        pause: true, highlight: '[data-pick="BOMB"]',
+        // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('BOMB')) },
       { text: '爆弾を投下する',
         note: '投下点は弾道から自動で決まります。'
           + '機首を向けるだけでは落ちません。目標の手前で自然に離れます',
@@ -744,7 +783,7 @@ export const TUTORIALS = [
         done: 'select' },
       { text: '搭載に TANK を足す',
         note: '下のパネルの「+TANK」。整備が終わると燃料の上限が増えます',
-        done: 'loadout' },
+        done: 'loadout', pause: true, highlight: '[data-load-add="TANK"]' },
       { text: '整備を終えて、燃料の持ち時間が増えたことを確認する',
         note: '燃料 +40%。積んだぶんスロットが減り、機動性もわずかに落ちます',
         check: (ctx) => mine(ctx).some((u) => u.loadout.includes('TANK')
@@ -752,7 +791,7 @@ export const TUTORIALS = [
       { text: '発進する',
         note: '進出距離の長い任務では、増槽を積むか、途中で帰投して給油するかの'
           + '選択になります',
-        done: 'takeoff' },
+        done: 'takeoff', highlight: '[data-cmd="launch"]' },
     ],
   },
 ];

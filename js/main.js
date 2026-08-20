@@ -493,6 +493,7 @@ function spawnStage(world, stage, loadouts, terrain) {
       }));
       ac.airbase = base;
       ac.patrolArea = { x: ac.pos.x, z: ac.pos.z, alt: ac.pos.y, radius: 4500 };
+      applyAutoWeapons(ac, a);
     } else {
       const ac = world.spawn(new Aircraft({
         type: a.type, name: a.name, side: SIDE.BLUE, loadout,
@@ -502,6 +503,7 @@ function spawnStage(world, stage, loadouts, terrain) {
       base.onArrive(ac);
       ac.state = 'ready';           // ブリーフィングで整備済みとして扱う
       base.queue = base.queue.filter((q) => q !== ac);
+      applyAutoWeapons(ac, a);
     }
   });
 
@@ -569,6 +571,18 @@ function spawnStage(world, stage, loadouts, terrain) {
   }
 
   return { known, reinforcements };
+}
+
+/**
+ * ステージ定義から自動使用の可否を写す（`autoWeapons: { ARM: false }`）。
+ *
+ * 兵装チュートリアルで要る。「攻撃を指示 → 兵装を指定 → 撃つ」という手順は、
+ * AI が指定より先に撃ち尽くすと**兵装の欄からその兵装が消えて手順が進まなくなる**。
+ * 射程22kmのARMは攻撃指示を出した時点でもう撃てるので、必ずそうなっていた。
+ */
+function applyAutoWeapons(ac, def) {
+  if (!def.autoWeapons) return;
+  for (const [id, on] of Object.entries(def.autoWeapons)) ac.autoWeapons[id] = on;
 }
 
 /** 兵装コスト（data/weapons.js を都度importしないための表） */
