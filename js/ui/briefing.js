@@ -129,20 +129,36 @@ export class ScreenManager {
    */
   showTutorialSelect() {
     const done = this.progress.tutorial;
-    const cards = TUTORIALS.map((t, i) => `
-      <div class="stage-card${done.includes(t.id) ? ' cleared' : ''}" data-tutorial="${t.id}">
-        <div class="sc-no">TUTORIAL ${String(i + 1).padStart(2, '0')}</div>
-        ${done.includes(t.id) ? '<div class="sc-rank done-mark">✔</div>' : ''}
-        <div class="sc-name">${t.name}</div>
-        <div class="sc-title">${t.title}</div>
-        <div class="sc-state">${done.includes(t.id) ? '受講済み' : '未受講'}</div>
-      </div>`).join('');
+    // 本数が増えたので種類ごとに束ねる。1列に並べると縦に収まらない。
+    const groups = [];
+    for (const t of TUTORIALS) {
+      const key = t.group || 'その他';
+      let g = groups.find((x) => x.key === key);
+      if (!g) { g = { key, items: [] }; groups.push(g); }
+      g.items.push(t);
+    }
+    const GROUP_SUB = { 基本: '操作と仕組み', 兵装: '1兵装ずつ、特性と使い方' };
+    const sections = groups.map((g) => {
+      const n = g.items.filter((t) => done.includes(t.id)).length;
+      const cards = g.items.map((t, i) => `
+        <div class="stage-card tut${done.includes(t.id) ? ' cleared' : ''}" data-tutorial="${t.id}">
+          <div class="sc-no">${g.key === '兵装' ? 'WEAPON' : 'BASIC'} ${String(i + 1).padStart(2, '0')}</div>
+          ${done.includes(t.id) ? '<div class="sc-rank done-mark">✔</div>' : ''}
+          <div class="sc-name">${t.name}</div>
+          <div class="sc-title">${t.title}</div>
+        </div>`).join('');
+      return `<div class="tut-group">
+          <div class="bf-section">${g.key}<span class="tg-sub">${GROUP_SUB[g.key] || ''}</span>
+            <span class="tg-count">${n} / ${g.items.length}</span></div>
+          <div class="tut-grid">${cards}</div>
+        </div>`;
+    }).join('');
 
     this._show(`
       <div class="screen-inner">
         <h1 class="game-title">ANGELS TWENTY</h1>
         <div class="screen-sub">TUTORIAL — チュートリアル</div>
-        <div class="stage-grid">${cards || '<div class="panel-empty">準備中</div>'}</div>
+        ${sections || '<div class="panel-empty">準備中</div>'}
         <div class="screen-foot list">
           <span>好きな順番で、何度でも受けられます</span>
           <button data-act="title" class="ghost">モード選択へ</button>

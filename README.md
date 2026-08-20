@@ -155,6 +155,7 @@ angels_twenty/
     ui/tutorial.js         チュートリアルの進行と手順パネル
   tools/bench.js           バランス検証用のバッチ実行（コンソールから読み込む）
   tools/difficulty.js      ステージ定義からの難易度見積り
+  tools/_tut_harness.js    チュートリアルを手順どおり通して確かめる（同上）
   tools/playlog.py         プレイ記録(playlog.jsonl)を読む
 ```
 

@@ -22,6 +22,8 @@
 //   mem は手順ごとの覚え書き（次の手順へ進むと空になる）
 
 import { LEVEL } from '../sim/detection.js';
+import { estimateHitChance } from '../sim/combat.js';
+import { WEAPONS } from './weapons.js';
 
 // ---------------------------------------------------------------- 小道具
 
@@ -51,12 +53,24 @@ function cameraMoved(ctx) {
     || Math.abs(now.d - c.d) / c.d > 0.25;
 }
 
+/** その兵装を積んでいるか */
+const carrying = (ctx, id) => mine(ctx).some((u) => u.loadout.includes(id));
+
+/** 兵装ごとのチュートリアルで使う、無害な的（撃ち返してこない敵機） */
+function dummyFighter(name, x, z, agl2, extra = {}) {
+  return {
+    type: 'J-7', name, x, z, agl: agl2,
+    aiMode: 'PATROL', loadout: [], tags: ['target'], ...extra,
+  };
+}
+
 // ---------------------------------------------------------------- 定義
 
 export const TUTORIALS = [
   // ================================================================ 1
   {
     id: 't1',
+    group: '基本',
     name: '指揮の基本',
     title: '選択・移動指示・視点・時間',
     brief: 'この作戦では、あなたは機体を直接操縦しません。\n'
@@ -103,6 +117,7 @@ export const TUTORIALS = [
   // ================================================================ 2
   {
     id: 't2',
+    group: '基本',
     name: '高度',
     title: '高度が変えるもの',
     brief: '高度はこのゲームでいちばん効く要素です。\n'
@@ -145,6 +160,7 @@ export const TUTORIALS = [
   // ================================================================ 3
   {
     id: 't3',
+    group: '基本',
     name: '探知',
     title: '見えているもの・見えていないもの',
     brief: '画面に出ているのは「真の配置」ではなく「こちらが把握できている情報」です。\n'
@@ -199,6 +215,7 @@ export const TUTORIALS = [
   // ================================================================ 4
   {
     id: 't4',
+    group: '基本',
     name: '空対空',
     title: 'ミサイルの撃ち方',
     brief: 'ミサイルは実体として飛びます。撃てば当たるものではありません。\n'
@@ -250,6 +267,7 @@ export const TUTORIALS = [
   // ================================================================ 5
   {
     id: 't5',
+    group: '基本',
     name: '編隊とAI',
     title: '任せ方を決める',
     brief: '機体は放っておいても自分で戦います。\n'
@@ -297,6 +315,7 @@ export const TUTORIALS = [
   // ================================================================ 6
   {
     id: 't6',
+    group: '基本',
     name: '飛行場と対地',
     title: '出して、撃って、帰す',
     brief: '飛行場は補給と積み替えの拠点です。\n'
@@ -350,6 +369,378 @@ export const TUTORIALS = [
       { text: '搭載を積み替える',
         note: '下のパネルで兵装を足す／降ろす。足すと兵装ポイントが減り、降ろすと戻ります',
         done: 'loadout' },
+    ],
+  },
+  // ================================================================ 兵装1
+  {
+    id: 'w1',
+    group: '兵装',
+    name: '機銃',
+    title: '拡散と弾速',
+    brief: '機銃は搭載品ではなく、はじめから機体に付いている固定装備です。\n'
+      + '弾は実体として飛びます。当たりにくさは「拡散」（遠いほど散る）と\n'
+      + '「弾速」（動く目標への読みが外れる）の2つで決まります。',
+    hint: '敵機は武装していません。落とされる心配はありません。',
+    terrain: { seed: 90011, mountainAmount: 0.6, coast: 'none', valleyDepth: 0.7, rivers: 1, baseAltitude: 380 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 12000, z: 38000 },
+      startAirborne: true,
+      startAlt: 4500,
+      // ミサイルを積まない。機銃だけの戦い方を覚えてもらう
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: [] }],
+    },
+    enemy: {
+      skill: 0.2,
+      // 近くに置く。機銃だけで2つ潰すので、往復の余裕が要る
+      aircraft: [dummyFighter('BANDIT 1', 21000, 30000, 4500)],
+      ground: [
+        // 車両部隊は撃ち返してこないので掃射の練習に向く（対空砲は撃ってくる）
+        { type: 'CONVOY', name: '車両部隊', x: 17000, z: 32000, tags: ['target'], known: true },
+      ],
+    },
+    steps: [
+      { text: '機体を選択し、下のパネルに兵装が無いことを確認する',
+        note: '機銃は搭載リストに出ません。スロットも兵装ポイントも使いません',
+        done: 'select' },
+      // 掃射を先に置く。車両部隊は動く目標なので、ブリーフィングで判明していた印は
+      // 誰も見ていないと 20 秒で消える。空戦を先にやると、終わったころには
+      // 地図から消えていて右クリックできない（実測でそうなった）。
+      { text: '車両部隊を右クリックして攻撃を指示する',
+        note: '止まっている的から始めます。地上目標は動きが読みやすく、'
+          + '的も大きいので機銃がよく当たります',
+        done: 'order:attack' },
+      // 「破壊する」までは求めない。F-1 の弾数(380発=15秒)では、
+      // 地上目標を潰し切ってから空中目標も落とすには足りない（実測）。
+      // ここで教えたいのは「地上目標には当たる」ことなので、命中で足りる。
+      { text: '掃射して命中させる',
+        note: '当てるには 600m〜2km あたりまで降りて、浅い角度で入ること。'
+          + '対地は機首から26度まで撃てるので、多少見下ろしていても届きます',
+        check: (ctx) => { const u = unit(ctx, '車両部隊'); return !!u && u.hp < u.maxHp; } },
+      { text: '敵機を右クリックして攻撃を指示する',
+        note: '今度は動く的です。機銃は機首から14度以内にしか撃てないので、'
+          + '後ろに付く必要があります',
+        done: 'order:attack' },
+      { text: '敵機を撃墜する',
+        note: 'F-1 は弾が速い（1,000m/s）ので、旋回する敵にも当てられます。'
+          + '当たらないときは距離を詰めてください。拡散は距離とともに広がります',
+        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+    ],
+  },
+
+  // ================================================================ 兵装2
+  {
+    id: 'w2',
+    group: '兵装',
+    name: 'AAM-S 短距離AAM',
+    title: '安い・速い・近い',
+    brief: '赤外線で排気を追うミサイルです。コストは0で、いくらでも積めます。\n'
+      + '撃ちっぱなしなので、発射したらすぐ次の行動に移れます。\n'
+      + '射程は7kmと短く、フレアに弱いのが弱点です。',
+    hint: '敵機は武装していません。',
+    terrain: { seed: 90012, mountainAmount: 0.7, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 400 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 12000, z: 38000 },
+      startAirborne: true,
+      startAlt: 5000,
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-S', 'AAM-S', 'AAM-S'] }],
+    },
+    enemy: {
+      skill: 0.2,
+      aircraft: [dummyFighter('BANDIT 1', 24000, 26000, 5000)],
+      ground: [],
+    },
+    steps: [
+      { text: '敵機を右クリックして攻撃を指示する',
+        note: '**攻撃指示が先**。兵装を指定してから右クリックすると射撃指示になり、'
+          + '機体はその場から動きません',
+        done: 'order:attack' },
+      { text: '下のパネルで使用兵装に AAM-S を指定する',
+        note: 'コスト0。スロット1つ。積めるだけ積んでも兵装ポイントは減りません',
+        done: 'weapon', when: (d) => d.weapon === 'AAM-S' },
+      { text: '敵機の後方に回り込み、命中期待度を「中」以上にする',
+        note: '赤外線は排気を見るので**後ろから撃つほど当たります**。'
+          + 'カーソルを敵に重ねると期待度が読めます',
+        check: (ctx) => {
+          const e = unit(ctx, 'BANDIT 1');
+          return !!e && mine(ctx).some((u) => estimateHitChance(u, e, WEAPONS['AAM-S']) >= 0.32);
+        } },
+      { text: 'AAM-S を発射する',
+        note: '撃ちっぱなしです。撃った瞬間に離脱しても当たります',
+        done: 'fire', when: (d) => d.weapon === 'AAM-S' },
+      { text: '敵機を撃墜する',
+        note: '外れても構いません。安いので何発でも撃てます',
+        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+    ],
+  },
+
+  // ================================================================ 兵装3
+  {
+    id: 'w3',
+    group: '兵装',
+    name: 'AAM-M 中距離AAM',
+    title: '誘導し続ける覚悟',
+    brief: '射程20km。遠くから撃てますが、**着弾まで自分のレーダーで目標を照らし続ける**\n'
+      + '必要があります。その間こちらは自由に動けません。\n'
+      + 'コストは2。この判断が中距離戦の中心になります。',
+    hint: '敵機は武装していません。誘導を切らさない練習に集中してください。',
+    terrain: { seed: 90013, mountainAmount: 0.6, coast: 'none', valleyDepth: 0.7, rivers: 2, baseAltitude: 400 },
+    weaponPoints: 12,
+    noFail: true,
+    friendly: {
+      base: { x: 11000, z: 40000 },
+      startAirborne: true,
+      startAlt: 6000,
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-M'] }],
+    },
+    enemy: {
+      skill: 0.2,
+      aircraft: [dummyFighter('BANDIT 1', 30000, 22000, 6000)],
+      ground: [],
+    },
+    steps: [
+      { text: '敵機を右クリックして攻撃を指示する',
+        note: '**攻撃指示が先**。兵装の指定はそのあとで行います',
+        done: 'order:attack' },
+      { text: '下のパネルで使用兵装に AAM-M を指定する',
+        note: '射程20km。高度が高いほど実効射程は伸びます',
+        done: 'weapon', when: (d) => d.weapon === 'AAM-M' },
+      { text: 'AAM-M を発射する',
+        note: '射程に入れば自動で撃ちます。急ぐなら敵を右クリックして射撃指示を出せます',
+        done: 'fire', when: (d) => d.weapon === 'AAM-M' },
+      { text: '誘導が続いているあいだ、機体の動きを見る',
+        note: '目標をレーダーの扇に入れたまま斜めに飛ぶ「クランク」をします。'
+          + '照射を切らさずに接近速度を落とす動きです。'
+          + '**扇から外すと誘導が切れて外れます**',
+        check: (ctx) => ctx.world.missiles.some((m) => m.alive
+          && m.side === ctx.world.playerSide && m.guidance === 'sarh') },
+      { text: '「誘導中も回避／誘導を優先」を切り替えてみる',
+        note: '撃たれたときに、誘導を続けるか自分の身を守るかの選択です。'
+          + '中距離AAMを使うということは、この判断を毎回することになります',
+        done: 'guard' },
+      { text: '敵機を撃墜する',
+        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+    ],
+  },
+  // ================================================================ 兵装4
+  {
+    id: 'w4',
+    group: '兵装',
+    name: 'AAM-A アクティブAAM',
+    title: '撃って、すぐ帰る',
+    brief: '自分でレーダーを持つミサイルです。撃った瞬間に離脱できます。\n'
+      + 'デコイにも騙されにくく、当てたいときの一発として信頼できます。\n'
+      + 'ただしコスト6・スロット2。中距離AAM 3発ぶんの値段です。',
+    hint: '敵機は武装していません。',
+    terrain: { seed: 90014, mountainAmount: 0.6, coast: 'none', valleyDepth: 0.7, rivers: 2, baseAltitude: 400 },
+    weaponPoints: 12,
+    noFail: true,
+    friendly: {
+      base: { x: 11000, z: 40000 },
+      startAirborne: true,
+      startAlt: 6000,
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-A', 'AAM-A'] }],
+    },
+    enemy: {
+      skill: 0.2,
+      aircraft: [dummyFighter('BANDIT 1', 30000, 22000, 6000)],
+      ground: [],
+    },
+    steps: [
+      { text: '敵機を右クリックして攻撃を指示する',
+        note: '**攻撃指示が先**。兵装の指定はそのあとで行います',
+        done: 'order:attack' },
+      { text: '下のパネルで使用兵装に AAM-A を指定する',
+        note: 'スロット2つを使います。4スロットのF-1には2発しか積めません',
+        done: 'weapon', when: (d) => d.weapon === 'AAM-A' },
+      { text: 'AAM-A を発射する',
+        note: '射程は中距離AAMと同じ20km。撃ち方も同じです',
+        done: 'fire', when: (d) => d.weapon === 'AAM-A' },
+      { text: '発射したら、目標から離れる向きへ移動を指示する',
+        note: 'ここが中距離AAMとの決定的な差。誘導が要らないので、'
+          + '撃った瞬間に背を向けて構いません。ミサイルは自分で当たりに行きます',
+        done: 'order:move' },
+      { text: '離れたまま敵機が墜ちるのを見届ける',
+        note: '中距離AAMなら、ここで背を向けた時点で外れています',
+        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+    ],
+  },
+
+  // ================================================================ 兵装5
+  {
+    id: 'w5',
+    group: '兵装',
+    name: 'AGM 空対地ミサイル',
+    title: '射程の外から叩く',
+    brief: '地上目標を遠くから撃つためのミサイルです。射程14km、撃ちっぱなし。\n'
+      + '高度を上げても射程はあまり伸びません（対レーダーミサイルとの違い）。\n'
+      + 'コスト5・スロット2。対地攻撃の主力になります。',
+    hint: '目標は撃ち返してきません。',
+    terrain: { seed: 90015, mountainAmount: 0.8, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 420 },
+    weaponPoints: 20,
+    noFail: true,
+    friendly: {
+      base: { x: 11000, z: 40000 },
+      startAirborne: true,
+      startAlt: 4000,
+      aircraft: [{ type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AGM'] }],
+    },
+    enemy: {
+      aircraft: [],
+      ground: [
+        { type: 'RADAR', name: 'レーダーサイト', x: 30000, z: 26000, tags: ['target'], known: true },
+      ],
+    },
+    steps: [
+      { text: '目標へ攻撃を指示する',
+        note: '地上目標はブリーフィングで判明していたので、最初から地図に出ています。'
+          + '**攻撃指示が先**。兵装を指定してから右クリックすると射撃指示になり、'
+          + '機体はその場から動きません',
+        done: 'order:attack' },
+      { text: '下のパネルで使用兵装に AGM を指定する',
+        note: 'コスト5・スロット2。A-3 は6スロットなので3発積めます',
+        done: 'weapon', when: (d) => d.weapon === 'AGM' },
+      { text: 'AGM を発射する',
+        note: '射程14km。目標の対空砲（射程3km）の外から撃てます',
+        done: 'fire', when: (d) => d.weapon === 'AGM' },
+      { text: '目標を破壊する',
+        note: '撃ちっぱなしなので、撃ったあとは離脱して構いません。'
+          + '至近弾でも効きます（爆風60m）',
+        check: (ctx) => { const u = unit(ctx, 'レーダーサイト'); return !!u && !u.alive; } },
+    ],
+  },
+
+  // ================================================================ 兵装6
+  {
+    id: 'w6',
+    group: '兵装',
+    // 選択画面のカード名。長いと2行に折り返して並びが崩れるので短く置く。
+    // 正式名は title と brief にある。
+    name: 'ARM 対レーダー',
+    title: '電波を追う',
+    brief: '稼働中のレーダーにだけ誘導します。射程22kmで、高度を上げるほど伸びます。\n'
+      + '低空からは撃てません（高度2,500m以上が必要）。\n'
+      + '相手がレーダーを止めると誘導が切れ、最後に掴んだ座標へ慣性で飛びます。',
+    hint: '目標は撃ち返してきません。沈黙もしません。',
+    terrain: { seed: 90016, mountainAmount: 0.9, coast: 'none', valleyDepth: 0.9, rivers: 2, baseAltitude: 450 },
+    weaponPoints: 20,
+    noFail: true,
+    friendly: {
+      base: { x: 10000, z: 42000 },
+      startAirborne: true,
+      startAlt: 3000,
+      aircraft: [{ type: 'F-2', name: 'HAMMER 1', loadout: ['ARM', 'ARM'] }],
+    },
+    enemy: {
+      aircraft: [],
+      ground: [
+        { type: 'RADAR', name: 'レーダーサイト', x: 32000, z: 24000, tags: ['target'], known: true },
+      ],
+    },
+    steps: [
+      { text: '高度を「高々度」（7,000 m）まで上げる',
+        note: '2,500m 未満では撃てません。高いほど射程が伸びるので、'
+          + 'SAM の外から一方的に叩くには高度が要ります',
+        check: (ctx) => mine(ctx).some((u) => u.pos.y >= 6500) },
+      { text: 'レーダーサイトへ攻撃を指示する',
+        note: '**攻撃指示が先**。兵装の指定はそのあとで行います',
+        done: 'order:attack' },
+      { text: '下のパネルで使用兵装に ARM を指定する',
+        note: 'コスト6・スロット2。高価なので外したくない兵装です',
+        done: 'weapon', when: (d) => d.weapon === 'ARM' },
+      { text: 'レーダーサイトへ ARM を発射する',
+        note: '電波を出している目標にしか誘導しません。'
+          + '電波を出していない対空砲などには使えません',
+        done: 'fire', when: (d) => d.weapon === 'ARM' },
+      { text: '目標を破壊する',
+        note: '相手が電波を止めると誘導が切れます。'
+          + 'その場合は最後の座標へ飛ぶので、当たるとしても至近弾になります',
+        check: (ctx) => { const u = unit(ctx, 'レーダーサイト'); return !!u && !u.alive; } },
+    ],
+  },
+
+  // ================================================================ 兵装7
+  {
+    id: 'w7',
+    group: '兵装',
+    name: 'BOMB 無誘導爆弾',
+    title: '真上を通る',
+    brief: 'コスト0で威力は最大（260）。ただし誘導しません。\n'
+      + '目標の真上を通って落とす必要があり、投下高度が高いほど散らばります。\n'
+      + '安く数を積めるので、飛行場のような大きく硬い目標に向いています。',
+    hint: '目標は撃ち返してきません。',
+    terrain: { seed: 90017, mountainAmount: 0.7, coast: 'none', valleyDepth: 0.7, rivers: 2, baseAltitude: 400 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 11000, z: 40000 },
+      startAirborne: true,
+      startAlt: 3000,
+      aircraft: [{ type: 'A-3', name: 'ANVIL 1', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB'] }],
+    },
+    enemy: {
+      aircraft: [],
+      ground: [
+        { type: 'RADAR', name: 'レーダーサイト', x: 26000, z: 28000, tags: ['target'], known: true },
+      ],
+    },
+    steps: [
+      { text: '目標へ攻撃を指示する',
+        note: '攻撃機は低く入って正確に落とします。'
+          + '爆撃機は対空砲の射高より上（2,100m）から入ります。'
+          + '**攻撃指示が先**。兵装を指定してから右クリックすると射撃指示になります',
+        done: 'order:attack' },
+      { text: '下のパネルで使用兵装に BOMB を指定する',
+        note: 'コスト0・スロット1。兵装ポイントを一切使いません',
+        done: 'weapon', when: (d) => d.weapon === 'BOMB' },
+      { text: '爆弾を投下する',
+        note: '投下点は弾道から自動で決まります。'
+          + '機首を向けるだけでは落ちません。目標の手前で自然に離れます',
+        done: 'fire', when: (d) => d.weapon === 'BOMB' },
+      { text: '目標を破壊する',
+        note: '外れたら旋回してもう一度入り直します。'
+          + '高い所から落とすほど散らばるので、当てたければ低く入ることです',
+        check: (ctx) => { const u = unit(ctx, 'レーダーサイト'); return !!u && !u.alive; } },
+    ],
+  },
+
+  // ================================================================ 兵装8
+  {
+    id: 'w8',
+    group: '兵装',
+    name: 'TANK 増槽',
+    title: '足を伸ばす',
+    brief: '武器ではありませんが、スロットを1つ使う搭載品です。燃料が40%増えます。\n'
+      + 'コストは0。遠くの目標を叩くとき、往復できるかどうかを決めます。\n'
+      + 'スロットを1つ食うので、そのぶん兵装を諦めることになります。',
+    hint: '敵はいません。搭載と燃料の関係だけを見ます。',
+    terrain: { seed: 90018, mountainAmount: 0.6, coast: 'none', valleyDepth: 0.7, rivers: 1, baseAltitude: 380 },
+    weaponPoints: 10,
+    noFail: true,
+    friendly: {
+      base: { x: 12000, z: 38000 },
+      startAirborne: false,
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-S', 'AAM-S'] }],
+    },
+    enemy: { aircraft: [], ground: [] },
+    steps: [
+      { text: '機体を選択し、いまの燃料の持ち時間を確認する',
+        note: '下のパネルに「燃料 ○分」と出ます。F-1 は無積載で12分です',
+        done: 'select' },
+      { text: '搭載に TANK を足す',
+        note: '下のパネルの「+TANK」。整備が終わると燃料の上限が増えます',
+        done: 'loadout' },
+      { text: '整備を終えて、燃料の持ち時間が増えたことを確認する',
+        note: '燃料 +40%。積んだぶんスロットが減り、機動性もわずかに落ちます',
+        check: (ctx) => mine(ctx).some((u) => u.loadout.includes('TANK')
+          && u.fuelMax > u.spec.fuelSeconds * 1.2) },
+      { text: '発進する',
+        note: '進出距離の長い任務では、増槽を積むか、途中で帰投して給油するかの'
+          + '選択になります',
+        done: 'takeoff' },
     ],
   },
 ];

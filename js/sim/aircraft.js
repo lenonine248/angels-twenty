@@ -920,6 +920,19 @@ export class Aircraft extends Unit {
 
   /** 燃料残量の割合 0..1 */
   get fuelRatio() { return this.fuel / this.fuelMax; }
+
+  /**
+   * 搭載が変わったら燃料容量を計算し直す。
+   *
+   * 生成時にしか計算していなかったため、**整備で増槽を積んでも
+   * 燃料が増えなかった**。ブリーフィングで積んだぶんだけが効いていた。
+   * 降ろしたときは、増えていた燃料も上限まで切り詰める。
+   */
+  refreshFuelCapacity() {
+    this.fuelMax = this.spec.fuelSeconds * loadoutFuelBonus(this.loadout);
+    // 容量を増やすだけ。実際の給油は整備の「燃料補給」が行う
+    this.fuel = Math.min(this.fuel, this.fuelMax);
+  }
   /** HP割合 0..1 */
   get hpRatio() { return this.hp / this.maxHp; }
 }

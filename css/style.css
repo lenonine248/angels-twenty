@@ -590,6 +590,17 @@ button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 button.go.warn:hover + .dt-warn { display: block; }
 .dt-alt { position: relative; }
 
+/* チュートリアル一覧。本数が多いので、種類ごとに束ねて詰めて並べる */
+.tut-group { margin-bottom: 6px; }
+.tut-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.stage-card.tut { padding: 9px 11px 10px; }
+.stage-card.tut .sc-name { font-size: 15px; margin: 3px 0 1px; }
+.stage-card.tut .sc-title { font-size: 11px; color: var(--text-dim); }
+.stage-card.tut .sc-rank { top: 7px; right: 9px; font-size: 15px; }
+.stage-card.tut .sc-no, .stage-card.tut .sc-name { padding-right: 22px; }
+.tg-sub { color: var(--text-dim); letter-spacing: 0.06em; margin-left: 12px; }
+.tg-count { float: right; color: var(--text-dim); letter-spacing: 0.1em; }
+
 /* ===== チュートリアルの手順（§19） =====
    上部、目標パネルと同じ場所。チュートリアルには目標が無いので取り合いにならない。
    下部に置くと操作ヘルプ（#helpBox）と重なる。 */

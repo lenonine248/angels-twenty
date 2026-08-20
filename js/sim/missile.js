@@ -11,9 +11,20 @@ import * as THREE from 'three';
 import { clamp } from '../core/rng.js';
 import { missileDragFactor } from '../core/atmosphere.js';
 
-/** 直撃と判定する距離(m) */
+/**
+ * 直撃と判定する距離(m)。**目標の大きさを足して使う**（`hitRadii`）。
+ *
+ * 航空機なら全長15m前後なので、この値そのままでよい。
+ * だが地上目標は桁が違う（レーダーサイト220m・飛行場900m）。
+ * 中心から25mでしか直撃にしないと、220mの施設のど真ん中に落ちた弾が
+ * 「至近弾」に化ける。実測で ARM 2発が命中して 97 ダメージしか出ず、
+ * 120HP のレーダーサイトが生き残っていた（直撃なら1発160で落ちる）。
+ *
+ * 目標の大きさの扱いは、爆風(`_blast`)も機銃(`sim/bullet.js`)も
+ * `spec.size * 0.25` で揃えている。ここだけ無視していた。
+ */
 const DIRECT_HIT = 25;
-/** 近接信管の作動半径(m)。この内側なら至近弾ダメージ。 */
+/** 近接信管の作動半径(m)。同じく目標の大きさを足して使う。 */
 const PROXIMITY = 90;
 /**
  * 推進終了後の慣性飛行時間(秒)の目安。
@@ -29,6 +40,23 @@ const LOS_INTERVAL = 0.25;
 const ARM_MEMORY_ERROR = 0.018;
 /** 目標の大きさのうち、爆風判定で「当たり」とみなす割合 */
 const SIZE_FOOTPRINT = 0.25;
+/**
+ * 地上目標へ向かうときに、目標の真上を飛ぶ高さ(m)と、そこから降ろし始める距離(m)。
+ *
+ * 地上目標は地表そのものにいるので、そこへ真っ直ぐ狙うと**着弾までの数kmを
+ * 地面すれすれで飛ぶ**ことになる。目標が斜面の下にあると、あいだの尾根が
+ * ちょうど照準線まで迫り上がってきて、途中の起伏に必ず引っかかる。
+ * 実測では AGM が目標の 214m 手前で接地し、爆風の届かない距離で消えていた
+ * （レーダーサイト 120HP に対し、2発撃って 77 ダメージ）。
+ *
+ * 終末までは目標の上を狙い、近づいてから落とす。実際の対地ミサイルと同じ挙動で、
+ * 途中の地形から離れられるうえ、突っ込む角度も急になって命中が安定する。
+ */
+const GROUND_APPROACH_ALT = 220;
+/** 上を狙うのをやめる距離。ここから内側は目標そのものを狙う */
+const GROUND_DIVE_END = 150;
+/** ここより遠いあいだは目標の上を飛ぶ */
+const GROUND_DIVE_START = 1200;
 
 let nextId = 1;
 
@@ -232,6 +260,16 @@ export class Missile {
     this._targetDist = this.pos.distanceTo(t.pos);
 
     const aim = _v2.copy(t.pos);
+
+    // 地上目標は上から降ろす（GROUND_APPROACH_ALT）。
+    // 命中判定は本物の座標(t.pos)で行うので、狙点をずらしても当たり判定は変わらない。
+    if (isGroundTarget(t)) {
+      // 終末は狙点を目標そのものへ戻す。最後まで上を狙い続けると、
+      // 追尾の遅れのぶんだけ高いまま通り過ぎて至近弾になる（実測で 42m 上を通過）。
+      aim.y += GROUND_APPROACH_ALT * clamp(
+        (this._targetDist - GROUND_DIVE_END) / (GROUND_DIVE_START - GROUND_DIVE_END), 0, 1);
+    }
+
     if (!t.forward || !t.speed) return aim;
 
     const f = t.forward(_v3);
@@ -289,9 +327,10 @@ export class Missile {
     if (!t || t.alive === false) return false;
     const seg = closestApproach(t.pos, this.prevPos, this.pos);
     const d = seg.dist;
-    if (d > PROXIMITY) return false;
+    const [direct, prox] = hitRadii(t);
+    if (d > prox) return false;
     const passed = seg.t < 0.999;
-    if (!passed && d > DIRECT_HIT) return false;      // まだ近づいている最中
+    if (!passed && d > direct) return false;          // まだ近づいている最中
 
     // デコイに当たった場合は消えるだけ
     if (t.isDecoy) { this.destroy(world, 'decoy'); return true; }
@@ -304,7 +343,7 @@ export class Missile {
     }
 
     const rng = world.rng;
-    if (d <= DIRECT_HIT) {
+    if (d <= direct) {
       t.damage(this.weapon.damage, this);
     } else {
       // かすり被弾。生き残ることがある。
@@ -344,6 +383,26 @@ export class Missile {
       && this.pos.y - Math.max(0, world.terrain.heightAt(this.pos.x, this.pos.z)) < 70;
     world.effects?.explosion(this.pos, reason === 'hit' ? 260 : 140, ground ? 'ground' : 'air');
   }
+}
+
+/**
+ * その目標の [直撃半径, 近接信管半径]。
+ * 大きな施設ほど「当たった」と言える範囲が広い。
+ */
+function hitRadii(t) {
+  const size = t.spec && t.spec.size ? t.spec.size : 0;
+  const footprint = t.kind === 'aircraft' ? 0 : size * SIZE_FOOTPRINT;
+  return [DIRECT_HIT + footprint, PROXIMITY + footprint];
+}
+
+/**
+ * 地表にいる目標か。
+ * 「最後に分かっていた座標」(isPoint) は静止した地上目標のためだけに作られるので、
+ * これも地上として扱う。
+ */
+function isGroundTarget(t) {
+  if (t.isPoint) return true;
+  return !!t.kind && t.kind !== 'aircraft';
 }
 
 /** 発射機が目標をレーダーで照射し続けているか（セミアクティブ誘導の条件） */

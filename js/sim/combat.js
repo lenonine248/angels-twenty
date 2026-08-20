@@ -19,8 +19,16 @@ import { effectiveMissileRange, turnFactor } from '../core/atmosphere.js';
 // 弾は全機共通の秒数で消え、当たるかどうかは拡散と偏差が決める。
 // 正面からのすれ違いで当たらないのは、交差速度が大きく偏差が破綻するため。
 //
-/** 機首をこの範囲まで向けていないと撃てない（機銃は機体に固定されている） */
+/**
+ * 機首をこの範囲まで向けていないと撃てない（機銃は機体に固定されている）。
+ *
+ * **対地は広く取る。** 地上目標のそばでは最低対地高度(220m)が効いて、
+ * どうしても見下ろす角度が付く。622m まで詰めても俯角は 19度 になり、
+ * 対空と同じ 14度 では永久に撃てない（実体弾にしたとき、対地用の
+ * 広いコーンを落としてしまい、実際に掃射できなくなっていた）。
+ */
 const GUN_AIM_CONE = 14 * DEG;
+const GUN_AIM_CONE_GROUND = 26 * DEG;
 /** 撃つ気になる上限距離。弾が届く範囲より広く取り、実際の可否はしきい値に任せる */
 const GUN_MAX_ENGAGE = 3200;
 /** 拡散を広げる要因の効き */
@@ -529,7 +537,8 @@ export class CombatSystem {
     const ax = _aimPt.x - shooter.pos.x;
     const az = _aimPt.z - shooter.pos.z;
     const ay = _aimPt.y - shooter.pos.y;
-    if (offBoresight(shooter, ax, az, ay) > GUN_AIM_CONE) return;
+    const air = target.kind === 'aircraft' && !target.onGround;
+    if (offBoresight(shooter, ax, az, ay) > (air ? GUN_AIM_CONE : GUN_AIM_CONE_GROUND)) return;
 
     // 当たりそうにないなら撃たない。
     // **射程制限を捨てた代わりがこれ**（§22.2.4）。これが無いと、
@@ -552,7 +561,6 @@ export class CombatSystem {
     shooter.gun -= n;
 
     const spread = gunSpread(shooter, g);
-    const air = target.kind === 'aircraft' && !target.onGround;
     const dmg = air ? g.airDmg : g.groundDmg;
     const rng = this.world.rng;
 

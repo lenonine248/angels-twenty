@@ -333,6 +333,8 @@ function applyComplete(ac, task, world) {
             (world.weaponPoints ?? 0) + w.cost);
         }
       }
+      // 増槽を降ろしたぶん、燃料容量を戻す
+      ac.refreshFuelCapacity?.();
       break;
     case 'weapon': {
       const w = getWeapon(task.weaponId);
@@ -344,6 +346,8 @@ function applyComplete(ac, task, world) {
         world.weaponPoints -= w.cost;
       }
       ac.loadout.push(task.weaponId);
+      // 増槽を積んだら燃料容量が増える。ここで計算し直さないと反映されない
+      ac.refreshFuelCapacity?.();
       break;
     }
     default:
