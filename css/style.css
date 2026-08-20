@@ -569,6 +569,24 @@ button.chip.pick.picked {
 .obj-row.active { color: var(--text); }
 button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 
+.ur-fm { color: var(--cyan); }
+
+/* 発進ボタンの警告。ホバーで内訳を出す（クリックする前に気づけるように） */
+#screens .go.warn, #detailBody button.go.warn {
+  border-color: var(--amber); color: var(--amber);
+  background: rgba(255, 182, 72, 0.14);
+}
+.dt-warn {
+  display: none;
+  position: absolute; right: 10px; bottom: 100%;
+  margin-bottom: 6px; max-width: 320px;
+  background: var(--panel-bg); border: 1px solid var(--amber);
+  color: var(--amber); font-size: 11px; line-height: 1.6;
+  padding: 6px 10px; z-index: 5; pointer-events: none;
+}
+button.go.warn:hover + .dt-warn { display: block; }
+.dt-alt { position: relative; }
+
 /* ===== チュートリアルの手順（§19） =====
    上部、目標パネルと同じ場所。チュートリアルには目標が無いので取り合いにならない。
    下部に置くと操作ヘルプ（#helpBox）と重なる。 */

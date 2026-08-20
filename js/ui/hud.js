@@ -184,7 +184,7 @@ export class Hud {
     // 「実行内容」は指示が変わるたびに変わる“値”なので、ここ（構造のキー）には入れない。
     // 入れないまま値の更新もしないと、指示を変えても表示が古いまま残る（実際に起きた）。
     const key = mine.map((u) => `${u.id}${u.alive ? 1 : 0}${u.state}${this.commands.isSelected(u) ? 1 : 0}`
-      + `${u.aiMode}${u.formation ? u.formation.id : 0}${u.threats.length ? 1 : 0}`).join('|');
+      + `${u.aiMode}${u.formation ? u.formation.number : 0}${u.threats.length ? 1 : 0}`).join('|');
     if (key !== this._rosterKey) {
       this._rosterKey = key;
       this.roster.innerHTML = mine.map((u) => this._rosterRow(u)).join('');
@@ -219,7 +219,8 @@ export class Hud {
     const state = rosterState(u);
     const mode = u.alive && !u.onGround
       ? ` · <span class="ur-mode">${(AI_MODES[u.aiMode] || {}).label || ''}</span>` : '';
-    const fm = u.formation ? ` · ${u.formation.name}` : '';
+    const fm = u.formation
+      ? ` · <span class="ur-fm">${u.formation.name}</span>` : '';
     return `<div class="unit-row${sel}${dead}${threat}" data-id="${u.id}">
       <div class="ur-top"><span class="ur-name">${u.name}</span><span class="ur-state">${state}</span></div>
       <div class="ur-meta"></div>
@@ -258,7 +259,8 @@ export class Hud {
     const u = sel[0];
     const key = [
       u.id, u.state, u.aiMode, u.loadout.join(','), (u.plannedLoadout || []).join(','),
-      u.formation ? u.formation.id : 0, Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
+      u.onGround && u.airbase ? (u.airbase.pendingService(u)?.kinds.join('') ?? '') : '',
+      u.formation ? u.formation.number : 0, Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
       u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.fireThreshold,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
       Object.entries(u.autoWeapons).map(([k, v]) => k + v).join(''),
@@ -427,8 +429,17 @@ export class Hud {
         ${label}<i>${alt}m</i><em>推${Math.round(p.thrust * 100)}/旋${Math.round(p.turn * 100)}</em></button>`;
     }).join('');
     const ground = u && u.onGround;
+    // 整備が終わっていない機体を発進させると、そのぶん補給されないまま出る
+    // （それ自体は部分補給として許している）。事故と区別できるよう警告を出す。
+    const pend = ground && u.airbase ? u.airbase.pendingService(u) : null;
+    const warn = pend
+      ? `<div class="dt-warn">${pend.waiting
+        ? '整備の順番待ちです。このまま発進すると補給を受けずに出ます'
+        : `整備中（${pend.kinds.join('・')} 残り ${Math.ceil(pend.remainingSec)}秒）。`
+          + 'このまま発進すると、残りは補給されません'}</div>`
+      : '';
     const actions = ground
-      ? '<button data-cmd="launch" class="wide go">発進</button>'
+      ? `<button data-cmd="launch" class="wide go${pend ? ' warn' : ''}">発進</button>${warn}`
       : '<button data-cmd="rtb" class="wide">帰投</button><button data-cmd="clear">指示解除</button>';
     return `<div class="dt-alt"><label>目標高度</label>${btns}
       <span class="dt-spacer"></span>${actions}</div>`;

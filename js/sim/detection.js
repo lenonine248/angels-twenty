@@ -28,7 +28,7 @@ export function lostLifetimeOf(unit) {
 /** 電波逆探知の距離(m) */
 const RWR_RANGE = 60000;
 /** 逆探知の位置誤差(m) */
-const RWR_POS_ERROR = 1000;
+export const RWR_POS_ERROR = 1000;
 /** ルックダウン減衰: 目標が自機より低く、地表からこの高度以下なら探知距離が半減 */
 const LOOKDOWN_AGL = 1000;
 const LOOKDOWN_FACTOR = 0.5;
@@ -59,6 +59,13 @@ export class Contact {
     this.level = LEVEL.UNKNOWN;
     this.detected = false;
     this.exactNow = false;
+    /**
+     * いま持っている座標が逆探知由来（±RWR_POS_ERROR ぶれている）か。
+     * `exactNow` は「今この瞬間に精密に見えているか」なので、
+     * 「見えていないが座標は正確」（ブリーフィングで判明していた目標や、
+     * 一度目視した静止目標の記憶）と区別できない。表示を分けるにはこれが要る。
+     */
+    this.approx = false;
     this.ever = false;
     this.firstSeen = time;
     this.trackStart = time;
@@ -93,10 +100,12 @@ export class Contact {
     this.exactNow = exact;
     if (exact) {
       this.pos.copy(unit.pos);
+      this.approx = false;
     } else {
       // 逆探知だけの間は位置がぶれる。毎回同じズレになるよう固定オフセットを使う。
       if (!this._offset) this._offset = deterministicOffset(unit.id, RWR_POS_ERROR);
       this.pos.set(unit.pos.x + this._offset.x, unit.pos.y, unit.pos.z + this._offset.z);
+      this.approx = true;
     }
     this.heading = unit.heading;
     this.speed = unit.speed || 0;

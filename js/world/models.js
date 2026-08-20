@@ -181,6 +181,9 @@ export function syncAircraftView(ac, terrain, size, selected, visible = true) {
 
   const body = g.getObjectByName('body');
   body.scale.setScalar(size);
+  // 機体モデルは重心が原点にある。地上では機底が路面に接するよう持ち上げる。
+  // 機影は画面上で一定サイズになるよう誇張しているので、持ち上げ量も表示倍率で決まる。
+  body.position.y = ac.onGround ? -(bodyFloorOf(ac.spec) * size) : 0;
   // 機首方向・バンク・ピッチ
   body.rotation.set(0, 0, 0);
   body.rotateY(-ac.heading);
@@ -205,6 +208,17 @@ export function syncAircraftView(ac, terrain, size, selected, visible = true) {
     ring.position.y = -agl;
     ring.scale.setScalar(size * 1.1);
   }
+}
+
+/** 機体モデルの最下点（単位空間）。機種ごとに一度だけ測って覚える。 */
+const floorCache = new Map();
+function bodyFloorOf(spec) {
+  if (floorCache.has(spec.id)) return floorCache.get(spec.id);
+  const geo = getJetGeometry(spec.shape, spec.id);
+  if (!geo.boundingBox) geo.computeBoundingBox();
+  const y = geo.boundingBox.min.y;
+  floorCache.set(spec.id, y);
+  return y;
 }
 
 // ================================================================ 地上ユニット
@@ -267,12 +281,15 @@ export function createGroundView(gu) {
       // 表示は rotation.y = -heading で回すので、-Z が sim 側の
       // runwayDir = (sin h, 0, -cos h) と一致する。機体モデルの機首も -Z。
       // ここを X 方向に描くと、見た目の滑走路が実際の離着陸方向と90度ずれる。
-      shape.add(boxMesh(0.20, 0.012, 1.7, 0x3a3a38, 0, 0, 0));       // 滑走路
+      // boxMesh は「与えた y に底面を置く」。滑走路とエプロンは
+      // **天面**を飛行場の標高（y=0）に合わせないと、その厚みぶんだけ
+      // 路面が持ち上がり、駐機中の機体が路面に埋まって見える。
+      shape.add(boxMesh(0.20, 0.012, 1.7, 0x3a3a38, 0, -0.012, 0));   // 滑走路
       // エプロン・管制塔・格納庫は滑走路の脇（+X）、進入端の側（+Z）にまとめる
-      shape.add(boxMesh(0.42, 0.02, 0.30, 0x44443f, 0.34, 0, 0.55)); // エプロン
-      shape.add(boxMesh(0.10, 0.22, 0.10, c, 0.34, 0.02, 0.55));     // 管制塔
+      shape.add(boxMesh(0.42, 0.02, 0.30, 0x44443f, 0.34, -0.02, 0.55)); // エプロン
+      shape.add(boxMesh(0.10, 0.22, 0.10, c, 0.34, 0, 0.55));         // 管制塔
       for (let i = 0; i < 3; i++) {
-        shape.add(boxMesh(0.16, 0.09, 0.16, dark, 0.34, 0.02, 0.30 - i * 0.24));
+        shape.add(boxMesh(0.16, 0.09, 0.16, dark, 0.34, 0, 0.30 - i * 0.24));
       }
       // 滑走路灯。両端に置いて、点滅で「生きている飛行場」だと分かるようにする。
       for (const sz of [-0.85, 0.85]) {
@@ -283,7 +300,7 @@ export function createGroundView(gu) {
             transparent: true, depthTest: false,
           }),
         );
-        lamp.position.set(0, 0.05, sz);
+        lamp.position.set(0, 0.04, sz);
         lamp.renderOrder = 6;
         lamp.name = 'beacon';
         shape.add(lamp);
@@ -293,7 +310,7 @@ export function createGroundView(gu) {
         new THREE.SphereGeometry(0.055, 6, 4),
         new THREE.MeshBasicMaterial({ color: 0xffd070, transparent: true, depthTest: false }),
       );
-      beacon.position.set(0.34, 0.27, 0.55);
+      beacon.position.set(0.34, 0.25, 0.55);
       beacon.renderOrder = 6;
       beacon.name = 'beacon';
       shape.add(beacon);

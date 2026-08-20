@@ -6,9 +6,14 @@
 //   ロスト LOST         … 点滅しながら推測進路へ移動し、10秒で消滅
 //   記憶   MEMORY       … 減光＋外枠付き（静止目標のみ・消えない）
 //   状態不明 UNCONFIRMED … 記憶表示＋「?」（攻撃したが着弾を見ていない）
+//
+// 座標が逆探知だけで得られている目標（±1km ぶれる）は、
+// **誤差の円**を足して「そこにピタリといるわけではない」と分かるようにする。
+// 位置が確かな目標と同じ菱形で描くと、対地ミサイルを撃ってよい相手なのか
+// 見に行くべき相手なのかが区別できない。
 
 import * as THREE from 'three';
-import { LEVEL, lostLifetimeOf } from '../sim/detection.js';
+import { LEVEL, lostLifetimeOf, RWR_POS_ERROR } from '../sim/detection.js';
 import { makeLabelSprite } from './models.js';
 import { CATEGORY_LABEL } from '../data/ground.js';
 import { categoryOf } from '../data/aircraft.js';
@@ -102,6 +107,20 @@ function createMarker() {
   altLine.renderOrder = 6;
   g.add(altLine);
 
+  // 逆探知の位置誤差の円（地表に置く）
+  const err = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(
+      Array.from({ length: 48 }, (_, k) => {
+        const a = (k / 48) * Math.PI * 2;
+        return new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+      })),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, depthTest: false }),
+  );
+  err.name = 'err';
+  err.visible = false;
+  err.renderOrder = 6;
+  g.add(err);
+
   // 進行方向のヒゲ（未識別でも進路は分かる）
   const heading = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints([
@@ -160,6 +179,16 @@ function syncMarker(g, c, camera, terrain, size, time) {
   altLine.material.color.copy(color);
   altLine.material.opacity = opacity * 0.35;
 
+  // 逆探知だけの目標は誤差の円を出す
+  const err = g.getObjectByName('err');
+  err.visible = !!c.approx;
+  if (err.visible) {
+    err.position.y = -agl;                      // 地表に敷く
+    err.scale.set(RWR_POS_ERROR, 1, RWR_POS_ERROR);
+    err.material.color.copy(color);
+    err.material.opacity = opacity * 0.45;
+  }
+
   // 進行方向
   const heading = g.getObjectByName('heading');
   const moving = c.unit.kind === 'aircraft' || c.speed > 1;
@@ -213,6 +242,7 @@ function labelFor(c) {
     if (c.level >= LEVEL.DETAILED && c.detected) base += ` ${Math.round(c.speed)}m/s`;
   }
 
+  if (c.approx) base += ' [逆探知 ±1km]';
   if (c.unconfirmed) base += ' ?';
   else if (c.state === 'memory') base += ' [記憶]';
   return base;

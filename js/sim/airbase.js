@@ -181,6 +181,30 @@ export class Airbase extends GroundUnit {
     return { remainingSec: total - done, current: slot.tasks[0]?.label ?? '' };
   }
 
+  /**
+   * まだ終わっていない整備の内訳。UI の警告用。
+   * 「今出すと何が足りないまま出るのか」が分からないと、
+   * 部分補給が意図した選択なのか事故なのか区別できない。
+   */
+  pendingService(ac) {
+    const slot = this.slots.find((s) => s.ac === ac);
+    if (!slot) {
+      return this.queue.includes(ac) ? { kinds: [], remainingSec: null, waiting: true } : null;
+    }
+    const LABEL = { fuel: '燃料', weapon: '兵装', swap: '兵装', gun: '機銃', decoy: 'デコイ', repair: '修理' };
+    const kinds = [];
+    for (const t of slot.tasks) {
+      const k = LABEL[t.type] || '整備';
+      if (!kinds.includes(k)) kinds.push(k);
+    }
+    if (!kinds.length) return null;
+    return {
+      kinds,
+      remainingSec: slot.tasks.reduce((n, t) => n + (t.time - t.done), 0),
+      waiting: false,
+    };
+  }
+
   /** 機体を発進させる（整備途中でも可＝部分補給） */
   launch(ac, world) {
     if (!this.alive) return false;

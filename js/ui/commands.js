@@ -8,7 +8,7 @@
 
 import * as THREE from 'three';
 import { clamp } from '../core/rng.js';
-import { Formation } from '../ai/formation.js';
+import { Formation, freeFormationNumber, MAX_FORMATION_NUMBER } from '../ai/formation.js';
 import { getLabelMaterial } from '../world/models.js';
 import { WEAPONS } from '../data/weapons.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
@@ -24,7 +24,6 @@ export class CommandController {
     this.camera = camera;
     this.world = world;
     this.selection = [];
-    this.groups = new Map();
     this.hoverUnit = null;
 
     this._dragStart = null;
@@ -41,7 +40,6 @@ export class CommandController {
   setWorld(world) {
     this.world = world;
     this.selection = [];
-    this.groups.clear();
     this.hoverUnit = null;
   }
 
@@ -81,15 +79,11 @@ export class CommandController {
     window.addEventListener('keydown', (e) => {
       if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
 
-      // 編隊: Ctrl+数字で登録、数字で呼び出し
+      // 編隊: 数字で選択、Ctrl+数字で番号の付け替え
       if (/^Digit[1-9]$/.test(e.code)) {
-        const n = e.code.slice(5);
-        if (e.ctrlKey) {
-          this.groups.set(n, this.selection.slice());
-        } else {
-          const g = (this.groups.get(n) || []).filter((u) => u.alive);
-          if (g.length) this.select(g);
-        }
+        const n = Number(e.code.slice(5));
+        if (e.ctrlKey) this.renumberFormation(n);
+        else this.selectFormation(n);
         e.preventDefault();
         return;
       }
@@ -208,8 +202,14 @@ export class CommandController {
       if (!s) continue;
       if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) hit.push(u);
     }
-    if (additive) for (const u of hit) if (!this.isSelected(u)) this.selection.push(u);
-    else this.select(hit);
+    // else を波括弧なしで書くと内側の if に付いてしまい、
+    // Shift 無しの範囲選択が何もしなくなる（実際そうなっていた）。
+    if (additive) {
+      for (const u of hit) if (!this.isSelected(u)) this.selection.push(u);
+      if (hit.length) notify('select', { units: this.selection });
+    } else {
+      this.select(hit);
+    }
   }
 
   _cycleSelect(dir) {
@@ -291,11 +291,41 @@ export class CommandController {
     notify('order:move', { x: p.x, z: p.z });
   }
 
+  /** 番号から編隊を引く */
+  formationByNumber(n) {
+    return (this.world.formations || []).find((f) => f.number === n && f.alive) || null;
+  }
+
+  /** その番号の編隊を丸ごと選択する */
+  selectFormation(n) {
+    const f = this.formationByNumber(n);
+    if (!f) return;
+    const alive = f.members.filter((u) => u.alive);
+    if (alive.length) this.select(alive);
+  }
+
+  /**
+   * 選択中の編隊の番号を付け替える。
+   * その番号を別の編隊が使っていたら入れ替える（消さない）。
+   */
+  renumberFormation(n) {
+    if (n < 1 || n > MAX_FORMATION_NUMBER) return;
+    const f = this.selection.map((u) => u.formation).find(Boolean);
+    if (!f || f.number === n) return;
+    const other = this.formationByNumber(n);
+    const old = f.number;
+    f.setNumber(n);
+    if (other && other !== f) other.setNumber(old);
+    this.world.log?.(other && other !== f
+      ? `${f.name} と ${other.name} の番号を入れ替えました`
+      : `編隊の番号を ${n} にしました`);
+  }
+
   /** 選択中の機体（最大4機）で編隊を組む */
   makeFormation() {
     const members = this.selection.filter((u) => u.kind === 'aircraft' && u.alive).slice(0, 4);
     if (members.length < 2) return;
-    const f = new Formation(members);
+    const f = new Formation(members, freeFormationNumber(this.world.formations));
     this.world.formations.push(f);
     f.setMode('COORDINATE');
     this.world.log?.(`${f.name} 編成（${members.map((m) => m.name).join(', ')}）`);
@@ -464,12 +494,15 @@ export function raycastTerrain(origin, dir, terrain, maxDist = 300000) {
 // ---------------------------------------------------------------- 経路表示
 
 const MAX_PATH_VERTS = 2048;
+/** レーダーの扇の内側の弧（探知距離に対する比）。ここまで入れば即座に識別できる */
+const IDENT_ARC = 0.5;
 
 /** 選択中ユニットの指示経路・距離ラベル・射程円を描く */
 class OrderPathRenderer {
   constructor() {
     this.labels = [];        // 距離ラベルのスプライト（使い回す）
     this.circles = [];       // 兵装の射程円
+    this.fans = [];          // レーダーの扇
     this.positions = new Float32Array(MAX_PATH_VERTS * 3);
     this.colors = new Float32Array(MAX_PATH_VERTS * 3);
     const geo = new THREE.BufferGeometry();
@@ -489,6 +522,7 @@ class OrderPathRenderer {
     let n = 0;
     let labelIdx = 0;
     let circleIdx = 0;
+    let fanIdx = 0;
     const P = this.positions, C = this.colors;
     const seg = (ax, ay, az, bx, by, bz, col) => {
       if (n + 2 > MAX_PATH_VERTS) return;
@@ -535,6 +569,13 @@ class OrderPathRenderer {
         }
       }
 
+      // レーダーの扇。「今どこを見ているか」が見えないと、
+      // 機首を向ける／向けないの判断そのものが成立しない。
+      // 全方位レーダー（早期警戒機）は扇にならないので円で出す。
+      if (!u.onGround && u.spec.radarRange > 0) {
+        this._radarFan(fanIdx++, u);
+      }
+
       // 選択中の兵装の射程円
       if (u.selectedWeapon && camera && world) {
         const w = WEAPONS[u.selectedWeapon];
@@ -547,6 +588,7 @@ class OrderPathRenderer {
 
     for (let i = labelIdx; i < this.labels.length; i++) this.labels[i].visible = false;
     for (let i = circleIdx; i < this.circles.length; i++) this.circles[i].visible = false;
+    for (let i = fanIdx; i < this.fans.length; i++) this.fans[i].visible = false;
 
     this.geometry.attributes.position.needsUpdate = true;
     this.geometry.attributes.color.needsUpdate = true;
@@ -568,6 +610,70 @@ class OrderPathRenderer {
     const mpp = 2 * dist * Math.tan((camera.fov * Math.PI / 180) / 2) / window.innerHeight;
     const h = 13 * mpp;
     s.scale.set(h * (s.material.userData.aspect || 4), h, 1);
+  }
+
+  /**
+   * レーダーの扇。機体の高度の水平面に、機首方向を中心とした扇形を描く。
+   *
+   * **面（薄い塗り）と輪郭の2枚重ね**にしてある。
+   * 探知距離は 40km あり、ふつうの寄り（10〜20km）では輪郭の弧が画面の外に出る。
+   * 線だけだと「2本の線が伸びている」だけになって扇に見えないので、
+   * 手前が必ず映る面を敷いて向きが読めるようにする。
+   *
+   * 内側の弧は「ここまで入れば即座に識別できる」距離（探知距離の半分）。
+   */
+  _radarFan(i, u) {
+    const range = u.spec.radarRange || 0;
+    const omni = !!u.spec.omniRadar;
+    const half = omni ? Math.PI : (u.spec.radarFovH || 60) * Math.PI / 180;
+    let f = this.fans[i];
+    if (!f || f.userData.half !== half) {
+      if (f) this.object.remove(f);
+      f = new THREE.Group();
+      f.userData.half = half;
+      f.frustumCulled = false;
+
+      // 面。機首は -Z なので、+Y が -Z へ来るように倒して角度を合わせる。
+      const wedge = new THREE.Mesh(
+        new THREE.CircleGeometry(1, 32, Math.PI / 2 - half, 2 * half),
+        new THREE.MeshBasicMaterial({
+          color: 0x6fd8e8, transparent: true, opacity: 0.11,
+          depthTest: false, side: THREE.DoubleSide,
+        }),
+      );
+      wedge.rotation.x = -Math.PI / 2;
+      wedge.renderOrder = 3;
+      f.add(wedge);
+
+      // 輪郭（外周・内側の弧・扇の両端）
+      const pts = [];
+      const STEPS = 28;
+      const arc = (r, closeToCenter) => {
+        if (closeToCenter) pts.push(new THREE.Vector3(0, 0, 0));
+        for (let k = 0; k <= STEPS; k++) {
+          const a = -half + (2 * half * k) / STEPS;
+          pts.push(new THREE.Vector3(Math.sin(a) * r, 0, -Math.cos(a) * r));
+        }
+        if (closeToCenter) pts.push(new THREE.Vector3(0, 0, 0));
+      };
+      arc(1, !omni);
+      arc(IDENT_ARC, false);
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineBasicMaterial({
+          color: 0x6fd8e8, transparent: true, opacity: 0.4, depthTest: false,
+        }),
+      );
+      line.renderOrder = 4;
+      f.add(line);
+
+      this.object.add(f);
+      this.fans[i] = f;
+    }
+    f.visible = true;
+    f.position.copy(u.pos);
+    f.rotation.y = -u.heading;
+    f.scale.set(range, 1, range);
   }
 
   _circle(i, center, radius) {

@@ -7,14 +7,34 @@
 // 編隊が崩れても各機は自律して戦い続ける。
 
 const MAX_MEMBERS = 4;
+/** 編隊に付けられる番号。数字キーでそのまま呼び出す。 */
+export const MAX_FORMATION_NUMBER = 9;
 let nextId = 1;
 
+/**
+ * 空いている最小の番号を返す。
+ * 通し番号を振ると、解散を繰り返すうちに「編隊7」しか無い状態になり、
+ * 数字キーとの対応が覚えられなくなる。空きを詰めて若い番号を使い回す。
+ */
+export function freeFormationNumber(formations) {
+  const used = new Set((formations || []).map((f) => f.number));
+  for (let n = 1; n <= MAX_FORMATION_NUMBER; n++) if (!used.has(n)) return n;
+  return MAX_FORMATION_NUMBER;
+}
+
 export class Formation {
-  constructor(members) {
-    this.id = nextId++;
-    this.name = `編隊${this.id}`;
+  constructor(members, number = 1) {
+    this.id = nextId++;          // 内部の一意キー（表示には使わない）
+    this.setNumber(number);
     this.members = [];
     for (const m of members.slice(0, MAX_MEMBERS)) this.add(m);
+  }
+
+  /** 表示・数字キーで使う番号を付け替える */
+  setNumber(n) {
+    this.number = Math.min(MAX_FORMATION_NUMBER, Math.max(1, Math.round(n)));
+    this.name = `編隊${this.number}`;
+    return this;
   }
 
   get leader() {

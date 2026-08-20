@@ -523,8 +523,15 @@ function spawnStage(world, stage, loadouts, terrain) {
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
     u.aiMode = a.aiMode || 'PATROL';
-    u.patrolArea = { x: a.x, z: a.z, alt: u.pos.y, radius: 4500 };
-    u.setOrder({ type: 'orbit', x: a.x, z: a.z, alt: u.pos.y, radius: 4500 });
+    if (a.moveTo) {
+      // 目的地を持つ敵機（支援機と同じ書き方）。哨戒ではなく一方向へ進む。
+      const alt = Math.max(0, terrain.heightAt(a.moveTo.x, a.moveTo.z)) + (a.moveTo.agl || 4000);
+      u.patrolArea = { x: a.moveTo.x, z: a.moveTo.z, alt, radius: 4500 };
+      u.setOrder({ type: 'move', x: a.moveTo.x, z: a.moveTo.z, alt });
+    } else {
+      u.patrolArea = { x: a.x, z: a.z, alt: u.pos.y, radius: 4500 };
+      u.setOrder({ type: 'orbit', x: a.x, z: a.z, alt: u.pos.y, radius: 4500 });
+    }
     if (a.strikeTargetTag) u._strikeTargetTag = a.strikeTargetTag;
     if (a.known) known.push(u);
   }
