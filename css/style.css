@@ -914,3 +914,35 @@ button.go.warn:hover + .dt-warn { display: block; }
 .rv-foot { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .rv-clock { font-size: 13px; color: var(--amber); min-width: 52px; }
 .rv-foot input[type=range] { flex: 1; accent-color: var(--amber); }
+
+/* ================================================================ リプレイ再生（§23.4） */
+#replayBar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+  background: linear-gradient(to top, rgba(4, 8, 14, 0.96), rgba(4, 8, 14, 0.78));
+  border-top: 1px solid var(--panel-line);
+  padding: 8px 16px 10px;
+  display: flex; flex-direction: column; gap: 7px;
+}
+.rp-row { display: flex; align-items: center; gap: 10px; }
+.rp-top { border-bottom: 1px solid var(--panel-line); padding-bottom: 6px; }
+.rp-title { font-size: 12px; letter-spacing: 0.18em; color: var(--cyan); }
+.rp-hint { font-size: 10px; color: var(--text-dim); letter-spacing: 0.06em; }
+.rp-close { margin-left: auto; }
+#replayBar button {
+  font-family: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer;
+  color: var(--text-dim); background: transparent; border: 1px solid var(--panel-line);
+}
+#replayBar button:hover { color: var(--text); background: rgba(111, 216, 232, 0.12); }
+#replayBar button.on { color: var(--bg); background: var(--amber); border-color: var(--amber); }
+.rp-play { min-width: 42px; color: var(--amber) !important; }
+.rp-clock { font-size: 12px; color: var(--amber); min-width: 108px; text-align: center; }
+#replayBar input[type=range] { flex: 1; accent-color: var(--amber); }
+.rp-speeds { display: flex; gap: 3px; }
+.rp-follow label {
+  font-size: 10px; letter-spacing: 0.18em; color: var(--cyan); margin-right: 4px;
+}
+.rp-follow { flex-wrap: wrap; gap: 4px; }
+.rp-unit.side-red { border-left: 3px solid #ff7676; }
+.rp-unit.side-blue { border-left: 3px solid #5aa9ff; }
+.rv-play { color: var(--amber) !important; }
+

@@ -155,6 +155,7 @@ angels_twenty/
     ui/actions.js          「今これをした」の通知口（チュートリアルの手順判定用）
     ui/tutorial.js         チュートリアルの進行と手順パネル
     ui/review.js           振り返り画面（記録を地図に開く）
+    ui/replay.js           3Dリプレイ再生（記録を3Dへ流す）
   tools/bench.js           バランス検証用のバッチ実行（コンソールから読み込む）
   tools/difficulty.js      ステージ定義からの難易度見積り
   tools/_tut_harness.js    チュートリアルを手順どおり通して確かめる（同上）

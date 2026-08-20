@@ -21,7 +21,7 @@ import * as telemetry from './core/telemetry.js';
 import { Recorder } from './core/recorder.js';
 import { Aircraft } from './sim/aircraft.js';
 import { GroundUnit, findFlatSpot } from './sim/ground.js';
-import { Airbase, pickRunwayHeading } from './sim/airbase.js';
+import { Airbase, pickRunwayHeading, flattenRunway } from './sim/airbase.js';
 import { DetectionSystem, Contact, LEVEL } from './sim/detection.js';
 import { CombatSystem } from './sim/combat.js';
 import { resetMissileIds } from './sim/missile.js';
@@ -38,6 +38,7 @@ import { TUTORIALS, getTutorial } from './data/tutorials.js';
 import { markTutorialDone } from './core/save.js';
 import { isChangelogOpen, hideChangelog } from './ui/changelog.js';
 import { ReviewScreen } from './ui/review.js';
+import { ReplayPlayer } from './ui/replay.js';
 import { STAGES } from './data/stages.js';
 import { getType } from './data/aircraft.js';
 
@@ -54,7 +55,10 @@ let hud = null;
 let minimap = null;
 /** 直近に終わった戦闘の記録（§23）。戦果画面の「振り返り」が使う */
 let lastRecording = null;
+/** 直近の戦果画面の中身。振り返りから戻ったときに出し直すために覚えておく */
+let lastResult = null;
 let review = null;
+let replay = null;
 let updateCameraInput = null;
 let progress = loadProgress();
 let audio = null;
@@ -114,6 +118,26 @@ async function boot() {
 
   review = new ReviewScreen(el('review'));
   screens.onReview = () => { if (lastRecording) review.open(lastRecording); };
+  // 3D再生へ行くときに戦果画面を畳んでいるので、閉じたら出し直す。
+  // 出し直さないと、何も無い画面に取り残される（実際にそうなった）。
+  review.onClose = () => {
+    if (replay && replay.isOpen) return;                 // 3D再生へ移るところ
+    if (!el('screens').classList.contains('hidden')) return;
+    if (lastResult) screens.showResult(lastResult.stage, lastResult.result, lastResult.stats);
+    else screens.showTitle();
+  };
+
+  replay = new ReplayPlayer(el('replayBar'), scene);
+  // 振り返り画面から3D再生へ。
+  // 戦果画面(#screens)は開いたままなので、3Dを見せるには畳む必要がある。
+  review.onReplay = (data) => {
+    review.close();
+    screens.hide();
+    el('hud').classList.add('hidden');
+    replay.open(data);
+  };
+  // 再生を終えたら、来た場所（振り返り画面）へ戻す
+  replay.onClose = () => { scene.reset(); if (lastRecording) review.open(lastRecording); };
 
   audio = new AudioManager(progress.settings);
   setupAudioUi();
@@ -137,6 +161,7 @@ async function boot() {
     scene, loop, screens, progress, audio, stages: STAGES, tutorials: TUTORIALS, telemetry,
     get recording() { return lastRecording; },
     get review() { return review; },
+    get replay() { return replay; },
     /** 検証用: ステージを直接開始する（ブリーフィング既定の兵装で出撃） */
     startStage(i) { screens.showBriefing(STAGES[i]); startBattle(STAGES[i], screens.loadouts.map((l) => l.slice())); },
   };
@@ -165,6 +190,13 @@ function fixedUpdate(dt) {
 function render(alpha, realDt) {
   updateCameraInput(realDt);
   scene.update(realDt);
+
+  // リプレイ中は戦闘が無い。記録から作った表示物だけを動かす（§23.4）
+  if (replay && replay.isOpen) {
+    replay.update(realDt);
+    scene.render();
+    return;
+  }
 
   if (battle) {
     const { world, terrain, contacts } = battle;
@@ -502,12 +534,7 @@ function spawnStage(world, stage, loadouts, terrain) {
     const spot = findFlatSpot(terrain, o.x, o.z, 2000);
     const heading = pickRunwayHeading(terrain, spot.x, spot.z);
     const fieldAlt = Math.max(20, terrain.heightAt(spot.x, spot.z));
-    const dir = { x: Math.sin(heading), z: -Math.cos(heading) };
-    terrain.flattenStrip(
-      spot.x - dir.x * 2400, spot.z - dir.z * 2400,
-      spot.x + dir.x * 1500, spot.z + dir.z * 1500,
-      650, fieldAlt, 900,
-    );
+    flattenRunway(terrain, spot.x, spot.z, heading, fieldAlt);
     return world.spawn(new Airbase({
       ...o, x: spot.x, z: spot.z, runwayHeading: heading, serviceSlots: 2,
     }).groundTo(terrain));
@@ -709,16 +736,21 @@ function finishBattle() {
   setTimeout(() => {
     el('hud').classList.add('hidden');
     audio.startMusic('menu');
-    screens.showResult(stage, clear ? 'clear' : 'fail', {
-      reason: mission.failReason || (clear ? '全目標を達成' : ''),
-      time: formatTime(loop.simTime),
-      kills: battle.kills,
-      losses: battle.losses,
-      points: world.weaponPoints,
-      rating,
-      best: bestBefore,
-      newBest: !!(rating && isBetterRank(rating.rank, bestBefore)),
-    });
+    lastResult = {
+      stage,
+      result: clear ? 'clear' : 'fail',
+      stats: {
+        reason: mission.failReason || (clear ? '全目標を達成' : ''),
+        time: formatTime(loop.simTime),
+        kills: battle.kills,
+        losses: battle.losses,
+        points: world.weaponPoints,
+        rating,
+        best: bestBefore,
+        newBest: !!(rating && isBetterRank(rating.rank, bestBefore)),
+      },
+    };
+    screens.showResult(lastResult.stage, lastResult.result, lastResult.stats);
     battle = null;
   }, 1800);
 }

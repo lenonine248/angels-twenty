@@ -100,6 +100,7 @@ export class ReviewScreen {
       this._render();
       return;
     }
+    if (act === 'replay') { this.onReplay?.(this.data); return; }
     if (act === 'save') { downloadRecording(this.data); return; }
     if (act === 'load') { this._pickFile(); return; }
     if (act === 'end') { this.tIndex = this.data.samples.length - 1; this._render(); return; }
@@ -179,6 +180,10 @@ export class ReviewScreen {
             <div class="rv-group">
               <label>機体で絞る</label>
               <div class="rv-units">${roster || '<span class="dim">なし</span>'}</div>
+            </div>
+            <div class="rv-group">
+              <label>再生</label>
+              <button data-rv="replay" class="rv-play">3Dで再生する</button>
             </div>
             <div class="rv-group rv-msg-wrap">
               <button data-rv="save" class="rv-file">記録を保存</button>

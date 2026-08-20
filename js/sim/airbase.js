@@ -27,6 +27,22 @@ const TOUCHDOWN_OFFSET = 250;
  * 降下経路が地形を貫通してしまう。16方位を試して、
  * 理想の降下線からの地形のはみ出しが最小になる向きを返す。
  */
+/**
+ * 飛行場のまわりを均す。
+ *
+ * **戦闘を組むときと、記録を再生するときの両方で使う**（§23.4）。
+ * 別々に書くと、片方の数値だけ変えたときに再生側で滑走路が斜面に乗り、
+ * 機体が路面から浮いたり埋まったりする。出どころを1つにしておく。
+ */
+export function flattenRunway(terrain, x, z, heading, fieldAlt) {
+  const dir = { x: Math.sin(heading), z: -Math.cos(heading) };
+  terrain.flattenStrip(
+    x - dir.x * 2400, z - dir.z * 2400,
+    x + dir.x * 1500, z + dir.z * 1500,
+    650, fieldAlt, 900,
+  );
+}
+
 export function pickRunwayHeading(terrain, x, z, distance = APPROACH_DISTANCE) {
   const fieldAlt = Math.max(0, terrain.heightAt(x, z));
   let best = 0, bestScore = Infinity;
