@@ -488,7 +488,7 @@ BGMとエンジン音を下げたぶん、爆発と警報が埋もれないよ�
 | `data/rating.js` | クリア評価の軸と総合ランクの計算（基準値はステージ側が持つ） |
 | `data/tutorials.js` | チュートリアル6本。手順・地形・配置。`check` の基準値はここ |
 | `sim/bullet.js` | `BULLET_LIFE`(3.0秒)・`GUN_RPS`(25)・`AIR_HIT_RADIUS`(10m) |
-| `sim/acm.js` | 空戦機動。`LAG_RANGE`(2200)・`TRACK_RANGE`(950)・`HOLD_RANGE`(450)・`BREAK_RANGE`(1200)・`DECEL_FRACTION`(0.30)・`LAG_MIN_ADVANTAGE`(25) |
+| `sim/acm.js` | 空戦機動。`LAG_RANGE`(2200)・`TRACK_RANGE`(950)・`HOLD_RANGE`(450)・`BREAK_RANGE`(1200)・`DECEL_FRACTION`(0.30)・`LAG_MIN_ADVANTAGE`(25)・`ALT_HANDOFF_GUIDED`(12000)/`_FREE`(6000) |
 | `ai/formation.js` | 隊形 `SHAPE`（密集 700/550・横隊 250/1800） |
 | `sim/airbase.js` | `SERVICE_TIME`（整備時間）、`APPROACH_DISTANCE`(7km)/`APPROACH_ALT`(600m) |
 | `world/models.js` | `TARGET_PX`(46) 機影の画面上の大きさ |
@@ -517,6 +517,13 @@ BGMとエンジン音を下げたぶん、爆発と警報が埋もれないよ�
 - **C 編隊の戦術連携 … 隊形のみ完了**（§22.4）。挟撃は測って撤去した
 
 遊んで見つかったこと（作者・2026-08-20）:
+
+- **指定高度が交戦で無視されていた。** 空戦機動が遠いうちから目標の高度へ
+  合わせに行くため、高く構える／低く進入する、という指定が意味を持たなかった。
+  交戦の間合いまで指定高度を保つようにした（§6.2.5）。
+  切替距離は兵装で変える（誘導が要る AAM-M は 12km、撃ちっぱなしは 6km）。
+  **AI は commandedAlt を設定しないので、AI 同士の戦闘には影響しない**
+  （ベンチの数字が変わらないのはこのため）
 
 - **「命中期待が高なのに撃たない」は不具合ではなく表示の欠落だった。**
   期待度は「当たるか」の見積りで、「撃ってよいか」は別条件。

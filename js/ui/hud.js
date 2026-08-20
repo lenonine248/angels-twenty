@@ -142,7 +142,10 @@ export class Hud {
     const sel = this.commands.selection;
     if (!sel.length) return;
     switch (cmd) {
-      case 'clear': for (const u of sel) u.clearOrders(); break;
+      case 'clear':
+        // 指示解除では高度の指定も外す（AI任せに戻す）
+        for (const u of sel) { u.clearOrders(); u.commandedAlt = null; }
+        break;
       case 'rtb':
         for (const u of sel) {
           if (u.onGround) continue;

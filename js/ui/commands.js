@@ -409,6 +409,11 @@ export class CommandController {
     for (const q of u.queue) q.alt = a;
     u.desiredAlt = a;
     if (u.patrolArea) u.patrolArea.alt = a;
+    // **プレイヤーが決めた高度**として機体に覚えさせる。
+    // 指示(order)に持たせるだけだと、敵を右クリックして攻撃指示を出した瞬間に
+    // 新しい指示へ差し替わって消える。空戦機動はこれを見て、
+    // 交戦の間合いに入るまで指定高度を保つ（§6.2.5 / sim/acm.js）。
+    u.commandedAlt = a;
   }
 
   // ------------------------------------------------------------ ピック

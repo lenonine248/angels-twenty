@@ -72,6 +72,11 @@ export class Aircraft extends Unit {
     this.pitch = 0;
     /** 実際の旋回率(rad/s)。毎ステップ更新する */
     this.turnRate = 0;
+    /**
+     * プレイヤーが指定した高度(m)。指定が無ければ null。
+     * 指示(order)ではなく機体が持つ。攻撃指示を出し直しても消えないようにするため。
+     */
+    this.commandedAlt = null;
 
     /** 指示。order が現在の指示、queue が Shift+右クリックで積んだ待ち行列 */
     this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, radius: 2500 };
@@ -451,10 +456,10 @@ export class Aircraft extends Unit {
 
         // ここから先は地上目標。
         // 「爆弾を積んでいれば投下高度を保つ」「そうでなければ降りて掃射する」。
-        if (o.alt != null) {
+        if (o.alt != null || this.commandedAlt != null) {
           // プレイヤーが高度を指定していればそれに従う
           // （高高度からの爆撃など、意図した高度で攻撃させるため）
-          desiredAlt = o.alt;
+          desiredAlt = o.alt ?? this.commandedAlt;
         } else if (this.loadout.includes('BOMB')) {
           // 爆撃機は軽対空砲の射高より上から入る。攻撃機は低く入って正確に落とす。
           // 目標+900m だと対空砲(射高1800m)の内側で、1回投下したら落とされて終わる。

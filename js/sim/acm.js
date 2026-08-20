@@ -75,6 +75,21 @@ const RECOVER_ENERGY = 0.95;
 const PERCH_ALT = 900;
 
 /**
+ * プレイヤーが指定した高度を、目標の高度へ合わせ始めるまで保つ距離(m)。
+ * **持っている兵装で変える**（§6.2.5）。
+ *
+ * `sarh`（AAM-M）は**着弾まで**目標をレーダーの扇（上下±30°）に入れ続ける
+ * 必要がある。高度差を抱えたまま近づくと飛翔中に扇から外れて誘導が切れるので、
+ * 発射したあとすぐ合わせ始める必要がある。実測の発射距離は 13〜16km。
+ *
+ * 撃ちっぱなしの兵装（AAM-S の赤外線 / AAM-A のアクティブ）は、
+ * 発射の瞬間にシーカーへ入っていればよい。実測の発射距離は 2〜4km なので、
+ * 指定高度をずっと近くまで保てる。
+ */
+const ALT_HANDOFF_GUIDED = 12000;
+const ALT_HANDOFF_FREE = 6000;
+
+/**
  * 防御機動に入る、後ろの敵との距離(m)。
  *
  * 機銃が当たり始めるのは 800m 前後。ここを 1,600m まで広げると
@@ -287,11 +302,35 @@ function extend(self, target, world, bearing, flat) {
 }
 
 /**
+ * 誘導を保ち続ける必要のある兵装（セミアクティブ）を持っているか。
+ * 持っているなら、早めに高度を合わせないと誘導が切れる。
+ */
+function needsGuidedHandoff(self) {
+  for (const id of self.loadout) {
+    const w = WEAPONS[id];
+    if (!w || w.kind !== 'aam') continue;
+    if (self.autoWeapons && self.autoWeapons[id] === false) continue;
+    if (w.fireAndForget === false) return true;
+  }
+  return false;
+}
+
+/**
  * 接近中の高度。
- * 上に居るうちは高度を保ち、近づいてから降ろす。
- * 高度は速度に変えられる資産なので、遠いうちから捨てない（§5.2.1）。
+ *
+ * **プレイヤーが高度を指定していれば、交戦の間合いに入るまでそれを保つ。**
+ * 高度は速度に変えられる資産で（§5.2.1）、高く置くか低く置くかは
+ * 指揮官の判断そのもの。遠いうちから目標に合わせて捨ててしまうと、
+ * 指定した意味が無くなる。
+ *
+ * 指定が無ければ従来どおり、目標の高度に合わせて近づく。
  */
 function approachAlt(self, target, flat) {
+  const hold = self.commandedAlt;
+  if (hold != null) {
+    const handoff = needsGuidedHandoff(self) ? ALT_HANDOFF_GUIDED : ALT_HANDOFF_FREE;
+    if (flat > handoff) return hold;
+  }
   const above = self.pos.y - target.pos.y;
   if (flat > 4000 && above > 0 && above < PERCH_ALT) {
     // 少し上に付けて入る。降下ぶんが速度になる
