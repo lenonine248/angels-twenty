@@ -424,7 +424,8 @@ function illuminates(launcher, target, world) {
   const dy = target.pos.y - launcher.pos.y;
   const flat = Math.hypot(dx, dz);
   const dist = Math.hypot(flat, dy);
-  if (dist > (launcher.spec.radarRange || 0)) return false;
+  // 切っていれば誘導できない（§26.4）
+  if (dist > (launcher.radarRange || 0)) return false;
 
   if (!launcher.spec.omniRadar) {
     const bearing = Math.atan2(dx, -dz);

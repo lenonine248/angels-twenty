@@ -30,6 +30,7 @@
 //   fire          ミサイルを発射した（detail.weapon）
 //   takeoff       飛行場から発進させた
 //   loadout       搭載を積み替えた
+//   radar         レーダーの扱いを変えた（自動/常時ON/常時OFF）
 
 /** 購読者はチュートリアルだけなので1つで足りる */
 let listener = null;

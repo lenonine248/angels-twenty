@@ -297,7 +297,8 @@ function byRadar(sensor, target, terrain, stats) {
 
   let range, fovH = null, fovV = null;
   if (sensor.kind === 'aircraft') {
-    range = sensor.spec.radarRange || 0;
+    // 切っていれば 0（§26.4）。地上ユニットと同じく実際の値を見る
+    range = sensor.radarRange || 0;
     if (!sensor.spec.omniRadar) {
       fovH = (sensor.spec.radarFovH || 60) * DEG;
       fovV = (sensor.spec.radarFovV || 30) * DEG;
@@ -343,14 +344,21 @@ function byRadar(sensor, target, terrain, stats) {
  */
 function byRwr(sensor, target, terrain, stats) {
   if (sensor.kind !== 'aircraft') return -1;       // 逆探知装置は機体側
-  if (target.kind === 'aircraft') return -1;
   if (!target.emitting) return -1;
 
-  if (sensor.pos.distanceTo(target.pos) > RWR_RANGE) return -1;
+  // 航空機は**そのレーダーの強さで見つかる距離が変わる**（§26.3）。
+  // 地上の放射源は据え付けの大出力なので、従来どおり一律 60km。
+  const range = target.kind === 'aircraft' ? target.rwrSignature : RWR_RANGE;
+  if (range <= 0) return -1;
+  if (sensor.pos.distanceTo(target.pos) > range) return -1;
   stats.losChecks++;
   if (!terrain.hasLineOfSight(sensor.pos, target.pos, 8, LOS_STEP)) return -1;
 
-  return LEVEL.IDENTIFIED;
+  // 航空機は「そこで何かが電波を出している」までしか分からない（§26.7）。
+  // 逆探知は全方位なので、ここで機種まで分かると**機首を向けて探す**という
+  // 探知の骨格（§3）が丸ごと要らなくなる。撃つには結局レーダーを向ける必要がある
+  // （AI の目標選択は IDENTIFIED 以上を要求する）。
+  return target.kind === 'aircraft' ? LEVEL.UNKNOWN : LEVEL.IDENTIFIED;
 }
 
 /**

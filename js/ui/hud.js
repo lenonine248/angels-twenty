@@ -92,6 +92,14 @@ export class Hud {
         return;
       }
       // 誘導中に回避するか
+      // レーダーの扱い（§26.5）。自動 / 常時ON / 常時OFF
+      const radar = e.target.closest('button[data-radar]');
+      if (radar) {
+        for (const u of this.commands.selection) u.radarMode = radar.dataset.radar;
+        notify('radar', { mode: radar.dataset.radar });
+        this._detailKey = null;
+        return;
+      }
       const guard = e.target.closest('button[data-guard]');
       if (guard) {
         for (const u of this.commands.selection) u.evadeWhileGuiding = !u.evadeWhileGuiding;
@@ -194,7 +202,7 @@ export class Hud {
     // 構造が変わるときだけ作り直す。
     // 「実行内容」は指示が変わるたびに変わる“値”なので、ここ（構造のキー）には入れない。
     // 入れないまま値の更新もしないと、指示を変えても表示が古いまま残る（実際に起きた）。
-    const key = mine.map((u) => `${u.id}${u.alive ? 1 : 0}${u.state}${this.commands.isSelected(u) ? 1 : 0}`
+    const key = mine.map((u) => `${u.id}${u.alive ? 1 : 0}${u.state}${u.radarActive ? 1 : 0}${this.commands.isSelected(u) ? 1 : 0}`
       + `${u.aiMode}${u.formation ? u.formation.number + u.formation.shape : 0}`
       + `${u.threats.length ? 1 : 0}`).join('|');
     if (key !== this._rosterKey) {
@@ -233,10 +241,14 @@ export class Hud {
       ? ` · <span class="ur-mode">${(AI_MODES[u.aiMode] || {}).label || ''}</span>` : '';
     const fm = u.formation
       ? ` · <span class="ur-fm">${u.formation.name} ${u.formation.shapeSpec.label}</span>` : '';
+    // 黙っている機体は一覧からも分かるようにする（§26.5）。
+    // 出しているのが普通なので、**沈黙のときだけ**出す。
+    const rdr = u.alive && !u.onGround && !u.radarActive
+      ? ' · <span class="ur-silent">沈黙</span>' : '';
     return `<div class="unit-row${sel}${dead}${threat}" data-id="${u.id}">
       <div class="ur-top"><span class="ur-name">${u.name}</span><span class="ur-state">${state}</span></div>
       <div class="ur-meta"></div>
-      <div class="ur-sub">${mode}${fm}</div>
+      <div class="ur-sub">${mode}${fm}${rdr}</div>
       <div class="ur-bars">
         <div class="bar fuel"><i></i></div>
         <div class="bar hp"><i></i></div>
@@ -276,6 +288,7 @@ export class Hud {
       Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
       u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.fireThreshold,
       u.autoWeapons.GUN === false ? 1 : 0,
+      u.radarMode, u.radarActive ? 1 : 0,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
       Object.entries(u.autoWeapons).map(([k, v]) => k + v).join(''),
     ].join('|');
@@ -377,6 +390,19 @@ export class Hud {
       title="AAM-M誘導中にミサイルが飛んできたとき、回避するか誘導を続けるか">
       ${u.evadeWhileGuiding ? '誘導中も回避' : '誘導を優先'}</button>`;
 
+    // レーダーの扱い（§26.5）。切ると見えなくなるが、こちらも見えなくなる。
+    // いま出しているかどうかは自動のときに変わるので、状態も添える。
+    const RADAR = [
+      ['auto', '自動', '交戦・誘導中と、相手のレーダー圏内でだけ出す'],
+      ['on', '常時ON', '常に出す。遠くまで見えるが、遠くから見つかる'],
+      ['off', '常時OFF', '出さない。目視と逆探知だけになり、AAM-M と AAM-A が撃てない'],
+    ];
+    const radar = `<span class="svc-meta">レーダー</span>`
+      + RADAR.map(([id, label, tip]) => `<button class="autow${u.radarMode === id ? '' : ' off'}"
+        data-radar="${id}" title="${tip}">${label}</button>`).join('')
+      + `<span class="svc-meta ${u.radarActive ? 'rdr-on' : 'rdr-off'}">${
+        u.radarActive ? '放射中' : '沈黙'}</span>`;
+
     // AIが自動発射に踏み切る命中期待度
     const th = ['low', 'mid', 'high'];
     const thLabel = { low: '低', mid: '中', high: '高' };
@@ -395,7 +421,8 @@ export class Hud {
       </div>
       ${taskRow}
       <div class="dt-add">${autos}${guard}
-        <span class="svc-meta">自動発射</span>${thBtns}</div>`;
+        <span class="svc-meta">自動発射</span>${thBtns}</div>
+      <div class="dt-add">${radar}</div>`;
   }
 
   _groundPanel(u) {

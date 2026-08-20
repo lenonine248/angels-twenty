@@ -679,6 +679,9 @@ function spawnStage(world, stage, loadouts, terrain) {
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
     u.aiMode = a.aiMode || 'PATROL';
+    // 敵は当面レーダーを切らない（§26.6）。まずプレイヤー側の効きだけを測る。
+    // 同じ版に両方入れると、易しくなったのか難しくなったのかが混ざって読めない。
+    u.radarMode = a.radarMode || 'on';
     if (a.moveTo) {
       // 目的地を持つ敵機（支援機と同じ書き方）。哨戒ではなく一方向へ進む。
       const alt = Math.max(0, terrain.heightAt(a.moveTo.x, a.moveTo.z)) + (a.moveTo.agl || 4000);

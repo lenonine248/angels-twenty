@@ -44,6 +44,14 @@ const CLIMB_DEMAND_LIMIT = 0.65;
 const TURN_DRAG = 5.5;
 /** 到達判定の基準を旋回半径の何倍にするか */
 const ARRIVE_FACTOR = 0.9;
+/**
+ * 逆探知される距離を、そのレーダーの射程の何倍にするか（§26.3）。
+ *
+ * 1.0 では「見つけたときには相手も見えている」ので駆け引きが消える。
+ * 1.5 なら**相手のレーダー射程の外側 0.5 倍ぶんの帯**ができ、
+ * そこではこちらだけが相手を知っている。これが電波管制の報酬になる。
+ */
+export const RWR_AIR_FACTOR = 1.5;
 
 const _tmp = new THREE.Vector3();
 
@@ -130,6 +138,36 @@ export class Aircraft extends Unit {
     this.fireThreshold = 'mid';
     /** 兵装種別ごとの自動使用可否。false にするとAIが勝手に使わない。 */
     this.autoWeapons = {};
+
+    /**
+     * レーダーの扱い（§26.5）。'auto' | 'on' | 'off'
+     *
+     * 既定を自動にしておく。§22.3.1 で「軸を増やすと指揮官の判断としては
+     * 細かすぎる」と決めた経緯があるので、**普段は意識せずに済む**ようにして、
+     * 必要なときだけ固定できる形にする。
+     */
+    this.radarMode = 'auto';
+    /** いまレーダーを出しているか。探知・レーダー誘導・逆探知のすべてに効く */
+    this.radarActive = true;
+  }
+
+  /**
+   * いま届くレーダー距離。切っていれば 0。
+   * 地上ユニット（sim/ground.js）と同じ形にして、沈黙の扱いを1つに保つ。
+   */
+  get radarRange() {
+    if (!this.radarActive || !this.alive || this.onGround) return 0;
+    return this.spec.radarRange || 0;
+  }
+
+  /** 逆探知に映るか（§26.3） */
+  get emitting() {
+    return this.radarRange > 0;
+  }
+
+  /** 逆探知される距離。強いレーダーほど遠くから見つかる（§26.3） */
+  get rwrSignature() {
+    return this.radarRange * RWR_AIR_FACTOR;
   }
 
   // ------------------------------------------------------------- 指示
@@ -193,6 +231,7 @@ export class Aircraft extends Unit {
         break;
     }
 
+    this._updateRadar(world);
     this._steer(dt, world);
     this._integrate(dt, world);
     this._consumeFuel(dt, world);
@@ -653,6 +692,54 @@ export class Aircraft extends Unit {
    * 仕様 §9.2「ミサイル警戒」に相当し、AIモードを問わず割り込む。
    */
   /** セミアクティブ誘導のミサイルを、この目標に対して誘導中か */
+  /**
+   * レーダーを出すかどうか（§26.5）。
+   *
+   * 自動のときだけ考える。固定しているなら言われたとおりにする。
+   */
+  _updateRadar(world) {
+    if (this.radarMode !== 'auto') {
+      this.radarActive = this.radarMode === 'on';
+      return;
+    }
+    this.radarActive = this._radarWanted(world);
+  }
+
+  _radarWanted(world) {
+    // 1. AAM-M を誘導中は切れない。切ると自分の撃った弾が外れる
+    if (this._guidingAnySarh(world)) return true;
+
+    // 2. 空中目標へ攻撃指示が出ている。レーダー誘導兵装を使うため
+    const t = this.order && this.order.type === 'attack' ? this.order.target : null;
+    if (t && t.alive && t.kind === 'aircraft' && !t.onGround) return true;
+
+    // 3. 相手のレーダー射程の内側に入った。**もう見られているので黙る意味がない**。
+    //
+    //    「逆探知で反応を拾ったら点ける」ではない。拾っただけの段階では、
+    //    相手はまだこちらを見つけていないかもしれない（§26.3 の帯）。
+    //    そこで点けると、黙っていれば取れたはずの優位を自分から捨てることになる。
+    //    見つかっているかどうかは、相手のレーダー射程と距離から分かる。
+    //
+    //    見るのは**敵の航空機だけ**。地上レーダーまで数えると、敵地の上空では
+    //    常に出しっぱなしになり、低く入って隠れる意味（§3）が消える。
+    for (const u of world.units) {
+      if (u.side === this.side || !u.alive) continue;
+      if (u.kind !== 'aircraft' || u.onGround) continue;
+      const r = u.radarRange;
+      if (r > 0 && this.pos.distanceTo(u.pos) <= r) return true;
+    }
+    return false;
+  }
+
+  /** AAM-M を1発でも誘導中か */
+  _guidingAnySarh(world) {
+    if (!world.missiles) return false;
+    for (const m of world.missiles) {
+      if (m.alive && !m.lost && m.launcher === this && m.guidance === 'sarh') return true;
+    }
+    return false;
+  }
+
   _guidingSarhAt(target, world) {
     if (!world.missiles) return false;
     return world.missiles.some((m) => m.alive && !m.lost

@@ -596,7 +596,8 @@ class OrderPathRenderer {
       // レーダーの扇。「今どこを見ているか」が見えないと、
       // 機首を向ける／向けないの判断そのものが成立しない。
       // 全方位レーダー（早期警戒機）は扇にならないので円で出す。
-      if (!u.onGround && u.spec.radarRange > 0) {
+      // 切っているあいだは扇を消す（§26.8）。出たままだと見えている気になる
+      if (!u.onGround && u.radarRange > 0) {
         this._radarFan(fanIdx++, u);
       }
 
@@ -647,7 +648,7 @@ class OrderPathRenderer {
    * 内側の弧は「ここまで入れば即座に識別できる」距離（探知距離の半分）。
    */
   _radarFan(i, u) {
-    const range = u.spec.radarRange || 0;
+    const range = u.radarRange || 0;
     const omni = !!u.spec.omniRadar;
     const half = omni ? Math.PI : (u.spec.radarFovH || 60) * Math.PI / 180;
     let f = this.fans[i];

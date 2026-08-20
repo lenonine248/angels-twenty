@@ -691,8 +691,11 @@ function offBoresight(shooter, dx, dz, dy) {
 /** 自機のレーダー扇に入っているか */
 function inRadarFan(shooter, dx, dz, dy, flat) {
   const spec = shooter.spec;
-  if (!spec || !spec.radarRange) return false;
-  if (Math.hypot(flat, dy) > spec.radarRange) return false;
+  // レーダーを切っていれば扇そのものが無い（§26.4）。
+  // AAM-M も AAM-A も、ここを通れないので撃てなくなる。
+  const range = shooter.radarRange != null ? shooter.radarRange : (spec && spec.radarRange) || 0;
+  if (!spec || range <= 0) return false;
+  if (Math.hypot(flat, dy) > range) return false;
   if (spec.omniRadar) return true;
   if (Math.abs(angleDiff(headingOf(dx, dz), shooter.heading)) > (spec.radarFovH || 60) * DEG) return false;
   if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > (spec.radarFovV || 30) * DEG) return false;

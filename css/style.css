@@ -946,3 +946,7 @@ button.go.warn:hover + .dt-warn { display: block; }
 .rp-unit.side-blue { border-left: 3px solid #5aa9ff; }
 .rv-play { color: var(--amber) !important; }
 
+/* レーダーの状態（§26.5）。出しているかどうかが一目で分かるようにする */
+.svc-meta.rdr-on  { color: var(--amber); }
+.svc-meta.rdr-off { color: #6fd8e8; }
+.ur-silent { color: #6fd8e8; }
