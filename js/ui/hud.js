@@ -262,6 +262,7 @@ export class Hud {
       u.onGround && u.airbase ? (u.airbase.pendingService(u)?.kinds.join('') ?? '') : '',
       u.formation ? u.formation.number : 0, Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
       u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.fireThreshold,
+      u.autoWeapons.GUN === false ? 1 : 0,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
       Object.entries(u.autoWeapons).map(([k, v]) => k + v).join(''),
     ].join('|');
@@ -353,7 +354,11 @@ export class Hud {
       const off = u.autoWeapons[id] === false;
       return `<button class="autow${off ? ' off' : ''}" data-auto="${id}"
         title="AIがこの兵装を自動で使うか">${id}${off ? ' 停止' : ' 自動'}</button>`;
-    }).join('');
+    }).join('')
+      // 機銃は搭載品ではないが、自動使用の可否はミサイルと同じように扱う。
+      // 弾を温存したい／近づかせたくない、という判断があるため。
+      + `<button class="autow${u.autoWeapons.GUN === false ? ' off' : ''}" data-auto="GUN"
+        title="AIが機銃を自動で使うか">機銃${u.autoWeapons.GUN === false ? ' 停止' : ' 自動'}</button>`;
 
     const guard = `<button class="autow${u.evadeWhileGuiding ? '' : ' off'}" data-guard="1"
       title="AAM-M誘導中にミサイルが飛んできたとき、回避するか誘導を続けるか">

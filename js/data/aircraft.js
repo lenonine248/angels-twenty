@@ -1,6 +1,8 @@
 // 機体データ。すべてメートル・秒・度が基準。
 // 数値は仕様書 §5.1 の値。バランス調整はここだけを触れば済むようにしてある。
 
+const DEG = Math.PI / 180;
+
 export const AIRCRAFT_TYPES = {
   'F-1': {
     id: 'F-1',
@@ -20,9 +22,12 @@ export const AIRCRAFT_TYPES = {
     radarFovV: 30,
     visualRange: 8000,
     fuelSeconds: 720,     // 巡航12分
-    // 機銃: 弾数は少ないが命中率が高い（一撃離脱向き）
+    // 機銃: 弾数は少ないが**弾が速い**。動く目標に当てられる（一撃離脱向き）
     gunRounds: 380,
-    gunSpec: { airHit: 0.16, airDmg: [4, 9], groundHit: 0.50, groundDmg: [3, 7] },
+    gunSpec: {
+      muzzleSpeed: 1000, dispersion: 1.3 * DEG,
+      airDmg: [1.4, 3.0], groundDmg: [1.0, 2.2],
+    },
     // 対抗手段はミサイル搭載量に対して多すぎたので半減（A-3のみ据え置き）
     flares: 4,
     chaff: 4,
@@ -49,9 +54,12 @@ export const AIRCRAFT_TYPES = {
     radarFovV: 30,
     visualRange: 8000,
     fuelSeconds: 900,     // 15分
-    // 機銃: 弾数・命中率とも中庸だが一発が軽い
+    // 機銃: すべて中庸。弾速も拡散も両者の間で、一発が軽い
     gunRounds: 550,
-    gunSpec: { airHit: 0.10, airDmg: [2.5, 6], groundHit: 0.50, groundDmg: [3, 7] },
+    gunSpec: {
+      muzzleSpeed: 850, dispersion: 1.7 * DEG,
+      airDmg: [1.0, 2.2], groundDmg: [1.0, 2.2],
+    },
     // 対抗手段はミサイル搭載量に対して多すぎたので半減（A-3のみ据え置き）
     flares: 4,
     chaff: 4,
@@ -77,9 +85,14 @@ export const AIRCRAFT_TYPES = {
     radarFovV: 30,
     visualRange: 8000,
     fuelSeconds: 1080,    // 18分
-    // 機銃: 当たりにくいが弾数が多く、撃ち続けられる。対地掃射に向く
+    // 機銃: 弾は遅いが拡散が細かく、弾数が多い。対地掃射に向く。
+    // 弾が遅い＝飛翔時間が長い＝旋回する敵への偏差が破綻するので、対空は苦手。
+    // 「対地らしさ」は弾数(900発=36秒)と低速による滞空で作る（§22.2.3 の注記）。
     gunRounds: 900,
-    gunSpec: { airHit: 0.06, airDmg: [4, 9], groundHit: 0.50, groundDmg: [3, 7] },
+    gunSpec: {
+      muzzleSpeed: 700, dispersion: 1.0 * DEG,
+      airDmg: [1.2, 2.6], groundDmg: [1.2, 2.6],
+    },
     flares: 10,
     chaff: 10,
     color: 0x7d7b63,

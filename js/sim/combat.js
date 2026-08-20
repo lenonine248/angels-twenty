@@ -8,17 +8,26 @@
 import * as THREE from 'three';
 import { WEAPONS } from '../data/weapons.js';
 import { Missile, Decoy, decoyMatches } from './missile.js';
+import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.js';
 import { headingOf, angleDiff, DEG } from './unit.js';
 import { clamp } from '../core/rng.js';
 import { effectiveMissileRange, turnFactor } from '../core/atmosphere.js';
 
-/** 機銃。命中率・威力・弾数は機種ごと（data/aircraft.js の gunSpec） */
-const GUN_RANGE = 800;           // 対空
-const GUN_RANGE_GROUND = 2000;   // 対地掃射（大きな目標なので遠くから撃てる）
-const GUN_RPS = 25;              // 毎秒発射数
-const GUN_REAR_CONE = 30 * DEG;  // 目標の後方このコーン内からのみ有効（対空）
-const GUN_AIM_CONE = 12 * DEG;   // 機首をこの範囲まで向けている必要がある（対空）
-const GUN_AIM_CONE_GROUND = 20 * DEG;   // 対地は大きな目標なので緩い
+// 機銃は実体弾（sim/bullet.js）。拡散・弾速・弾数は機種ごと（data/aircraft.js の gunSpec）。
+//
+// **射程も後方コーンも持たない**（§22.2.1 / §22.2.5）。
+// 弾は全機共通の秒数で消え、当たるかどうかは拡散と偏差が決める。
+// 正面からのすれ違いで当たらないのは、交差速度が大きく偏差が破綻するため。
+//
+/** 機首をこの範囲まで向けていないと撃てない（機銃は機体に固定されている） */
+const GUN_AIM_CONE = 14 * DEG;
+/** 撃つ気になる上限距離。弾が届く範囲より広く取り、実際の可否はしきい値に任せる */
+const GUN_MAX_ENGAGE = 3200;
+/** 拡散を広げる要因の効き */
+const GUN_SPREAD_ROLL = 1.6;     // 旋回中（バンク角に比例）
+const GUN_SPREAD_DAMAGE = 0.5;   // 損傷
+/** 目標の旋回による偏差の外れやすさ（見積り用の係数） */
+const GUN_LEAD_PENALTY = 1.0;
 
 /** 同一目標へ同時に飛ばせるミサイル数 */
 const MAX_IN_FLIGHT_PER_TARGET = 2;
@@ -34,6 +43,78 @@ const MIN_RANGE = { 'AAM-S': 400, default: 1500 };
 
 /** AIが自動発射に踏み切る命中期待度のしきい値 */
 export const FIRE_THRESHOLD = { low: 0.15, mid: 0.35, high: 0.60 };
+
+/**
+ * 機銃のしきい値はミサイルより低く取る。
+ * ミサイルは1発が高価なので「当たりそうなときだけ」でよいが、
+ * 機銃は連射する前提で、1発あたりの期待値はもともと小さい。
+ * ミサイルと同じ刻みを使うと、機銃はほぼ一生撃たない。
+ */
+export const GUN_THRESHOLD = { low: 0.05, mid: 0.14, high: 0.30 };
+
+/**
+ * 機銃1発あたりの命中期待度（0..1）。
+ *
+ * 拡散と偏差の2つから作る。§22.2.2 / §22.2.3 の試算式そのもの。
+ *   拡散: 横のばらつきが σ×距離 のとき、半径 r に入る割合は 1-exp(-r²/2(σd)²)
+ *   偏差: 目標が旋回していると 0.5×(速度×旋回率)×飛翔時間² だけ狙点からずれる
+ */
+export function estimateGunHit(shooter, target) {
+  const g = shooter.spec && shooter.spec.gunSpec;
+  if (!g || !target || !target.alive || shooter.gun <= 0) return 0;
+
+  const dist = shooter.pos.distanceTo(target.pos);
+  if (dist < 1) return 0;
+  const flight = dist / g.muzzleSpeed;
+  if (flight > BULLET_LIFE) return 0;            // 弾が届かない
+
+  const r = hitRadiusOf(target);
+  const sigma = gunSpread(shooter, g);
+  const spread = Math.max(1, sigma * dist);
+
+  // 偏差の誤差。狙点は「目標がまっすぐ飛ぶ前提」で作るので、
+  // 曲がっている目標には飛翔時間の2乗に比例して外れる。
+  // 旋回率は実測値（aircraft.js が毎ステップ入れる）を使う。
+  // バンク角から推し量ると、緩い定常旋回でバンクが寝ているときに
+  // 「曲がっていない」と誤って読む。
+  let lead = 0;
+  if (target.kind === 'aircraft' && !target.onGround) {
+    const omega = Math.abs(target.turnRate || 0);
+    lead = 0.5 * (target.speed || 0) * omega * flight * flight * GUN_LEAD_PENALTY;
+  }
+
+  // ばらつきと偏差を合成して、半径 r に入る割合を出す
+  const off2 = lead * lead;
+  const s2 = spread * spread;
+  return clamp(Math.exp(-off2 / (2 * s2)) * (1 - Math.exp(-(r * r) / (2 * s2))), 0, 1);
+}
+
+/** 実際に使う拡散角(ラジアン)。旋回・損傷・練度で広がる。 */
+function gunSpread(shooter, g) {
+  const roll = Math.abs(shooter.roll || 0) / 0.6;          // 0..1（最大バンク=0.6rad）
+  const hurt = 1 - (shooter.hp / Math.max(1, shooter.maxHp));
+  const skill = 0.6 + 0.4 * (shooter.skill ?? 1);
+  return g.dispersion
+    * (1 + roll * GUN_SPREAD_ROLL + hurt * GUN_SPREAD_DAMAGE)
+    / skill;
+}
+
+/** 方向 dir を拡散角 sigma でばらつかせる（2次元の正規分布） */
+function scatter(dir, sigma, rng, out) {
+  // Box-Muller。左右と上下に独立した正規分布の角度を与える。
+  const u1 = Math.max(1e-6, rng());
+  const rad = Math.sqrt(-2 * Math.log(u1)) * sigma;
+  const ang = rng() * Math.PI * 2;
+  // dir に垂直な基底を作る
+  _right.set(-dir.z, 0, dir.x);
+  if (_right.lengthSq() < 1e-8) _right.set(1, 0, 0);
+  _right.normalize();
+  _up.crossVectors(dir, _right).normalize();
+  return out.copy(dir)
+    .addScaledVector(_right, Math.cos(ang) * rad)
+    .addScaledVector(_up, Math.sin(ang) * rad)
+    .normalize();
+}
 
 /**
  * 命中期待度の見積り（0..1）。
@@ -88,6 +169,7 @@ export class CombatSystem {
     this.world = world;
     world.missiles = [];
     world.decoys = [];
+    world.bullets = [];
     world.combat = this;
   }
 
@@ -96,8 +178,10 @@ export class CombatSystem {
 
     for (const m of w.missiles) m.update(dt, w);
     for (const d of w.decoys) d.update(dt);
+    for (const b of w.bullets) b.update(dt, w);
     w.missiles = w.missiles.filter((m) => m.alive);
     w.decoys = w.decoys.filter((d) => d.alive);
+    w.bullets = w.bullets.filter((b) => b.alive);
 
     this._assignThreats();
 
@@ -349,53 +433,66 @@ export class CombatSystem {
   // ------------------------------------------------------------ 機銃
 
   /**
-   * 機銃。対空と対地で条件と性能が違う。
+   * 機銃。実体弾を撒く（§22.2）。
    *
-   * 対空: 目標の後方コーンに入り機首を向けている間だけ有効。
-   *       命中率・威力・弾数は機種ごとに大きく異なる（運要素は残す）。
-   * 対地: 目標が動かない／遅いので、機首を向けていれば当たりやすい。
-   *       命中率は全機種共通で高く、弾数の多い攻撃機ほど掃射に向く。
+   * ここでやるのは「狙点を作って、拡散をかけて弾を出す」ことだけ。
+   * 当たるかどうかは弾の側（sim/bullet.js）が決める。
    */
   _tryGun(shooter, target, dt) {
     if (shooter.gun <= 0) return;
     const g = shooter.spec.gunSpec;
     if (!g) return;
+    if (shooter.autoWeapons && shooter.autoWeapons.GUN === false) return;
 
-    const dx = target.pos.x - shooter.pos.x;
-    const dz = target.pos.z - shooter.pos.z;
-    const dy = target.pos.y - shooter.pos.y;
-    const dist = Math.hypot(Math.hypot(dx, dz), dy);
-    const air = target.kind === 'aircraft';
-    const range = air ? GUN_RANGE : GUN_RANGE_GROUND;
-    if (dist > range) return;
+    const dist = shooter.pos.distanceTo(target.pos);
+    if (dist > GUN_MAX_ENGAGE) return;
+    // 弾が届かない距離では撃たない（寿命×初速が実射程）
+    if (dist > g.muzzleSpeed * BULLET_LIFE * 0.95) return;
 
-    // 機首が目標を向いているか
-    if (offBoresight(shooter, dx, dz, dy) > (air ? GUN_AIM_CONE : GUN_AIM_CONE_GROUND)) return;
+    // 偏差射撃の狙点。機首をそこへ向けられていなければ撃てない。
+    aimPointOf(shooter, target, g.muzzleSpeed, _aimPt);
+    const ax = _aimPt.x - shooter.pos.x;
+    const az = _aimPt.z - shooter.pos.z;
+    const ay = _aimPt.y - shooter.pos.y;
+    if (offBoresight(shooter, ax, az, ay) > GUN_AIM_CONE) return;
 
-    if (air) {
-      // 目標の後方にいるか（正面からのすれ違いでは当たらない）
-      const tf = target.forward(_v1);
-      const toShooter = _v2.set(-dx, 0, -dz).normalize();
-      const rearAngle = Math.acos(clamp(toShooter.dot(_v3.set(-tf.x, 0, -tf.z)), -1, 1));
-      if (rearAngle > GUN_REAR_CONE) return;
-    }
+    // 当たりそうにないなら撃たない。
+    // **射程制限を捨てた代わりがこれ**（§22.2.4）。これが無いと、
+    // 弾の届く3km手前から乱射して弾倉を空にする。
+    const need = GUN_THRESHOLD[shooter.fireThreshold || 'mid'] ?? GUN_THRESHOLD.mid;
+    if (estimateGunHit(shooter, target) < need) return;
 
-    const rounds = Math.min(shooter.gun, GUN_RPS * dt);
-    shooter.gun -= rounds;
-    this.world.onGunFire?.(shooter, target, rounds);
+    // 視線が通っていること（山越しには撃てない）
+    const losPoint = target.kind === 'aircraft'
+      ? target.pos : _v4.set(target.pos.x, target.pos.y + 40, target.pos.z);
+    if (!this.world.terrain.hasLineOfSight(shooter.pos, losPoint, 8, 300)) return;
 
-    const rng = this.world.rng;
-    const base = (air ? g.airHit : g.groundHit) * (0.5 + 0.5 * (shooter.skill ?? 1));
+    // 発射数は端数を持ち越す。dt が小さいと毎回0発になってしまう。
+    shooter._gunAccum = (shooter._gunAccum || 0) + GUN_RPS * dt;
+    let n = Math.floor(shooter._gunAccum);
+    if (n <= 0) return;
+    shooter._gunAccum -= n;
+    n = Math.min(n, Math.floor(shooter.gun));
+    if (n <= 0) return;
+    shooter.gun -= n;
+
+    const spread = gunSpread(shooter, g);
+    const air = target.kind === 'aircraft' && !target.onGround;
     const dmg = air ? g.airDmg : g.groundDmg;
-    const pHit = base * (1 - (dist / range) * 0.6);
-    let expected = rounds * pHit;
-    while (expected > 0) {
-      if (rng() < Math.min(1, expected)) {
-        target.damage(dmg[0] + rng() * (dmg[1] - dmg[0]), shooter);
-        this.world.onGunHit?.(shooter, target);
-      }
-      expected -= 1;
+    const rng = this.world.rng;
+
+    _aimDir.set(ax, ay, az).normalize();
+    for (let i = 0; i < n; i++) {
+      scatter(_aimDir, spread, rng, _shotDir);
+      this.world.bullets.push(new Bullet({
+        pos: shooter.pos,
+        dir: _shotDir,
+        speed: g.muzzleSpeed,
+        damage: dmg[0] + rng() * (dmg[1] - dmg[0]),
+        shooter,
+      }));
     }
+    this.world.onGunFire?.(shooter, target, n);
   }
 
   // ------------------------------------------------------------ デコイ
@@ -441,6 +538,12 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
+// 機銃用（狙点・射線・拡散の基底）
+const _aimPt = new THREE.Vector3();
+const _aimDir = new THREE.Vector3();
+const _shotDir = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _up = new THREE.Vector3();
 
 /** 機首方向と目標方向のなす角(rad) */
 function offBoresight(shooter, dx, dz, dy) {

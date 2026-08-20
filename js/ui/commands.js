@@ -12,7 +12,7 @@ import { Formation, freeFormationNumber, MAX_FORMATION_NUMBER } from '../ai/form
 import { getLabelMaterial } from '../world/models.js';
 import { WEAPONS } from '../data/weapons.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
-import { estimateHitChance, hitLabel } from '../sim/combat.js';
+import { estimateHitChance, estimateGunHit, hitLabel } from '../sim/combat.js';
 import { notify } from './actions.js';
 
 const PICK_RADIUS_PX = 26;
@@ -152,6 +152,13 @@ export class CommandController {
           const p = estimateHitChance(best.u, u, WEAPONS[wid]);
           const l = hitLabel(p);
           rows.push(`<span class="hi-hit ${l.cls}">${wid} 命中期待 ${l.text}</span>`);
+        }
+        // 機銃は実体弾なので「今この距離・この向きで当たるか」が刻々変わる。
+        // 撃てる位置に付けたかどうかが読めないと、機銃で仕留める判断ができない。
+        const gp = estimateGunHit(best.u, u);
+        if (gp > 0.01) {
+          const gl = hitLabel(gp * 3);      // 機銃は1発あたりの値なので目盛りを合わせる
+          rows.push(`<span class="hi-hit ${gl.cls}">機銃 ${Math.round(gp * 100)}%/発</span>`);
         }
       }
     }

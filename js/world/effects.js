@@ -14,6 +14,12 @@ const MISSILE_COLOR = { blue: 0x9fd8ff, red: 0xffb08a };
 const TRAIL_COLOR = { blue: 0x7ab8d8, red: 0xd89878 };
 const MAX_TRAIL = 40;
 
+/** 曳光弾。25発/秒 × 飛翔3秒 = 1機あたり最大75発。同時交戦を見込んで多めに取る */
+const MAX_BULLETS = 900;
+/** 曳光の見かけの長さ（秒）。弾速×これ が線分の長さになる */
+const TRACER_TIME = 0.045;
+const BULLET_COLOR = { blue: [0.65, 0.88, 1.0], red: [1.0, 0.72, 0.38] };
+
 const SMOKE_CAP = 1400;
 const SPARK_CAP = 900;
 
@@ -133,6 +139,24 @@ export class Effects {
     this.decoyViews = new Map();
     this.explosions = [];
     this.tracers = [];
+
+    // 曳光弾。弾は多いので、1本ずつ Line を作らず1つのバッファにまとめて描く。
+    this._bulletPos = new Float32Array(MAX_BULLETS * 6);
+    this._bulletCol = new Float32Array(MAX_BULLETS * 6);
+    const bgeo = new THREE.BufferGeometry();
+    bgeo.setAttribute('position',
+      new THREE.BufferAttribute(this._bulletPos, 3).setUsage(THREE.DynamicDrawUsage));
+    bgeo.setAttribute('color',
+      new THREE.BufferAttribute(this._bulletCol, 3).setUsage(THREE.DynamicDrawUsage));
+    bgeo.setDrawRange(0, 0);
+    this._bulletGeo = bgeo;
+    this.bulletLines = new THREE.LineSegments(bgeo, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.9, depthTest: false,
+    }));
+    this.bulletLines.renderOrder = 6;
+    this.bulletLines.frustumCulled = false;
+    this.bulletLines.name = 'bullets';
+    this.group.add(this.bulletLines);
     this.rings = [];
     this.emitters = [];        // 時間をかけて出し続ける煙（撃破後の火災など）
 
@@ -293,6 +317,25 @@ export class Effects {
   }
 
   /** 機銃の発砲炎 */
+  /** 弾が当たった／地面を叩いた瞬間の火花 */
+  impact(pos, ground = false) {
+    const n = ground ? 3 : 5;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const e = Math.random() * 0.9;
+      const sp = 30 + Math.random() * 60;
+      this.sparks.emit({
+        x: pos.x, y: pos.y, z: pos.z,
+        vx: Math.cos(a) * Math.cos(e) * sp,
+        vy: Math.sin(e) * sp,
+        vz: Math.sin(a) * Math.cos(e) * sp,
+        life: 0.18 + Math.random() * 0.16,
+        color: ground ? [0.85, 0.72, 0.5] : [1, 0.85, 0.45],
+        size0: 7, size1: 1, alpha: 0.9, drag: 2.2, grav: -40,
+      });
+    }
+  }
+
   muzzle(pos) {
     this.sparks.emit({
       x: pos.x, y: pos.y, z: pos.z, vx: 0, vy: 0, vz: 0,
@@ -345,6 +388,7 @@ export class Effects {
   update(dt, world, size) {
     this._syncMissiles(world, size);
     this._syncDecoys(world, size);
+    this._syncBullets(world);
     this._updateExplosions(dt);
     this._updateRings(dt);
     this._updateTracers(dt);
@@ -439,6 +483,32 @@ export class Effects {
       }
       t.line.material.opacity = 0.8 * (1 - t.life / t.max);
     }
+  }
+
+  /**
+   * 曳光弾。弾の実体1つを短い線分1本で描く。
+   * 長さは弾速×TRACER_TIME。速い弾ほど長く見えるので、機種差が画面にも出る。
+   */
+  _syncBullets(world) {
+    const P = this._bulletPos, C = this._bulletCol;
+    let n = 0;
+    for (const b of world.bullets || []) {
+      if (n >= MAX_BULLETS) break;
+      const c = BULLET_COLOR[b.side] || BULLET_COLOR.blue;
+      const i = n * 6;
+      P[i] = b.pos.x - b.vel.x * TRACER_TIME;
+      P[i + 1] = b.pos.y - b.vel.y * TRACER_TIME;
+      P[i + 2] = b.pos.z - b.vel.z * TRACER_TIME;
+      P[i + 3] = b.pos.x; P[i + 4] = b.pos.y; P[i + 5] = b.pos.z;
+      // 手前を暗く、先端を明るくして進行方向が分かるようにする
+      C[i] = c[0] * 0.25; C[i + 1] = c[1] * 0.25; C[i + 2] = c[2] * 0.25;
+      C[i + 3] = c[0]; C[i + 4] = c[1]; C[i + 5] = c[2];
+      n++;
+    }
+    this._bulletGeo.attributes.position.needsUpdate = true;
+    this._bulletGeo.attributes.color.needsUpdate = true;
+    this._bulletGeo.setDrawRange(0, n * 2);
+    this.bulletLines.visible = n > 0;
   }
 
   _syncMissiles(world, size) {

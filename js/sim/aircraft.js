@@ -30,7 +30,7 @@ const ALT_SMOOTH = 0.02;
 const BOMBER_RUN_ALT = 2100;
 /** 後ろに付いたと見なす距離(m)。機銃の射程800mより広く取って、手前で速度を合わせ始める */
 const TRAIL_RANGE = 2600;
-/** 後ろに付いたと見なす角度。combat.js の GUN_REAR_CONE(30度)より緩くする */
+/** 後ろに付いたと見なす角度。機銃が当たる範囲より広く取り、手前で構え始める */
 const TRAIL_CONE = 55 * DEG;
 /** 保つ距離(m)。機銃の射程(800m)の内側で、当たりやすく、ぶつからない位置 */
 const TRAIL_HOLD = 420;
@@ -78,6 +78,8 @@ export class Aircraft extends Unit {
     // 見た目用（描画側が参照する）
     this.roll = 0;
     this.pitch = 0;
+    /** 実際の旋回率(rad/s)。毎ステップ更新する */
+    this.turnRate = 0;
 
     /** 指示。order が現在の指示、queue が Shift+右クリックで積んだ待ち行列 */
     this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, radius: 2500 };
@@ -774,6 +776,10 @@ export class Aircraft extends Unit {
     const diff = angleDiff(this._desiredHeading, this.heading);
     const turn = clamp(diff, -maxTurn, maxTurn);
     this.heading += turn;
+    // 実際の旋回率(rad/s)。機銃の偏差の見積り（sim/combat.js）が使う。
+    // バンク角から推し量ると、緩い定常旋回でバンクが寝ているときに
+    // 「曲がっていない」と誤って読んでしまう。
+    this.turnRate = dt > 0 ? turn / dt : 0;
 
     // バンク角（見た目）: 旋回の強さに比例
     const bankTarget = clamp(turn / Math.max(1e-6, maxTurn), -1, 1) * 1.05

@@ -361,11 +361,13 @@ function buildBattle(stage, loadouts, asTutorial) {
   world.onMissileHit = (m) => {
     if (m.side === world.playerSide) telemetry.markHit(m.weapon.id);
   };
-  // 機銃の命中にも曳光弾の演出を出す（当たっているのが見えないと分からない）
-  world.onGunHit = (shooter, target) => {
-    if (world.rng() < 0.3) world.effects.tracer(shooter.pos, target.pos, shooter.side);
+  // 機銃は実体弾（§22.2）。曳光は毎フレーム弾の位置から描かれるので、
+  // ここでやるのは当たった瞬間の火花と音だけ。
+  world.onBulletHit = (bullet, target) => {
+    world.effects.impact(bullet.pos);
     audio.gunHit(target.pos);
   };
+  world.onBulletGround = (bullet) => world.effects.impact(bullet.pos, true);
   world.onGunFire = (shooter) => {
     world.effects.muzzle(shooter.pos);
     audio.gunBurst(shooter.pos, shooter.id);
