@@ -215,9 +215,9 @@ export const STAGES = [
       ],
       ground: [
         { type: 'SHIP', name: '揚陸艦 1', x: 47000, z: 32000, tags: ['invasion'], known: true,
-          route: [{ x: 47000, z: 32000 }, { x: 40000, z: 31000 }] },
+          route: [{ x: 47000, z: 32000 }, { x: 43600, z: 31000 }] },
         { type: 'SHIP', name: '揚陸艦 2', x: 47500, z: 36000, tags: ['invasion'], known: true,
-          route: [{ x: 47500, z: 36000 }, { x: 40500, z: 34500 }] },
+          route: [{ x: 47500, z: 36000 }, { x: 43200, z: 34500 }] },
         { type: 'CONVOY', name: '車両部隊', x: 44000, z: 27000, tags: ['invasion'],
           route: [{ x: 44000, z: 27000 }, { x: 36000, z: 29000 }] },
       ],

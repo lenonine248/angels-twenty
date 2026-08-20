@@ -20,6 +20,15 @@ const ARM_NOTICE_RANGE = 4500;
 const ARM_REACTION = 2.5;
 /** ARM を回避したあと沈黙を続ける時間(秒) */
 const SILENCE_DURATION = 25;
+/**
+ * 艦船が必要とする水深(m)。これより浅くなったら進まない。
+ *
+ * 艦船の高さは海面(y=0)固定なので、陸へ乗り上げると**地面にめり込む**。
+ * 埋まった目標は見えないうえ、地形に遮られて攻撃もできない
+ * （ミッション5の揚陸艦が、標高900mの丘の中まで進んでいた）。
+ * 経路の指定を間違えても座礁しないよう、ここで止める。
+ */
+const SHIP_MIN_DEPTH = 40;
 
 export class GroundUnit extends Unit {
   constructor(o) {
@@ -79,9 +88,19 @@ export class GroundUnit extends Unit {
       return;
     }
     this.heading = headingOf(dx, dz);
+    const nx = this.pos.x + (dx / dist) * this.spec.speed * dt;
+    const nz = this.pos.z + (dz / dist) * this.spec.speed * dt;
+
+    // 艦船は浅瀬に入らない。岸で止まり、そこから先へは進まない。
+    if (this.spec.category === 'ship'
+        && world.terrain.heightAt(nx, nz) > -SHIP_MIN_DEPTH) {
+      this.speed = 0;
+      return;
+    }
+
     this.speed = this.spec.speed;
-    this.pos.x += (dx / dist) * this.speed * dt;
-    this.pos.z += (dz / dist) * this.speed * dt;
+    this.pos.x = nx;
+    this.pos.z = nz;
     this.pos.y = this.spec.category === 'ship'
       ? 0
       : Math.max(0, world.terrain.heightAt(this.pos.x, this.pos.z));

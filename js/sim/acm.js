@@ -90,14 +90,23 @@ const ALT_HANDOFF_GUIDED = 12000;
 const ALT_HANDOFF_FREE = 6000;
 
 /**
- * 防御機動に入る、後ろの敵との距離(m)。
+ * 防御機動に入る、後ろの敵との距離(m)。**練度で縮む**。
  *
  * 機銃が当たり始めるのは 800m 前後。ここを 1,600m まで広げると
  * 「撃たれてもいないのに延々と回避する」ことになり、950m まで詰めると
  * 実戦ではほとんど発動しなくなる（測ったところ、交戦の 95% は 950m 以遠で
  * 起きていた）。撃たれうる距離のすぐ外を取る。
+ *
+ * `skill` は「判断の速さ・撃つ判断・機銃の当たりやすさ・**回避の質**に
+ * まとめて効く」ダイヤルだが（sim/aircraft.js）、ブレイクだけがこれを見て
+ * いなかった。結果、**練度0.2の相手も満点の相手とまったく同じ精度で振り切る**。
+ * ブレイクされた相手には機銃がほぼ当たらないので（実測で被弾 285 → 4）、
+ * 練度を下げても機銃で落とせないままだった。
+ * 未熟な相手は気づくのが遅い、という形で効かせる。満点なら従来どおり。
  */
 const BREAK_RANGE = 1200;
+/** 練度が最低のときに残る割合 */
+const BREAK_SKILL_FLOOR = 0.35;
 /** 後ろと見なす角度 */
 const BREAK_CONE = 45 * DEG;
 
@@ -371,7 +380,8 @@ export function defensiveManeuver(self, world) {
 
 /** 自分の後方で、機銃を当てられる位置に付いている敵機 */
 function gunThreatBehind(self, world) {
-  let best = null, bestD = BREAK_RANGE;
+  const skill = self.skill != null ? self.skill : 1;
+  let best = null, bestD = BREAK_RANGE * (BREAK_SKILL_FLOOR + (1 - BREAK_SKILL_FLOOR) * skill);
   for (const u of world.units) {
     if (!u.alive || u.kind !== 'aircraft' || u.side === self.side || u.onGround) continue;
     if (u.gun <= 0) continue;
@@ -385,4 +395,64 @@ function gunThreatBehind(self, world) {
     best = u; bestD = d;
   }
   return best;
+}
+
+// ---------------------------------------------------------------- 対地
+
+/**
+ * 通り抜けたと見なす距離(m)と角度。
+ * 遠くで機首が振れただけで「通り過ぎた」と誤判定しないよう、近いときだけ見る。
+ */
+const PASS_RANGE = 2500;
+const PASS_ANGLE = 80 * DEG;
+/**
+ * 入り直すまでに取る距離(m)。
+ *
+ * 180度の反転に要る直径ぶんは、進入区間として使えない。
+ * 200m/s・旋回率9°/s なら直径 2.5km 前後なので、これを引いてもなお
+ * 機銃の間合い(3.2km)の外から真っ直ぐ入れる距離を取る。
+ */
+const REATTACK_RANGE = 3500;
+
+/**
+ * 対地の攻撃パス。仕様書 §22.5。
+ *
+ * 目標へ真っ直ぐ向かうだけだと、上を通り過ぎた瞬間に方位が反転して
+ * 引き返し、また通り過ぎる。結果として**目標を中心に回り続ける**。
+ * 旋回しっぱなしなので機銃は拡散が広がって撃てず（§22.2）、
+ * 爆弾も投下点に乗らない。実測では17ダメージを与えたあと、
+ * **150秒かけて5周し、一発も撃たないまま燃料切れで帰投**した。
+ *
+ * 通り抜けたら**いったん真っ直ぐ離れ、距離を取ってから入り直す**。
+ * 直線の進入区間ができるので、機銃も爆弾も狙いが安定する。
+ *
+ * @returns {{heading:number, phase:'in'|'out', flat:number}}
+ */
+export function groundAttackRun(self, target) {
+  const dx = target.pos.x - self.pos.x;
+  const dz = target.pos.z - self.pos.z;
+  const flat = Math.hypot(dx, dz);
+  const bearing = headingOf(dx, dz);
+
+  // 目標が変わったら仕切り直す
+  if (self._runTarget !== target) {
+    self._runTarget = target;
+    self._runPhase = 'in';
+  }
+
+  const angleOff = Math.abs(angleDiff(bearing, self.heading));
+  if (self._runPhase === 'out') {
+    if (flat > REATTACK_RANGE) self._runPhase = 'in';
+  } else if (flat < PASS_RANGE && angleOff > PASS_ANGLE) {
+    self._runPhase = 'out';
+    // 抜けた向きへそのまま離れる。方位の反対を狙うと、
+    // 通り抜けざまに向きを変えることになって直線にならない。
+    self._runHeading = self.heading;
+  }
+
+  return {
+    heading: self._runPhase === 'out' ? self._runHeading : bearing,
+    phase: self._runPhase,
+    flat,
+  };
 }

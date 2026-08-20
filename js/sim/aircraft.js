@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import { Unit, headingOf, angleDiff, DEG } from './unit.js';
 import { getType } from '../data/aircraft.js';
 import { loadoutSlots, loadoutFuelBonus } from '../data/weapons.js';
-import { attackManeuver, defensiveManeuver } from './acm.js';
+import { attackManeuver, defensiveManeuver, groundAttackRun } from './acm.js';
 import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
 import { clamp } from '../core/rng.js';
 import { thrustFactor, turnFactor, maxSpeedFactor } from '../core/atmosphere.js';
@@ -455,6 +455,14 @@ export class Aircraft extends Unit {
         this.cranking = false;
 
         // ここから先は地上目標。
+        // 進入と離脱を分ける（§22.5）。真っ直ぐ向かうだけだと、通り過ぎた瞬間に
+        // 方位が反転して引き返し、目標の周りを回り続けることになる。
+        const run = groundAttackRun(this, t);
+        desiredHeading = run.heading;
+        this.attackRun = run.phase;
+        const egress = run.phase === 'out';
+        const flat = run.flat;
+
         // 「爆弾を積んでいれば投下高度を保つ」「そうでなければ降りて掃射する」。
         if (o.alt != null || this.commandedAlt != null) {
           // プレイヤーが高度を指定していればそれに従う
@@ -464,21 +472,26 @@ export class Aircraft extends Unit {
           // 爆撃機は軽対空砲の射高より上から入る。攻撃機は低く入って正確に落とす。
           // 目標+900m だと対空砲(射高1800m)の内側で、1回投下したら落とされて終わる。
           // 高く入るぶん散布界が広がるので、そのぶん多く積ませて釣り合いを取る。
-          const run = this.spec.role === '爆撃' ? BOMBER_RUN_ALT : 900;
-          desiredAlt = Math.max(t.pos.y + run, this._terrainFloor(world, desiredHeading) + 300);
+          const bombRun = this.spec.role === '爆撃' ? BOMBER_RUN_ALT : 900;
+          desiredAlt = Math.max(t.pos.y + bombRun, this._terrainFloor(world, desiredHeading) + 300);
         } else {
           // 機銃掃射: 目標へ向かう緩い降下角を保つ。
           // 水平飛行のまま近づくと、目標が真下に来て機首が向かず撃てない。
-          const flat = Math.hypot(dx, dz);
           desiredAlt = flat < 6000
             ? t.pos.y + clamp(flat * 0.18, 120, 900)
             : Math.max(t.pos.y + 900, this._terrainFloor(world, desiredHeading) + 300);
         }
+        // 離脱中は目標ではなく**進む先**の地面を見る。
+        // 掃射の高度は目標からの距離で決まるので、離れる向きに山があると
+        // そのまま突っ込む（進入中は地面すれすれに降りるのが正しいので、ここだけ）。
+        if (egress) {
+          desiredAlt = Math.max(desiredAlt, this._terrainFloor(world, desiredHeading) + 300);
+        }
         // 遠いうちは巡航で進出し、交戦距離に入ってから加速する（燃料は3倍消費する）。
         // 爆撃進入だけは速度を落とす。速いほど投下点の窓が短くなって当たらない。
-        desiredSpeed = this.loadout.includes('BOMB')
+        desiredSpeed = this.loadout.includes('BOMB') && !egress
           ? this.spec.cruiseSpeed * 0.85
-          : (Math.hypot(dx, dz) > 15000
+          : (flat > 15000
             ? this.spec.cruiseSpeed * 1.05
             : this.altitudeMaxSpeed * 0.92);
         break;
