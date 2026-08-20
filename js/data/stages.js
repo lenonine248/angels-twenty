@@ -47,6 +47,10 @@ export const STAGES = [
       ],
       ground: [],
     },
+    // 評価基準（§18）。[◎の上限, ○の上限]
+    // 迅速: 爆撃機は約4分で基地へ到達する。2分半で決着なら◎
+    // 節約: 既定搭載は6P。AAM-Mを盛るほど落ちる
+    rating: { time: [150, 240], points: [8, 14], losses: [0, 1] },
     objectives: [
       { id: 'kill', type: 'destroyAll', tag: 'raid', label: '来襲した敵編隊を全機撃墜する' },
       { id: 'base', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
@@ -87,6 +91,10 @@ export const STAGES = [
       ],
       ground: [],
     },
+    // 評価基準（§18）。輸送機の飛行時間が約232秒なので、これより速くは終わらない。
+    // 急かす評価にはせず「積み替えで往復して間延びしなかったか」を見る。
+    // 節約の基準は実プレイの記録から（AAM-M中心なら10〜12P、AAM-A中心だと30P超）
+    rating: { time: [240, 300], points: [12, 22], losses: [0, 1] },
     objectives: [
       { id: 'arrive', type: 'reach', tag: 'transport', x: 44000, z: 12000, radius: 3000,
         label: '輸送機を北東の離脱地点まで護衛する' },
@@ -128,6 +136,9 @@ export const STAGES = [
         { type: 'AAA', name: '対空砲 A', x: 31000, z: 23000, tags: [] },
       ],
     },
+    // 評価基準（§18）。既定搭載で34P。無誘導爆弾（0P）を混ぜて低空で入れば節約できる。
+    // 迅速の基準は「積み替えの往復をせず一度の出撃で片付いたか」
+    rating: { time: [540, 900], points: [28, 40], losses: [0, 1] },
     objectives: [
       { id: 'sead', type: 'destroyAll', tag: 'air-defense', label: 'SAM陣地2箇所とレーダーサイトを破壊する' },
       { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
@@ -165,6 +176,8 @@ export const STAGES = [
         { type: 'AAA', name: '対空砲', x: 39500, z: 20500, tags: [] },
       ],
     },
+    // 評価基準（§18）。既定搭載で16P。進出38kmの往復に時間を取られる
+    rating: { time: [480, 840], points: [22, 36], losses: [0, 1] },
     objectives: [
       { id: 'kill-base', type: 'destroyAll', tag: 'target', label: '敵飛行場を破壊する' },
       { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
@@ -207,6 +220,8 @@ export const STAGES = [
           route: [{ x: 44000, z: 27000 }, { x: 36000, z: 29000 }] },
       ],
     },
+    // 評価基準（§18）。既定搭載で31P。目標は西へ動いてくるので待てば距離は縮む
+    rating: { time: [540, 900], points: [34, 46], losses: [0, 1] },
     objectives: [
       { id: 'stop', type: 'destroyAll', tag: 'invasion', label: '上陸部隊（艦船2・車両部隊）を撃破する' },
       { id: 'radar', type: 'protect', tag: 'coastal-radar', label: '沿岸レーダーを守る', fail: true },
@@ -249,6 +264,9 @@ export const STAGES = [
         { type: 'AAA', name: '対空砲', x: 41500, z: 18500, tags: [] },
       ],
     },
+    // 評価基準（§18）。既定搭載で34P。目標が3系統あり出撃は2度以上になる。
+    // 最終作戦なので損失には少し寛容にする
+    rating: { time: [900, 1500], points: [44, 66], losses: [0, 2] },
     objectives: [
       { id: 'awacs', type: 'destroyAll', tag: 'awacs', label: '敵早期警戒機を撃墜する' },
       { id: 'bases', type: 'destroyAll', tag: 'target', label: '敵飛行場2箇所を破壊する' },

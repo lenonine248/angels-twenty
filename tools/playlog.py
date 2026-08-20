@@ -50,8 +50,8 @@ def summary(runs):
         by.setdefault(r["stage"], []).append(r)
 
     print(f"{'ステージ':<16}{'回数':>4}{'クリア':>8}{'中央秒':>8}"
-          f"{'撃墜':>6}{'損失':>6}{'使用P':>7}  損失の重心 / 主因")
-    print("-" * 92)
+          f"{'撃墜':>6}{'損失':>6}{'使用P':>7}{'評価':>12}  損失の重心 / 主因")
+    print("-" * 104)
     for sid, list_ in by.items():
         cleared = [r for r in list_ if r.get("result") == "clear"]
         secs = sorted(r["sec"] for r in cleared)
@@ -63,11 +63,15 @@ def summary(runs):
         cz = sum(e["z"] for e in lost) // len(lost) if lost else 0
         causes = collections.Counter(e.get("cause", "被弾") for e in lost)
         top = causes.most_common(1)[0][0] if causes else "-"
+        # クリア評価の分布。基準値（stages.js の rating）が甘すぎ／辛すぎを見る
+        ranks = collections.Counter(r.get("rank") for r in cleared if r.get("rank"))
+        dist = " ".join(f"{k}{ranks[k]}" for k in "SABC" if ranks[k]) or "-"
         print(f"{list_[0]['name']:<16}{len(list_):>4}"
               f"{f'{len(cleared)}/{len(list_)}':>8}"
               f"{(med if med is not None else '-'):>8}"
               f"{avg(list_, 'kills'):>6}{avg(list_, 'losses'):>6}"
               f"{(round(sum(used) / len(used), 1) if used else '-'):>7}"
+              f"{dist:>12}"
               f"  {f'({cx},{cz})' if lost else '-':<16}{top}")
 
 
@@ -82,8 +86,10 @@ def runs_table(runs):
         shots = sum(r["shots"].values())
         hits = sum(r["hits"].values())
         pk = f"{hits / shots:.0%}" if shots else "-"
+        used = (r.get("points") or 0) - (r.get("pointsLeft") or 0)
         print(f"{r['at'][:16]}  {r['name']:<14}{r['result']:<6}"
-              f"{r['sec']:>5}秒  撃墜{r['kills']} 損失{r['losses']}  "
+              f"{r['sec']:>5}秒  評価{r.get('rank') or '-'}  "
+              f"撃墜{r['kills']} 損失{r['losses']} 使用{used}P  "
               f"発射{shots}/命中{hits}({pk})  {r.get('loadout')}")
 
 

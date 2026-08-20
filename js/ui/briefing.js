@@ -10,6 +10,7 @@ import { STAGES, isUnlocked } from '../data/stages.js';
 import { TUTORIALS } from '../data/tutorials.js';
 import { VERSION, VERSION_DATE } from '../core/version.js';
 import { showChangelog } from './changelog.js';
+import { ratingTargets } from '../data/rating.js';
 import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
 import { getType } from '../data/aircraft.js';
 import { Terrain, CELLS, MAP_SIZE } from '../world/terrain.js';
@@ -93,12 +94,15 @@ export class ScreenManager {
 
   showStageSelect() {
     const cleared = this.progress.cleared;
+    const ratings = this.progress.ratings || {};
     const cards = STAGES.map((s, i) => {
       const unlocked = isUnlocked(s, cleared);
       const done = cleared.includes(s.id);
+      const rank = ratings[s.id];
       return `<div class="stage-card${unlocked ? '' : ' locked'}${done ? ' cleared' : ''}"
                    ${unlocked ? `data-stage="${s.id}"` : ''}>
         <div class="sc-no">MISSION ${String(i + 1).padStart(2, '0')}</div>
+        ${rank ? `<div class="sc-rank rank-${rank}">${rank}</div>` : ''}
         <div class="sc-name">${s.name}</div>
         <div class="sc-title">${s.title}</div>
         <div class="sc-state">${done ? 'CLEARED' : unlocked ? '出撃可能' : 'LOCKED'}</div>
@@ -199,6 +203,15 @@ export class ScreenManager {
     const objectives = stage.objectives.map((o) =>
       `<li class="${o.fail ? 'obj-fail' : ''}">${o.label}${o.fail ? '（失敗条件）' : ''}</li>`).join('');
 
+    // 評価基準は出撃前に見せる。終わってから明かすのでは狙いようがない。
+    // ただしブリーフィングは元から縦に詰まっていて、表を足すと 720px の画面で
+    // 出撃ボタンが画面外へ出る。そこで見出しの下に1行で並べる。
+    const targets = ratingTargets(stage);
+    const best = (this.progress.ratings || {})[stage.id];
+    const ratingLine = targets ? targets.map((t) =>
+      `<span title="${t.desc}"><em>${t.label}</em>`
+      + `<b class="rt-good">◎${t.good}</b><b class="rt-ok">○${t.ok}</b></span>`).join('') : '';
+
     this._show(`
       <div class="screen-inner briefing">
         <div class="bf-top">
@@ -206,8 +219,11 @@ export class ScreenManager {
             <div class="screen-sub">BRIEFING</div>
             <h1 class="bf-name">${stage.name}<small>${stage.title}</small></h1>
           </div>
-          <div class="bf-points">兵装ポイント <b class="${left < 0 ? 'bad' : ''}">${left}</b> / ${stage.weaponPoints}</div>
+          <div class="bf-points">
+            ${best ? `<span class="bf-best">最高評価 <b class="rank-${best}">${best}</b></span>` : ''}
+            兵装ポイント <b class="${left < 0 ? 'bad' : ''}">${left}</b> / ${stage.weaponPoints}</div>
         </div>
+        ${targets ? `<div class="bf-rating">評価基準${ratingLine}</div>` : ''}
 
         <div class="bf-body">
           <div class="bf-left">
@@ -244,6 +260,29 @@ export class ScreenManager {
   showResult(stage, result, stats) {
     const clear = result === 'clear';
     const next = STAGES[STAGES.indexOf(stage) + 1];
+    const r = stats.rating;
+
+    // 評価（§18）。クリアしたときだけ出す。
+    // 各軸に「◎の基準」を添える。あと何秒・何ポイント足りなかったのかが
+    // 分からないと、もう一度やる理由にならない。
+    const rating = r ? `
+      <div class="res-rating">
+        <div class="rr-rank rank-${r.rank}">
+          <label>総合評価</label><b>${r.rank}</b>
+          ${stats.newBest && stats.best ? '<i>自己ベスト更新</i>'
+            : stats.newBest ? '<i>初クリア</i>'
+            : `<i class="dim">最高評価 ${stats.best}</i>`}
+        </div>
+        <table class="rr-axes">
+          ${r.axes.map((a) => `<tr class="mark-${a.mark === '◎' ? 'good' : a.mark === '○' ? 'ok' : 'poor'}">
+            <th>${a.label}</th>
+            <td class="rr-mark">${a.mark}</td>
+            <td class="rr-val">${a.text}</td>
+            <td class="rr-desc">${a.desc}${a.target ? `（◎ は ${a.target} まで）` : ''}</td>
+          </tr>`).join('')}
+        </table>
+      </div>` : '';
+
     this._show(`
       <div class="screen-inner result">
         <div class="res-badge ${clear ? 'clear' : 'fail'}">${clear ? 'MISSION COMPLETE' : 'MISSION FAILED'}</div>
@@ -255,6 +294,7 @@ export class ScreenManager {
           <div><label>喪失</label><b>${stats.losses}</b></div>
           <div><label>残兵装P</label><b>${stats.points}</b></div>
         </div>
+        ${rating}
         ${clear && next ? `<div class="res-next">次の任務「${next.name}」が解禁されました</div>` : ''}
         <div class="screen-foot">
           <button data-act="select" class="ghost">ステージモードへ</button>

@@ -87,6 +87,7 @@ export function end(result, stats) {
   current.kills = stats.kills || 0;
   current.losses = stats.losses || 0;
   current.pointsLeft = stats.pointsLeft ?? null;
+  current.rank = stats.rank ?? null;        // クリア評価（§18）。失敗時は null
   runs.push(current);
   if (runs.length > MAX_RUNS) runs = runs.slice(-MAX_RUNS);
   const finished = current;
@@ -146,6 +147,12 @@ export function summary() {
           + `${Math.round(lost.reduce((s, e) => s + e.z, 0) / lost.length)}`
         : '—',
       損失の主因: mode(lost.map((e) => e.cause || '被弾')),
+      // クリア評価の分布（§18）。基準値が甘すぎ／辛すぎを見るのはここ
+      評価: cleared.length
+        ? ['S', 'A', 'B', 'C']
+          .map((k) => [k, cleared.filter((r) => r.rank === k).length])
+          .filter(([, n]) => n > 0).map(([k, n]) => `${k}${n}`).join(' ') || '—'
+        : '—',
     });
   }
   return rows;

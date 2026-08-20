@@ -672,6 +672,53 @@ button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 .result .screen-foot { justify-content: center; }
 .result .screen-foot button { margin-left: 0; }
 
+/* クリア評価（§18） */
+.rank-S { color: #ffd76a; }
+.rank-A { color: #7ec87e; }
+.rank-B { color: var(--cyan); }
+.rank-C { color: var(--text-dim); }
+
+.stage-card { position: relative; }
+.sc-rank {
+  position: absolute; top: 10px; right: 12px;
+  font-size: 26px; line-height: 1; letter-spacing: 0;
+}
+/* 評価の文字と名前がぶつからないよう、右上を空けておく */
+.stage-card .sc-no, .stage-card .sc-name { padding-right: 34px; }
+
+.bf-best { margin-right: 18px; }
+.bf-best b { font-size: 18px; }
+.bf-rating {
+  font-size: 11px; color: var(--text-dim); letter-spacing: 0.06em;
+  margin: -10px 0 14px; display: flex; flex-wrap: wrap; gap: 0 20px;
+}
+.bf-rating span { white-space: nowrap; }
+.bf-rating em { font-style: normal; color: var(--amber); margin-right: 7px; }
+.bf-rating b { font-weight: normal; margin-right: 8px; }
+.bf-rating .rt-good { color: #ffd76a; }
+.bf-rating .rt-ok { color: var(--text); }
+
+.res-rating {
+  display: inline-block; text-align: left;
+  border: 1px solid var(--panel-line); background: rgba(8, 16, 18, 0.6);
+  padding: 14px 22px; margin-bottom: 24px;
+}
+.rr-rank { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.rr-rank label { font-size: 10px; color: var(--text-dim); letter-spacing: 0.16em; }
+.rr-rank b { font-size: 40px; line-height: 1; font-weight: normal; }
+.rr-rank i { font-style: normal; font-size: 11px; color: var(--amber); }
+.rr-rank i.dim { color: var(--text-dim); }
+.rr-axes { border-collapse: collapse; font-size: 12px; line-height: 1.9; }
+.rr-axes th {
+  text-align: left; font-weight: normal; color: var(--text); padding-right: 14px;
+}
+.rr-axes .rr-mark { font-size: 15px; padding-right: 10px; }
+.rr-axes .rr-val { color: var(--amber); padding-right: 16px; white-space: nowrap; }
+.rr-axes .rr-desc { color: var(--text-dim); font-size: 11px; }
+.rr-axes .mark-good .rr-mark { color: #ffd76a; }
+.rr-axes .mark-ok   .rr-mark { color: var(--cyan); }
+.rr-axes .mark-poor .rr-mark { color: var(--text-dim); }
+
 /* スクロールバー */
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); }

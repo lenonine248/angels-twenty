@@ -14,7 +14,8 @@ import { ContactRenderer } from './world/contacts.js';
 import { Effects } from './world/effects.js';
 import { GameLoop, formatTime } from './core/loop.js';
 import { makeRng } from './core/rng.js';
-import { loadProgress, markCleared, resetProgress, saveSettings } from './core/save.js';
+import { loadProgress, markCleared, markRating, resetProgress, saveSettings } from './core/save.js';
+import { evaluate, isBetterRank, RANKS } from './data/rating.js';
 import { AudioManager } from './core/audio.js';
 import * as telemetry from './core/telemetry.js';
 import { Aircraft } from './sim/aircraft.js';
@@ -556,11 +557,24 @@ function finishBattle() {
   battle.finished = true;
   const { stage, mission, world } = battle;
   const clear = mission.state === MISSION.CLEAR;
-  if (clear) { progress = markCleared(progress, stage.id); screens.progress = progress; }
+
+  // クリア評価（§18）。失敗時は付けない。
+  const pointsUsed = (stage.weaponPoints ?? 0) - (world.weaponPoints ?? 0);
+  const rating = clear
+    ? evaluate(stage, { sec: loop.simTime, pointsUsed, losses: battle.losses })
+    : null;
+  const bestBefore = progress.ratings[stage.id] || null;
+
+  if (clear) {
+    progress = markCleared(progress, stage.id);
+    if (rating) progress = markRating(progress, stage.id, rating.rank, RANKS);
+    screens.progress = progress;
+  }
 
   telemetry.end(clear ? 'clear' : 'fail', {
     sec: loop.simTime, kills: battle.kills, losses: battle.losses,
     pointsLeft: world.weaponPoints,
+    rank: rating ? rating.rank : null,
   });
   audio.setAlarm(0);
   audio.setEngine(0, 1);
@@ -573,6 +587,9 @@ function finishBattle() {
       kills: battle.kills,
       losses: battle.losses,
       points: world.weaponPoints,
+      rating,
+      best: bestBefore,
+      newBest: !!(rating && isBetterRank(rating.rank, bestBefore)),
     });
     battle = null;
   }, 1800);
