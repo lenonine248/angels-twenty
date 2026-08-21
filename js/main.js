@@ -784,7 +784,13 @@ function spawnReinforcement(world, airbase, type, index) {
   airbase.queue = airbase.queue.filter((q) => q !== ac);
   airbase.launch(ac, world);
   ac.aiMode = 'PURSUIT';
-  if (airbase.side !== world.playerSide) world.log(`敵飛行場から増援が発進しました`);
+  // 敵は当面レーダーを切らない（§26.6）。ステージ配置の敵と同じ扱いにする。
+  // Aircraft の既定は 'auto' なので、ここを書かないと**増援だけが自動**になり、
+  // 同じ陣営の中で規則が食い違う。実際そうなっていた。
+  if (airbase.side !== world.playerSide) {
+    ac.radarMode = 'on';
+    world.log(`敵飛行場から増援が発進しました`);
+  }
 }
 
 // ================================================================ 戦闘終了

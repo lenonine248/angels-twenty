@@ -3,6 +3,7 @@
 //   fetch('/tools/bench.js').then(r=>r.text()).then(eval)
 //   await AT.bench.all(5)        // 全6ステージを5回ずつ
 //   await AT.bench.stage(0, 10)  // ステージ1を10回
+//   await AT.bench.ab(3, [11,22,33], { A: null, B: (b) => ... })  // 種を固定して比較
 //
 // ステージ3以降は地上で待機して始まるため、プレイヤーの指示が無いと
 // 誰も発進しない。そこで最低限の代理プレイヤー（発進させ、目標へ攻撃指示を出す）
@@ -12,26 +13,53 @@
 // 描画を回さずシミュレーションだけを最大速度で進める。
 // 1回の戦闘は実時間 1〜3 秒で終わる。
 //
-// 注意: ユニットIDが戦闘をまたいで増え続けるため、同じステージでも
-// 毎回まったく同じ経過にはならない（レーダーの扇の分担や逆探知の
-// 位置誤差が ID から決まる）。だから複数回まわして分布で見る。
+// **版どうしを比べるときは種を固定すること**（§24.3）。種を引くようにした
+// Beta 2.9 以降、同じ版でも回ごとに結果が大きく振れる。種がばらばらの周回で
+// 版 A と版 B を比べると、種の違いを変更の効きと取り違える。`ab()` を使う。
+//
+// 釣り合いの当たりを付けたいだけなら seeds を省いてよい。その場合は毎回
+// 種を引くので、1回の数字ではなく分布で読む。
 
 (function () {
   const MAX_SEC = 900;
   const DT = 1 / 30;
 
-  function runOne(stageIndex, trace) {
+  /**
+   * 1回まわす。
+   *
+   * @param {number} stageIndex
+   * @param {boolean} trace   発射・命中・撃墜の時系列を残すか
+   * @param {object} opts     { seed, setup }
+   *   seed  … 乱数の種を固定する（§24.3）。省くと毎回引く
+   *   setup … 戦闘が組み上がった直後・1ステップも進める前に呼ばれる。
+   *           ここで条件を差し替える。**進めた後に触っても A/B にならない**
+   */
+  function runOne(stageIndex, trace, opts = {}) {
     return new Promise((resolve) => {
       // 直前の戦闘を覚えておく。
       // startBattle は nextFrame を2回挟んでから戦闘を組むので、その間 AT.battle は
       // **前の戦闘のまま**。「battle があるか」だけで待つと前の戦闘を計測してしまい、
       // 別ステージの結果が混ざる（実際に混ざっていた）。
       const prev = AT.battle;
-      AT.startStage(stageIndex);
+
+      // **組み上がった瞬間に凍らせる。**
+      // buildBattle は最後に loop.setSpeed(1) を呼ぶので、放っておくと
+      // 実時間のループが新しい戦闘を進め始める。こちらが気付くのは 30ms 後の
+      // ポーリングなので、**何フレーム進んだかが実行のたびに変わる**。
+      // 同じ種でも結果がずれる原因はこれだった（シミュレーション自体は決定論的）。
+      // setSpeed を一時的に乗っ取って、0 ステップも進まないようにする。
+      const setSpeed = AT.loop.setSpeed.bind(AT.loop);
+      AT.loop.setSpeed = () => setSpeed(0);
+
+      AT.startStage(stageIndex, opts.seed);
       const wait = () => {
         if (!AT.battle || AT.battle === prev) { setTimeout(wait, 30); return; }
-        AT.loop.setSpeed(0);
-        resolve(step(trace));
+        AT.loop.setSpeed = setSpeed;
+        setSpeed(0);
+        if (opts.setup) opts.setup(AT.battle);
+        const r = step(trace);
+        r.seed = AT.battle.seed;
+        resolve(r);
       };
       setTimeout(wait, 40);
     });
@@ -49,6 +77,12 @@
 
     const auto = new AutoPlayer(b);
     let autoT = 0;
+
+    // 電波管制の効き具合（§26）。機体×ステップで数えて、出していた割合を出す。
+    // 「差が出なかった」で終わらせないために、**そもそも黙っていたのか**を残す。
+    const emit = { blue: [0, 0], red: [0, 0] };
+    // 双方が初めて相手を捉えた時刻。黙ることで探知が遅れたかを見る
+    const firstSeen = { blue: null, red: null };
 
     const events = [];
     const at = () => 't' + Math.round(steps / 30);
@@ -75,6 +109,24 @@
         if (u.side === w.playerSide) losses++; else kills++;
       }
       b.mission.update(DT);
+
+      for (const u of w.units) {
+        if (!u.alive || u.kind !== 'aircraft' || u.onGround) continue;
+        const e = emit[u.side];
+        if (!e) continue;
+        e[1]++;
+        if (u.radarRange > 0) e[0]++;
+      }
+      for (const side of ['blue', 'red']) {
+        if (firstSeen[side] != null) continue;
+        for (const [, ct] of w.detection.contactsFor(side)) {
+          if (ct.detected && ct.unit && ct.unit.side !== side && ct.unit.kind === 'aircraft') {
+            firstSeen[side] = +(steps / 30).toFixed(1);
+            break;
+          }
+        }
+      }
+
       autoT += DT;
       if (autoT >= 0.5) { autoT = 0; auto.update(); }
       steps++;
@@ -94,6 +146,11 @@
       redLeft: alive.filter((u) => u.side === 'red' && u.kind === 'aircraft').length,
       ms: Math.round(performance.now() - t0),
       reason: b.mission.failReason || '',
+      // 出していた割合(%)。100 なら誰も黙っていない＝電波管制が効いていない
+      blueEmit: emit.blue[1] ? Math.round((emit.blue[0] / emit.blue[1]) * 100) : null,
+      redEmit: emit.red[1] ? Math.round((emit.red[0] / emit.red[1]) * 100) : null,
+      blueSaw: firstSeen.blue,
+      redSaw: firstSeen.red,
       events,
     };
   }
@@ -244,13 +301,66 @@
     };
   }
 
-  async function stage(i, runs = 5) {
+  async function stage(i, runs = 5, opts = {}) {
     const rows = [];
-    for (let k = 0; k < runs; k++) rows.push(await runOne(i));
+    const seeds = opts.seeds || null;
+    const n = seeds ? seeds.length : runs;
+    for (let k = 0; k < n; k++) {
+      rows.push(await runOne(i, false, { seed: seeds ? seeds[k] : undefined, setup: opts.setup }));
+    }
     console.table(rows);
     const s = summarize(rows);
     console.log(s);
     return s;
+  }
+
+  /** 結果の指紋。これが一致していれば、その種では**何も変わらなかった** */
+  function sig(r) {
+    return `${r.state}|${r.kills}|${r.losses}|${r.sec}`;
+  }
+
+  /**
+   * 種を固定した A/B（§24.3）。同じ種で条件だけを差し替えて 1 対 1 で比べる。
+   *
+   *   await AT.bench.ab(3, [11, 22, 33], {
+   *     現行: null,
+   *     敵も自動: (b) => { for (const u of b.world.units)
+   *       if (u.side === 'red' && u.kind === 'aircraft') u.radarMode = 'auto'; },
+   *   })
+   *
+   * 種ごとに指紋を突き合わせ、違ったものだけ ★ を付ける。
+   * ★ が1つも付かなければ、その変更はその条件では**何も動かしていない**。
+   */
+  async function ab(i, seeds, variants) {
+    const names = Object.keys(variants);
+    const by = {};
+    for (const name of names) {
+      by[name] = [];
+      for (const seed of seeds) {
+        by[name].push(await runOne(i, false, { seed, setup: variants[name] || undefined }));
+      }
+    }
+
+    const rows = seeds.map((seed, k) => {
+      const o = { seed };
+      for (const name of names) {
+        const r = by[name][k];
+        o[name] = `${r.state} ${r.kills}撃墜/${r.losses}損失 ${r.sec}s`;
+        o[`${name}:発信`] = `青${r.blueEmit}% 赤${r.redEmit}%`;
+        o[`${name}:初探知`] = `青${r.blueSaw ?? '-'} 赤${r.redSaw ?? '-'}`;
+      }
+      const base = sig(by[names[0]][k]);
+      o.差 = names.every((n) => sig(by[n][k]) === base) ? '' : '★';
+      return o;
+    });
+    console.table(rows);
+
+    const diff = rows.filter((r) => r.差).length;
+    const summary = {};
+    for (const name of names) summary[name] = summarize(by[name]);
+    console.table(summary);
+    console.log(`種 ${seeds.length} 個中 ${diff} 個で結果が変わった`);
+    return { rows, summary, diff, by };
   }
 
   async function all(runs = 5) {
@@ -267,6 +377,6 @@
     return r;
   }
 
-  AT.bench = { stage, all, runOne, trace, summarize };
+  AT.bench = { stage, all, runOne, trace, summarize, ab, sig };
   return 'bench ready';
 })();
