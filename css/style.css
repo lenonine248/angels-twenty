@@ -119,7 +119,23 @@ html, body {
   min-width: 64px;
   display: inline-block;
 }
-#perf { color: var(--text-dim); font-size: 11px; }
+/*
+ * 幅を先に取っておく。
+ *
+ * 上部バーは space-between で3つを配るので、右端が
+ * 「100 fps」(43px) → 「100 fps · 実効 x1.2」(115px) と伸びると、
+ * その差だけ**中央の速度ボタンが横へずれる**。押そうとしたボタンが動くのは具合が悪い。
+ * 長いほうの幅を常に確保し、右詰めで描く。
+ */
+#perf {
+  color: var(--text-dim);
+  font-size: 11px;
+  /* span のままでは min-width が効かない（インライン要素なので） */
+  display: inline-block;
+  min-width: 118px;
+  text-align: right;
+  white-space: nowrap;
+}
 
 /* 速度コントロール */
 #speedCtl { display: flex; gap: 3px; }

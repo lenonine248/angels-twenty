@@ -135,7 +135,22 @@ export class Airbase extends GroundUnit {
     ac.heading = this.runwayHeading;
   }
 
+  /**
+   * 破壊された瞬間に、駐機中の機体も失われる。
+   *
+   * `update()` の中で「死んでいたら」と見るやり方は取らない。
+   * 死んだユニットの `update` を呼ぶかどうかは呼び出し側の都合で変わり
+   * （`tools/bench.js` は生存中のものしか回さない）、
+   * **測っている挙動と遊んでいる挙動がずれる**。死んだ瞬間に確実に効かせる。
+   */
+  destroy(source = null) {
+    if (!this.alive) return;
+    super.destroy(source);
+    this._destroyParked(this._world);
+  }
+
   update(dt, world) {
+    this._world = world;
     super.update(dt, world);
     if (!this.alive) {
       // 破壊された飛行場では整備できない
@@ -162,6 +177,27 @@ export class Airbase extends GroundUnit {
     }
   }
 
+  /**
+   * 飛行場が壊れたら、そこに止まっている機体も失われる。
+   *
+   * 数えるのは `parked` に載っている機体だけ。離陸滑走に入った機体は
+   * すでに `parked` から外れており、**発進させた判断まで巻き戻さない**。
+   *
+   * 効き方が大きいのは敵飛行場のほうで、潰せば増援が止まるうえに
+   * 駐機中の機体もまとめて落ちる。自軍飛行場は失った時点で
+   * 任務が失敗するステージがほとんどなので、こちらへの影響は小さい。
+   */
+  _destroyParked(world) {
+    for (const ac of this.parked.slice()) {
+      if (!ac.alive) continue;
+      ac.deathCause = '地上撃破';
+      ac.damage(ac.hp + 1, this);
+      world?.log?.(`${ac.name} 地上で撃破されました`);
+    }
+    this.parked.length = 0;
+    this.queue.length = 0;
+  }
+
   _advanceService(slot, dt, world) {
     let remaining = dt;
     while (remaining > 0 && slot.tasks.length > 0) {
@@ -171,8 +207,10 @@ export class Airbase extends GroundUnit {
       remaining -= step;
       applyContinuous(slot.ac, task, step);
       if (task.done >= task.time - 1e-6) {
+        const kind = task.type;
         applyComplete(slot.ac, task, world);
         slot.tasks.shift();
+        if (kind === 'weapon' || kind === 'swap') ensureFuelTask(slot);
       }
     }
   }
@@ -304,6 +342,26 @@ export function buildServicePlan(ac, world) {
 
 function task(type, label, time, extra = {}) {
   return { type, label, time: Math.max(0.1, time), done: 0, ...extra };
+}
+
+/**
+ * 兵装の積み替えで燃料容量が増えたぶんを、給油作業として足す。
+ *
+ * 計画は「燃料 → 兵装」の順に組む（途中で発進させたときに、
+ * 最も困る燃料から埋まっているようにするため）。そのため
+ * **満タンで着陸して増槽を積む**と、計画を立てた時点では `fuelRatio` が 1 なので
+ * 給油作業が1つも入らず、そのあと増槽で容量だけが増えて終わっていた。
+ * 増槽を積んだのに燃料が増えない、という症状はこれ。
+ *
+ * 順序は変えない。増槽ぶんの給油は兵装のあとに回る。
+ */
+function ensureFuelTask(slot) {
+  const ac = slot.ac;
+  if (ac.fuelRatio >= 0.99) return;
+  if (slot.tasks.some((t) => t.type === 'fuel')) return;
+  const missing = ac.fuelMax - ac.fuel;
+  slot.tasks.push(task('fuel', '燃料補給', SERVICE_TIME.fuelFull * (1 - ac.fuelRatio),
+    { amount: missing }));
 }
 
 /**

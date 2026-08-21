@@ -37,8 +37,23 @@ const GUN_SPREAD_DAMAGE = 0.5;   // 損傷
 /** 目標の旋回による偏差の外れやすさ（見積り用の係数） */
 const GUN_LEAD_PENALTY = 1.0;
 
-/** 同一目標へ同時に飛ばせるミサイル数 */
-const MAX_IN_FLIGHT_PER_TARGET = 2;
+/**
+ * 同じ目標へ、同じ空対空兵装を同時に何発まで飛ばすか。
+ *
+ * 数えるのは**自分が撃った弾だけ**で、**誘導を保っている弾だけ**。
+ *
+ * 以前は「陣営全体で、目標ごとに、兵装を問わず2発」だった。3つ問題があった。
+ *
+ * 1. **僚機の弾が自分の枠を食う。** 4機編隊だと3番機・4番機が永久に撃てない。
+ *    目標の重複回避（§7）が別にあるので、陣営側で数える必要は無い
+ * 2. **兵装を区別しない。** AAM-M が飛んでいると AAM-S も撃てなかった。
+ *    射程帯の違う弾は同時に使えたほうが自然
+ * 3. **外した弾も数えていた。** 誘導を失って明後日へ飛ぶ弾が枠を占め続け、
+ *    AAM-M なら約32秒のあいだ発射が止まっていた。「撃ってほしいのに撃たない」の正体
+ *
+ * 対地（AGM・ARM・爆弾）には掛けない。同じ目標へ2発叩き込みたい場面が多い。
+ */
+const MAX_AAM_PER_TARGET = 1;
 /** 連続発射の間隔(秒)。爆弾は一連射（スティック投下）できるよう短くする。 */
 const FIRE_COOLDOWN = 3.5;
 const BOMB_COOLDOWN = 0.5;
@@ -192,6 +207,24 @@ export function hitLabel(p) {
 
 export class CombatSystem {
   /**
+   * その機体が、その目標へ、その兵装を**いま何発誘導中か**。
+   *
+   * 空対空以外は常に 0（対地は重ねて撃ってよい）。
+   * `m.lost` を外すのが肝で、これを数に入れていたのが
+   * 「撃ってほしいのに撃たない」の原因だった（MAX_AAM_PER_TARGET を参照）。
+   */
+  guidingCount(shooter, target, weapon) {
+    if (!weapon || weapon.kind !== 'aam') return 0;
+    let n = 0;
+    for (const m of this.world.missiles) {
+      if (!m.alive || m.lost) continue;
+      if (m.launcher !== shooter || m.target !== target) continue;
+      if (m.weapon && m.weapon.id === weapon.id) n++;
+    }
+    return n;
+  }
+
+  /**
    * その陣営がこの目標を狙うときの、狙点のずれ(m)。
    * 正確に見えていれば 0（§25.4）。
    */
@@ -277,15 +310,8 @@ export class CombatSystem {
     const weapon = this.selectWeapon(shooter, target);
     if (!weapon) return;
 
-    // 同一目標への同時発射数の制限。
-    // これは「高価な誘導ミサイルを1つの目標に浪費しない」ための規則なので、
-    // 爆弾には掛けない。掛けると一連（スティック）で落とせず、
-    // 2発だけ落として通り過ぎることになり、爆撃機が目標を壊せなくなる。
-    if (weapon.kind !== 'bomb') {
-      const inFlight = this.world.missiles.filter(
-        (m) => m.alive && m.target === target && m.side === shooter.side).length;
-      if (inFlight >= MAX_IN_FLIGHT_PER_TARGET) return;
-    }
+    // 同じ空対空兵装を同じ目標へ重ねて撃たない（MAX_AAM_PER_TARGET）
+    if (this.guidingCount(shooter, target, weapon) >= MAX_AAM_PER_TARGET) return;
 
     // 命中が見込めないうちは撃たない（乱射してミサイルを空にしないため）。
     //
@@ -380,13 +406,7 @@ export class CombatSystem {
 
     if (!this.inEnvelope(shooter, target, w)) return this._envelopeReason(shooter, target, w);
 
-    if (w.kind !== 'bomb') {
-      const inFlight = this.world.missiles.filter(
-        (m) => m.alive && m.target === target && m.side === shooter.side).length;
-      if (inFlight >= MAX_IN_FLIGHT_PER_TARGET) {
-        return `誘導中${inFlight}発`;
-      }
-    }
+    if (this.guidingCount(shooter, target, w) >= MAX_AAM_PER_TARGET) return `${w.id} 誘導中`;
     if (shooter.fireCooldown > 0) return `再装填 ${shooter.fireCooldown.toFixed(1)}秒`;
 
     if (w.kind !== 'bomb') {

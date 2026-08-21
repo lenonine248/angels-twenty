@@ -32,6 +32,14 @@ const PROXIMITY = 90;
  * 低速な対地ミサイル(320m/s)が数秒で失速して射程の半分も飛べなくなる。
  */
 const COAST_TIME = 50;
+/**
+ * 誘導を失ってから自爆するまで(秒)。
+ *
+ * 外した弾を寿命いっぱい飛ばし続ける必要は無い。AAM-M なら減速して
+ * 寿命判定に掛かるまで**約32秒**あり、その間ずっと明後日の方向へ飛んでいた。
+ * 実弾は外れたら自爆するし、残しておく利点も無い。
+ */
+const LOST_SELF_DESTRUCT = 5;
 /** この速度を下回ると失推 */
 const MIN_SPEED_RATIO = 0.35;
 /** 誘導に必要な視線を確認する間隔(秒) */
@@ -82,7 +90,8 @@ export class Missile {
 
     this.age = 0;
     this.alive = true;
-    this.lost = false;            // 誘導喪失（以後は直進）
+    this.lost = false;            // 誘導喪失（以後は直進し、少し飛んでから自爆）
+    this.lostAt = 0;
     this.lastKnown = target ? target.pos.clone() : this.pos.clone();
 
     // ロケットモーターは短時間で燃え尽き、以後は慣性で飛ぶ。
@@ -136,7 +145,8 @@ export class Missile {
     // 発射時は母機の速度しか無いので、燃焼が終わるまでは失推判定をしない。
     const spent = this.age > this.boostTime
       && this.speed < this.weapon.speed * MIN_SPEED_RATIO;
-    if (spent || this.age > this.lifetime) {
+    const lostTooLong = this.lost && this.age - this.lostAt > LOST_SELF_DESTRUCT;
+    if (spent || lostTooLong || this.age > this.lifetime) {
       this.destroy(world, 'spent');
       return;
     }
@@ -225,6 +235,7 @@ export class Missile {
   _goStupid() {
     if (this.lost) return;
     this.lost = true;
+    this.lostAt = this.age;
     this.seekTarget = null;
   }
 
