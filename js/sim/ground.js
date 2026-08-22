@@ -2,7 +2,7 @@
 // P3時点では「探知される側」としての振る舞い（レーダー放射・沈黙・移動）だけを持つ。
 // 交戦処理（SAM発射・AAA弾幕）は P6 で追加する。
 
-import { Unit, headingOf } from './unit.js';
+import { Unit, headingOf, RWR_SIGNATURE_FACTOR } from './unit.js';
 import { getGroundType } from '../data/ground.js';
 import { WEAPONS } from '../data/weapons.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
@@ -65,6 +65,11 @@ export class GroundUnit extends Unit {
   }
 
   /** レーダーの探知半径。沈黙中は自軍の探知能力も失う。 */
+  /** 逆探知される距離（§30.3）。航空機と同じ規則で、射程の1.5倍 */
+  get rwrSignature() {
+    return this.radarRange * RWR_SIGNATURE_FACTOR;
+  }
+
   get radarRange() {
     if (!this.spec.radar || !this.radarActive || !this.alive) return 0;
     return this.spec.radar.range;

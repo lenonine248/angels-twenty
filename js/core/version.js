@@ -4,7 +4,7 @@
 // 「画面に出ている版」と「履歴に書いてある版」がずれないようにする。
 
 /** 画面に出す版名 */
-export const VERSION = 'Beta 2.19';
+export const VERSION = 'Beta 2.20';
 
 /** この版を切った日 */
 export const VERSION_DATE = '2026-08-21';

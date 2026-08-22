@@ -1,8 +1,12 @@
 // 地上・水上ユニットのデータ。仕様書 §8。
 //
 // radar.emits が true のユニットは電波を出しているため、
-// 相手の電波逆探知(RWR)に約60kmから捕捉される。
+// **そのレーダー射程の1.5倍**の距離から相手の電波逆探知(RWR)に捕捉される（§30.3）。
 // 沈黙(radarActive=false)させれば隠れられるが、その間はミサイルを誘導できない。
+//
+// 射程は**地図の縮尺に合わせてある**（§30.2）。地図は 51.2km 四方なので、
+// 以前の値（飛行場60km・レーダーサイト70km）では**戦域を丸ごと覆って**しまい、
+// 「敵の位置が分からない時間」が一度も生まれなかった。
 
 export const GROUND_TYPES = {
   RADAR: {
@@ -11,7 +15,7 @@ export const GROUND_TYPES = {
     category: 'radar',
     hp: 120,
     static: true,
-    radar: { range: 70000, emits: true, canSilence: true },
+    radar: { range: 45000, emits: true, canSilence: true },
     color: 0x8b8578,
     size: 220,
   },
@@ -49,7 +53,7 @@ export const GROUND_TYPES = {
     category: 'airbase',
     hp: 400,
     static: true,
-    radar: { range: 60000, emits: true, canSilence: false },
+    radar: { range: 30000, emits: true, canSilence: false },
     // 飛行場自体も近接防空を持つ。無防備だと低空侵入が一方的になる。
     weapon: { kind: 'aaa', range: 3500, maxAlt: 1800, dps: 12 },
     color: 0x5a5a52,
@@ -75,7 +79,7 @@ export const GROUND_TYPES = {
     hp: 320,
     static: false,
     speed: 9,
-    radar: { range: 45000, emits: true, canSilence: true },
+    radar: { range: 35000, emits: true, canSilence: true },
     weapon: { kind: 'aaa', range: 4500, maxAlt: 2500, dps: 14 },   // 近接防空
     color: 0x4a5560,
     size: 400,

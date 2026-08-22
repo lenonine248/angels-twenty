@@ -685,9 +685,13 @@ function spawnStage(world, stage, loadouts, terrain) {
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
     u.aiMode = a.aiMode || 'PATROL';
-    // 敵は当面レーダーを切らない（§26.6）。まずプレイヤー側の効きだけを測る。
-    // 同じ版に両方入れると、易しくなったのか難しくなったのかが混ざって読めない。
-    u.radarMode = a.radarMode || 'on';
+    // 敵もプレイヤーと同じ規則で電波管制を行う（§30.4）。
+    //
+    // §26.6 では保留にしていた。当時は自軍飛行場のレーダーが 60km あって
+    // 戦域を丸ごと覆っていたので、**敵が黙っても何も起きなかった**（0/6）。
+    // 射程を地図の縮尺に合わせた（§30.2）ら、進出距離の長いステージで
+    // **6/6 の種が動く**ようになったので、規則を揃えた。
+    u.radarMode = a.radarMode || 'auto';
     if (a.moveTo) {
       // 目的地を持つ敵機（支援機と同じ書き方）。哨戒ではなく一方向へ進む。
       const alt = Math.max(0, terrain.heightAt(a.moveTo.x, a.moveTo.z)) + (a.moveTo.agl || 4000);
@@ -790,11 +794,10 @@ function spawnReinforcement(world, airbase, type, index) {
   airbase.queue = airbase.queue.filter((q) => q !== ac);
   airbase.launch(ac, world);
   ac.aiMode = 'PURSUIT';
-  // 敵は当面レーダーを切らない（§26.6）。ステージ配置の敵と同じ扱いにする。
-  // Aircraft の既定は 'auto' なので、ここを書かないと**増援だけが自動**になり、
-  // 同じ陣営の中で規則が食い違う。実際そうなっていた。
+  // 増援もステージ配置の敵と同じ扱い（§30.4）。既定が 'auto' なので明示は要らないが、
+  // ここを書き忘れると**増援だけ規則が違う**という食い違いが起きる（実際に起きていた）。
+  ac.radarMode = 'auto';
   if (airbase.side !== world.playerSide) {
-    ac.radarMode = 'on';
     world.log(`敵飛行場から増援が発進しました`);
   }
 }

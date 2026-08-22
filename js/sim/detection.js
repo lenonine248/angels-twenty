@@ -26,6 +26,10 @@ export function lostLifetimeOf(unit) {
   return unit.kind === 'aircraft' ? LOST_LIFETIME : LOST_LIFETIME_GROUND;
 }
 /** 電波逆探知の距離(m) */
+/**
+ * 逆探知の誤差を距離で割るときの基準(m)（§25.3）。
+ * 探知そのものの距離は `rwrSignature`（射程×1.5）で決まる（§30.3）。
+ */
 const RWR_RANGE = 60000;
 /**
  * 逆探知の位置誤差(m)。**最大距離のときの値**で、近づくほど縮む（§25.2）。
@@ -378,7 +382,10 @@ function byRwr(sensor, target, terrain, stats) {
 
   // 航空機は**そのレーダーの強さで見つかる距離が変わる**（§26.3）。
   // 地上の放射源は据え付けの大出力なので、従来どおり一律 60km。
-  const range = target.kind === 'aircraft' ? target.rwrSignature : RWR_RANGE;
+  // 逆探知される距離は**そのレーダーの射程の1.5倍**（§30.3）。
+  // 以前は地上だけ一律 60km という別規則だったが、一本化した。
+  // 「強いレーダーほど遠くから見つかる」が例外なく通る。
+  const range = target.rwrSignature || 0;
   if (range <= 0) return -1;
   if (sensor.pos.distanceTo(target.pos) > range) return -1;
   stats.losChecks++;

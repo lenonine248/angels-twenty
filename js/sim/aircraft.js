@@ -9,7 +9,7 @@
 // という「戦術判断に効く挙動」だけを再現する。
 
 import * as THREE from 'three';
-import { Unit, headingOf, angleDiff, DEG } from './unit.js';
+import { Unit, headingOf, angleDiff, DEG, RWR_SIGNATURE_FACTOR } from './unit.js';
 import { getType } from '../data/aircraft.js';
 import { loadoutSlots, loadoutFuelBonus } from '../data/weapons.js';
 import { attackManeuver, defensiveManeuver, groundAttackRun } from './acm.js';
@@ -51,7 +51,7 @@ const ARRIVE_FACTOR = 0.9;
  * 1.5 なら**相手のレーダー射程の外側 0.5 倍ぶんの帯**ができ、
  * そこではこちらだけが相手を知っている。これが電波管制の報酬になる。
  */
-export const RWR_AIR_FACTOR = 1.5;
+export const RWR_AIR_FACTOR = RWR_SIGNATURE_FACTOR;
 
 /**
  * デコイを撒き始める残り秒数（§28.4.1）。練度で変わる。
@@ -212,7 +212,7 @@ export class Aircraft extends Unit {
 
   /** 逆探知される距離。強いレーダーほど遠くから見つかる（§26.3） */
   get rwrSignature() {
-    return this.radarRange * RWR_AIR_FACTOR;
+    return this.radarRange * RWR_SIGNATURE_FACTOR;
   }
 
   // ------------------------------------------------------------- 指示

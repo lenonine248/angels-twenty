@@ -123,7 +123,9 @@ export const SUPPORT_TYPES = {
     maxSpeed: 200, cruiseSpeed: 160, minSpeed: 90,
     accel: 5, turnRate: 4, climbRate: 50, ceiling: 11000,
     hp: 220, hardpoints: 0,
-    radarRange: 90000,
+    // 全域制圧はやめた（§30.2）。地図は 51.2km 四方なので、90km では
+    // どこに居ても全部見えていた。逆探知される距離も 135 → 90km に落ちる。
+    radarRange: 60000,
     omniRadar: true,          // 前方扇形ではなく全方位
     radarFovH: 180, radarFovV: 60,
     visualRange: 8000,
