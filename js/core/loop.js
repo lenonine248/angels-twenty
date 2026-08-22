@@ -39,8 +39,16 @@ export class GameLoop {
     this.onFixedUpdate = onFixedUpdate;
     this.onRender = onRender;
 
-    this.speed = 1;          // 0 = 一時停止, 1 / 2 / 4
-    this.lastSpeed = 1;      // 一時停止解除時に戻す速度
+    /**
+     * 再生速度。**1 / 2 / 4 / 8 のいずれかで、0 にはならない。**
+     * 一時停止は `paused` が持つ。
+     *
+     * 以前は速度 0 を一時停止として兼ねていたため、
+     * **止めたまま速度を選べなかった**（x4 を押すとその場で動き出す）。
+     * 止まっているあいだに次の速度を決めておきたい、というのが自然な操作なので分けた。
+     */
+    this.speed = 1;
+    this.paused = false;
     this.simTime = 0;        // ミッション経過時間（秒）
     this.running = false;
 
@@ -74,27 +82,30 @@ export class GameLoop {
     cancelAnimationFrame(this._rafId);
   }
 
-  get paused() { return this.speed === 0; }
+  /** いまシミュレーションが進む倍率（止まっていれば 0） */
+  get rate() { return this.paused ? 0 : this.speed; }
 
+  /**
+   * 速度を決める。**一時停止の状態には触らない。**
+   * 止まっているあいだに押せば、再開したときにその速度になる。
+   *
+   * 0 を渡す古い呼び方は一時停止として受ける（呼び出し側を全部直したが、
+   * 外から `AT.loop` を触る検証コードのために残す）。
+   */
   setSpeed(s) {
-    if (s > 0) this.lastSpeed = s;
-    this.speed = s;
+    if (s === 0) { this.paused = true; return; }
+    if (SPEED_STEPS.includes(s)) this.speed = s;
   }
 
-  togglePause() {
-    this.setSpeed(this.paused ? this.lastSpeed : 0);
-  }
+  setPaused(v) { this.paused = !!v; }
 
-  /** [ ] キー用: 速度を一段ずつ変える */
+  togglePause() { this.paused = !this.paused; }
+
+  /** [ ] キー用: 速度を一段ずつ変える。止まっていても効く */
   stepSpeed(dir) {
     const steps = SPEED_STEPS;
-    if (this.paused) {
-      if (dir > 0) this.setSpeed(steps[0]);
-      return;
-    }
     const i = steps.indexOf(this.speed);
-    const ni = Math.min(steps.length - 1, Math.max(0, i + dir));
-    this.setSpeed(steps[ni]);
+    this.speed = steps[Math.min(steps.length - 1, Math.max(0, i + dir))];
   }
 
   _tick(ts) {
@@ -116,7 +127,7 @@ export class GameLoop {
     }
 
     const simBefore = this.simTime;
-    if (this.speed > 0) {
+    if (!this.paused) {
       this._accum += realDt * this.speed;
       const budgetEnd = performance.now() + STEP_BUDGET_MS;
       let steps = 0;
@@ -143,7 +154,7 @@ export class GameLoop {
       this._starved = false;
     }
 
-    const alpha = this.speed > 0 ? this._accum / FIXED_DT : 0;
+    const alpha = this.paused ? 0 : this._accum / FIXED_DT;
     this.onRender(alpha, realDt);
   }
 }

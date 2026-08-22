@@ -16,7 +16,7 @@ import { notify } from './actions.js';
 const REFRESH_INTERVAL = 1 / 10;
 
 /** 詳細パネルに並べるAIモード */
-const MODE_BUTTONS = ['PATROL', 'PURSUIT', 'COORDINATE', 'EVADE', 'ESCORT', 'STRIKE'];
+const MODE_BUTTONS = ['PATROL', 'PURSUIT', 'COORDINATE', 'EVADE', 'ESCORT', 'STRIKE', 'MANUAL'];
 /** 搭載パネルに並べる兵装（SAM弾は地上専用なので除く） */
 const LOADABLE = ['AAM-S', 'AAM-M', 'AAM-A', 'AGM', 'ARM', 'BOMB', 'TANK'];
 
@@ -104,6 +104,12 @@ export class Hud {
       if (guard) {
         for (const u of this.commands.selection) u.evadeWhileGuiding = !u.evadeWhileGuiding;
         notify('guard', {});
+        this._detailKey = null;
+        return;
+      }
+      const decoy = e.target.closest('button[data-decoy]');
+      if (decoy) {
+        for (const u of this.commands.selection) u.autoDecoy = !u.autoDecoy;
         this._detailKey = null;
         return;
       }
@@ -286,7 +292,7 @@ export class Hud {
       u.onGround && u.airbase ? (u.airbase.pendingService(u)?.kinds.join('') ?? '') : '',
       u.formation ? `${u.formation.number}${u.formation.shape}` : 0,
       Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
-      u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.fireThreshold,
+      u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.autoDecoy ? 1 : 0, u.fireThreshold,
       u.autoWeapons.GUN === false ? 1 : 0,
       u.radarMode, u.radarActive ? 1 : 0,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
@@ -388,7 +394,11 @@ export class Hud {
 
     const guard = `<button class="autow${u.evadeWhileGuiding ? '' : ' off'}" data-guard="1"
       title="AAM-M誘導中にミサイルが飛んできたとき、回避するか誘導を続けるか">
-      ${u.evadeWhileGuiding ? '誘導中も回避' : '誘導を優先'}</button>`;
+      ${u.evadeWhileGuiding ? '誘導中も回避' : '誘導を優先'}</button>`
+      // デコイは回避機動と別の判断。手動モードでは機動しないがデコイは撒ける。
+      + `<button class="autow${u.autoDecoy ? '' : ' off'}" data-decoy="1"
+        title="飛来ミサイルに対してフレア／チャフを自動で撒くか">
+        デコイ${u.autoDecoy ? ' 自動' : ' 停止'}</button>`;
 
     // レーダーの扱い（§26.5）。切ると見えなくなるが、こちらも見えなくなる。
     // いま出しているかどうかは自動のときに変わるので、状態も添える。
@@ -421,7 +431,7 @@ export class Hud {
       </div>
       ${taskRow}
       <div class="dt-add">${autos}${guard}
-        <span class="svc-meta">自動発射</span>${thBtns}</div>
+        <span class="dt-group"><span class="svc-meta">自動発射</span>${thBtns}</span></div>
       <div class="dt-add">${radar}</div>`;
   }
 

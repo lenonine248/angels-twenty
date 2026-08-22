@@ -108,7 +108,7 @@ export class TutorialRunner {
     // プレイヤーが自分で再開しても即座に止め返されて操作を奪うことになる。
     if (s.pause && this._pausedFor !== this.index) {
       this._pausedFor = this.index;
-      ctx.loop?.setSpeed(0);
+      ctx.loop?.setPaused(true);
     }
 
     this._updateHighlight();
@@ -151,7 +151,7 @@ export class TutorialRunner {
     // 戻さないと、次の「右クリックで撃つ」で何も起きず、
     // 止まっていることに気づけないまま行き詰まる。
     if (done && done.pause && this._loop && this._loop.paused) {
-      this._loop.setSpeed(this._loop.lastSpeed || 1);
+      this._loop.setPaused(false);
     }
     this._render(true);
   }

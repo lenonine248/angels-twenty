@@ -568,6 +568,7 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   el('missionName').textContent = `${stage.name} — ${stage.title}`;
   loop.simTime = 0;
   loop.setSpeed(1);
+  loop.setPaused(false);
   renderObjectives();
 
   destroyTutorial();
@@ -601,6 +602,7 @@ function finishTutorial() {
     el('hud').classList.add('hidden');
     battle = null;
     loop.setSpeed(1);
+    loop.setPaused(false);
     audio.startMusic('menu');
     screens.showTutorialResult(t);
   }, 1600);
@@ -920,7 +922,7 @@ function updateHudBar() {
   if (++hudFrames % 15 === 0) {
     // 要求どおりの倍率が出ていないときは、その旨を出す。
     // 黙って遅くなると「倍速が効かない」という分かりにくい症状になる。
-    const slow = loop.speed > 0 && loop.effectiveSpeed < loop.speed * 0.75;
+    const slow = !loop.paused && loop.effectiveSpeed < loop.speed * 0.75;
     el('perf').textContent = slow
       ? `${loop.fps.toFixed(0)} fps · 実効 x${loop.effectiveSpeed.toFixed(1)}`
       : `${loop.fps.toFixed(0)} fps`;
@@ -961,14 +963,18 @@ function renderObjectives() {
 function setupPauseMenu() {
   const menu = el('pauseMenu');
 
+  // メニューを開く前が止まっていたかを覚えておく。
+  // 常に動かし直すと、自分で止めてから Esc を押した人の状態を勝手に解いてしまう。
+  let wasPaused = false;
   const open = () => {
     if (!battle || battle.finished) return;
-    loop.setSpeed(0);
+    wasPaused = loop.paused;
+    loop.setPaused(true);
     menu.classList.remove('hidden');
   };
   const close = () => {
     menu.classList.add('hidden');
-    if (loop.paused) loop.setSpeed(loop.lastSpeed || 1);
+    loop.setPaused(wasPaused);
   };
   const leave = () => {
     menu.classList.add('hidden');
@@ -976,6 +982,7 @@ function setupPauseMenu() {
     destroyTutorial();
     battle = null;
     loop.setSpeed(1);
+    loop.setPaused(false);
     audio.setAlarm(0);
     audio.setEngine(0, 1);
     audio.startMusic('menu');
@@ -1065,30 +1072,41 @@ function setupAudioUi() {
 }
 
 /**
- * 倍速ボタンの表示。
+ * 倍速ボタンと一時停止ボタンの表示。
  *
  * 押したときだけ更新すると、押していない経路で速度が変わったときに表示だけ取り残される。
  * 実際、前のミッションで x4 のまま次を始めると buildBattle が x1 に戻すのに
  * ボタンは x4 のままで、「x4 表示なのに等速」という状態になっていた。
- * 表示は常に loop.speed から作る。
+ * 表示は常に loop の状態から作る。
+ *
+ * 速度と一時停止は別々に光る。止めているあいだも
+ * 「再開したらこの速度」が分かるようにするため。
  */
 let speedButtons = null;
+let pauseButton = null;
 function syncSpeedButtons() {
-  if (!speedButtons) return;
-  for (const b of speedButtons) b.classList.toggle('active', Number(b.dataset.speed) === loop.speed);
+  if (speedButtons) {
+    for (const b of speedButtons) b.classList.toggle('active', Number(b.dataset.speed) === loop.speed);
+  }
+  if (pauseButton) pauseButton.classList.toggle('paused', loop.paused);
 }
 
 function setupTimeControls() {
-  const buttons = [...document.querySelectorAll('#speedCtl button')];
+  const buttons = [...document.querySelectorAll('#speedCtl button[data-speed]')];
   speedButtons = buttons;
+  pauseButton = el('btnPause');
   const sync = syncSpeedButtons;
   for (const b of buttons) {
     b.addEventListener('click', () => {
       const v = Number(b.dataset.speed);
       loop.setSpeed(v); sync();
-      notify(v === 0 ? 'pause' : 'speed', { speed: v });
+      notify('speed', { speed: v });
     });
   }
+  pauseButton.addEventListener('click', () => {
+    loop.togglePause(); sync();
+    notify('pause', { paused: loop.paused });
+  });
   document.addEventListener('click', (e) => {
     if (e.target && e.target.id === 'launchAll' && battle) {
       let launched = false;

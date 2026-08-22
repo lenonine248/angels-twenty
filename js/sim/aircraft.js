@@ -125,6 +125,8 @@ export class Aircraft extends Unit {
     this.skill = o.skill != null ? clamp(o.skill, 0.2, 1) : 1;
     this.fireCooldown = 0;
     this._decoyTimer = 0;
+    /** デコイを自動で撒くか（§9.5）。兵装の自動使用と同じ扱いの独立トグル */
+    this.autoDecoy = true;
     this.evading = false;
     this.cranking = false;
 
@@ -365,18 +367,30 @@ export class Aircraft extends Unit {
     this._consumeFuel(dt * 0.6);
   }
 
+  /** 手動モード（§9.5）。自発的な判断を一切しない */
+  get manual() { return this.aiMode === 'MANUAL'; }
+
   /**
    * 燃料監視（仕様 §9.2）。
    * 最寄りの自軍飛行場まで戻れなくなる前に自動で帰投へ切り替える。
+   *
+   * 手動モードでは切り替えない。**代わりに一度だけ警告を出す。**
+   * 黙って落ちるのと、言われたうえで落ちるのは別なので、
+   * 「自分で判断する」を選んだ人にも折り返し点だけは知らせる。
    */
   _checkBingoFuel(world) {
     if (this._rtbTriggered || !this.order || this.order.type === 'rtb') return;
+    if (this.manual) {
+      if (!this._bingoWarned && this.fuel < this._bingoFuel(world)) {
+        this._bingoWarned = true;
+        world.log?.(`${this.name} 燃料残少 — 手動のため自動帰投しません`);
+      }
+      return;
+    }
     const ab = this.nearestBase(world);
     if (!ab) { this._noHomeBase = true; return; }
     this._noHomeBase = false;
-    // 余裕を厚めに取る。ぎりぎりで判断すると、進入待ちや迂回で間に合わない。
-    const dist = this.distanceTo(ab) + APPROACH_DISTANCE;
-    const needed = (dist / Math.max(80, this.spec.cruiseSpeed)) * 1.6 + 110;
+    const needed = this._bingoFuel(world, ab);
     if (this.fuel < needed) {
       this._rtbTriggered = true;
       // 指示だけでなく AI モードも帰投にする。
@@ -388,6 +402,14 @@ export class Aircraft extends Unit {
       this.setOrder({ type: 'rtb', airbase: ab });
       world.log?.(`${this.name} 燃料残少 — 帰投`);
     }
+  }
+
+  /** 帰投に要る燃料(秒)。余裕を厚めに取る（ぎりぎりだと進入待ちや迂回で間に合わない） */
+  _bingoFuel(world, base = null) {
+    const ab = base || this.nearestBase(world);
+    if (!ab) return 0;
+    const dist = this.distanceTo(ab) + APPROACH_DISTANCE;
+    return (dist / Math.max(80, this.spec.cruiseSpeed)) * 1.6 + 110;
   }
 
   /** 最寄りの自軍飛行場 */
@@ -613,7 +635,7 @@ export class Aircraft extends Unit {
     // 機銃が実体弾になったので、曲がれば相手の偏差が崩れて当たらなくなる。
     // 撃たれているのに真っ直ぐ飛び続けるのがいちばん悪い。
     // ミサイル回避のほうが上位（そちらは当たれば即死ぶんが大きい）。
-    const brk = this.threats.length === 0 && !this.onGround
+    const brk = !this.manual && this.threats.length === 0 && !this.onGround
       ? defensiveManeuver(this, world) : null;
     this.breaking = !!brk;
     if (brk) {
@@ -624,8 +646,19 @@ export class Aircraft extends Unit {
     }
 
     // --- ミサイル回避（どの指示よりも優先して割り込む） ---
+    //
+    // 手動モードは機動しない。ただし**デコイは撒く**（自動使用の設定に従う）。
+    // 「機動するかどうか」と「対抗手段を使うかどうか」は別の判断なので分けてある。
     if (this.threats.length === 0) this._evadeSide = null;   // 脅威が消えたら選び直す
-    const evade = this.threats.length > 0 ? this._evade(world, dt) : null;
+    if (this.manual) {
+      const m = this.threats[0];
+      if (m && m.alive) {
+        const d = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
+        this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed),
+          4.5 * (0.45 + 0.55 * this.skill));
+      }
+    }
+    const evade = !this.manual && this.threats.length > 0 ? this._evade(world, dt) : null;
     this.evading = !!evade;
     if (evade) {
       desiredHeading = evade.heading;
@@ -760,6 +793,23 @@ export class Aircraft extends Unit {
       && m.launcher === this && m.guidance === 'sarh');
   }
 
+  /**
+   * デコイ投射（誘導方式に合わせてフレア／チャフを選ぶ）。
+   * 練度が低いほど気づくのが遅く、撒き始めが遅れる。
+   *
+   * 回避機動から切り出してある。手動モードは機動しないがデコイは撒くため。
+   *
+   * @param {number} tti 着弾までの概算秒数
+   * @param {number} limit 撒き始める秒数
+   */
+  _maybeDeployDecoy(world, dt, m, tti, limit) {
+    this._decoyTimer -= dt;
+    if (!this.autoDecoy || !world.combat) return;
+    if (tti >= limit || this._decoyTimer > 0) return;
+    const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
+    if (world.combat.deployDecoy(this, kind)) this._decoyTimer = 1.2;
+  }
+
   _evade(world, dt) {
     const m = this.threats[0];
     if (!m || !m.alive) return null;
@@ -767,12 +817,8 @@ export class Aircraft extends Unit {
     // 誘導優先の設定なら、自分のミサイルを誘導している間は回避機動を取らない。
     // （デコイだけは撒く。撃ち勝つために被弾リスクを受け入れる選択）
     if (!this.evadeWhileGuiding && this._guidingSarh(world)) {
-      this._decoyTimer -= dt;
-      const dist = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
-      if (dist / Math.max(60, m.speed) < 4.5 && this._decoyTimer <= 0 && world.combat) {
-        const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
-        if (world.combat.deployDecoy(this, kind)) this._decoyTimer = 1.2;
-      }
+      const d = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
+      this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed), 4.5);
       return null;
     }
 
@@ -781,13 +827,7 @@ export class Aircraft extends Unit {
     const bearing = headingOf(dx, dz);
     const tti = dist / Math.max(60, m.speed);      // 到達までの概算秒数
 
-    // デコイ投射（誘導方式に合わせてフレア／チャフを選ぶ）。
-    // 練度が低いほど気づくのが遅く、撒き始めが遅れる。
-    this._decoyTimer -= dt;
-    if (tti < 4.5 * (0.45 + 0.55 * this.skill) && this._decoyTimer <= 0 && world.combat) {
-      const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
-      if (world.combat.deployDecoy(this, kind)) this._decoyTimer = 1.2;
-    }
+    this._maybeDeployDecoy(world, dt, m, tti, 4.5 * (0.45 + 0.55 * this.skill));
 
     // ミサイルを真横に置く向きのうち、旋回量が少ない方を選ぶ
     const left = bearing - Math.PI / 2;

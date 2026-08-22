@@ -23,6 +23,7 @@ export const AI_MODES = {
   STRIKE:     { id: 'STRIKE',     label: '対地攻撃', desc: '地上目標へ進撃。SAM圏内では低空へ降りる' },
   RTB:        { id: 'RTB',        label: '帰投',     desc: '最寄りの自軍飛行場へ戻る' },
   TRANSIT:    { id: 'TRANSIT',    label: '経路飛行', desc: '与えられた経路を飛ぶだけ。交戦も退避もしない（輸送機など）' },
+  MANUAL:     { id: 'MANUAL',     label: '手動',     desc: '自分では何もしない。目標選択・ミサイル回避・燃料切れの帰投もしない。兵装とデコイは自動使用の設定に従う' },
 };
 
 /** モードごとの交戦距離(m) */
@@ -96,6 +97,10 @@ export class PilotAI {
   }
 
   _think(u, attackers) {
+    // 手動: 何もしない。目標も選ばず、帰投もせず、指示だけで動く。
+    // 一番上に置く。弾切れの申告すら出さない（指示を上書きしないため）。
+    if (u.aiMode === 'MANUAL') { u.headingBias = 0; return; }
+
     // ミサイル回避中は割り込まない（機体側が回避機動を優先している）
     if (u.threats.length > 0) return;
 
@@ -115,6 +120,7 @@ export class PilotAI {
       case 'STRIKE':     this._strike(u, attackers); break;
       case 'RTB':        this._rtb(u); break;
       // 経路飛行: 指示に一切割り込まない。ミサイル回避だけは機体側が行う。
+      // （手動 MANUAL はその回避もしない。上で先に返している）
       case 'TRANSIT':    u.headingBias = 0; break;
       case 'PATROL':
       default:           this._patrol(u, attackers); break;

@@ -155,6 +155,21 @@ html, body {
   border-color: var(--amber);
   color: var(--amber);
 }
+/*
+ * 一時停止と速度は別の操作なので、見た目でも切り離す。
+ * 止めているあいだも「再開したらこの速度」が光ったままになる。
+ */
+.spd-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 5px;
+  background: var(--panel-line);
+}
+#btnPause.paused {
+  background: rgba(255, 182, 72, 0.28);
+  border-color: var(--amber);
+  color: var(--amber);
+}
 
 /* ===== 左：ユニットリスト ===== */
 #unitList {
@@ -293,6 +308,8 @@ html, body {
 .svc-row b { color: var(--amber); font-weight: normal; }
 .svc-slot { margin-left: auto; color: var(--text-dim); font-size: 10px; }
 .svc-meta { color: var(--text-dim); font-size: 10px; margin-left: 6px; }
+/* 「自動発射 低中高」は1かたまり。行が折り返すときに見出しと選択肢が離れないように */
+.dt-group { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .svc-meta.bad { color: var(--hostile); }
 button.chip.load {
   font-family: inherit; cursor: pointer;

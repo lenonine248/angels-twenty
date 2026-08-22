@@ -22,6 +22,7 @@ import {
 } from '../world/models.js';
 import { getType } from '../data/aircraft.js';
 import { getGroundType } from '../data/ground.js';
+import { WEAPONS } from '../data/weapons.js';
 import { flattenRunway } from '../sim/airbase.js';
 
 /** 再生できる速さ */
@@ -32,6 +33,27 @@ const MAX_ROLL = 1.1;
 const ROLL_PER_RATE = 0.55;
 /** 接地とみなす対地高度(m) */
 const GROUND_AGL = 30;
+
+/**
+ * 兵装の描き方（§23.4.1）。
+ *
+ * 記録にミサイルの軌跡は入っていない。0.5秒間隔では 210〜550m も飛ぶので
+ * サンプリングしても軌跡にならないし、記録も重くなる（core/recorder.js）。
+ * 代わりに**発射と着弾の2点**だけが `events` に入っているので、そこから引き直す。
+ *
+ * **外した弾には終点が無い。** `spent` はイベントにしていないので、
+ * 目標の方角へ飛翔時間ぶん進めた点を終点にして、そこで消す。
+ * 本当にそこを通ったかは分からないが、「撃った・外した」は読める。
+ *
+ * **機銃は記録に入っていない**（`onFire` を通らない）。ここでは描けない。
+ */
+const TRACER_COLOR = { blue: [0.62, 0.85, 1.0], red: [1.0, 0.69, 0.54] };
+/** 発射点側の減衰（0=消える） */
+const TRACER_TAIL = 0.15;
+/** 着弾の光を出す秒数 */
+const FLASH_SEC = 0.6;
+/** 同時に描くミサイルの上限 */
+const MAX_TRACERS = 256;
 
 export class ReplayPlayer {
   /**
@@ -44,6 +66,10 @@ export class ReplayPlayer {
     this.data = null;
     this.terrain = null;
     this.units = [];
+    /** events から組み立てた「1発の弾」（§23.4.1） */
+    this.shots = [];
+    this.tracerLines = null;
+    this.flashPoints = null;
     this.time = 0;
     this.speed = 1;
     this.playing = true;
@@ -110,6 +136,8 @@ export class ReplayPlayer {
       this.units.push(ghost);
     }
 
+    this._buildTracers();
+
     // 最初の自軍機へ寄せる
     const lead = this.units.find((u) => u.side === 'blue' && u.kind === 'aircraft');
     if (lead) {
@@ -139,6 +167,9 @@ export class ReplayPlayer {
     this.bar.innerHTML = '';
     this.scene.reset();
     this.units = [];
+    this.shots = [];
+    this.tracerLines = null;
+    this.flashPoints = null;
     this.data = null;
     this.terrain = null;
     if (this.onClose) this.onClose();
@@ -250,6 +281,8 @@ export class ReplayPlayer {
       }
     }
 
+    this._applyTracers(t);
+
     // 追尾中の機体へカメラを寄せる
     if (this.followId != null) {
       const s = cur.get(this.followId);
@@ -259,6 +292,123 @@ export class ReplayPlayer {
         this.scene.rig.focusAltTarget = Math.min(7000, Math.max(400, s.y - ground));
       }
     }
+  }
+
+  // ------------------------------------------------------------ 兵装の描画
+
+  /**
+   * `events` から「1発の弾」を組み立てる。
+   *
+   * `fire` と、その後の同じ撃った側・同じ目標の `hit` を対にする。
+   * 対が見つからなければ外れ弾として、目標の方角へ飛翔時間ぶん伸ばす。
+   */
+  _buildTracers() {
+    this.shots = [];
+    const ev = this.data.events || [];
+
+    // 着弾を (撃った側, 目標, 時刻) で引けるようにしておく
+    const hits = ev.filter((e) => e.type === 'hit');
+
+    for (const f of ev) {
+      if (f.type !== 'fire' || f.x == null) continue;
+      const w = WEAPONS[f.w];
+      if (!w) continue;
+
+      const from = new THREE.Vector3(f.x, f.y, f.z);
+      // 目標がその時刻にいた場所（記録に無ければ描かない）
+      const tgt = f.tid != null ? this._posAt(f.tid, f.t) : null;
+      if (!tgt) continue;
+
+      // 爆弾は速度を持たない（投下）。落下時間は落差から出す。
+      // ここを飛ばすと、ミッション1で**飛行場が爆撃される場面が丸ごと映らない**。
+      const flight = w.speed
+        ? Math.max(0.4, from.distanceTo(tgt) / w.speed)
+        : Math.max(0.6, Math.sqrt(Math.max(0, 2 * Math.max(0, from.y - tgt.y)) / 9.81));
+      const hit = hits.find((h) => h.tid === f.tid && h.id === f.id
+        && h.t >= f.t - 0.05 && h.t <= f.t + flight * 2.5 + 3);
+
+      let to; let end; let hitAt = null;
+      if (hit && hit.x != null) {
+        to = new THREE.Vector3(hit.x, hit.y, hit.z);
+        end = hit.t;
+        hitAt = hit.t;
+      } else {
+        // 外れ弾。終点は分からないので、目標の方角へ飛翔時間ぶん伸ばす
+        const late = this._posAt(f.tid, f.t + flight) || tgt;
+        to = late.clone();
+        end = f.t + flight;
+      }
+      if (end <= f.t) end = f.t + 0.4;
+      this.shots.push({ from, to, t0: f.t, t1: end, side: f.side || 'blue', hitAt });
+      if (this.shots.length >= MAX_TRACERS * 4) break;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position',
+      new THREE.BufferAttribute(new Float32Array(MAX_TRACERS * 6), 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute('color',
+      new THREE.BufferAttribute(new Float32Array(MAX_TRACERS * 6), 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setDrawRange(0, 0);
+    this.tracerLines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.9, depthTest: false,
+    }));
+    this.tracerLines.frustumCulled = false;
+    this.tracerLines.renderOrder = 4;
+    this.scene.add(this.tracerLines);
+
+    const fgeo = new THREE.BufferGeometry();
+    fgeo.setAttribute('position',
+      new THREE.BufferAttribute(new Float32Array(MAX_TRACERS * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    fgeo.setDrawRange(0, 0);
+    this.flashPoints = new THREE.Points(fgeo, new THREE.PointsMaterial({
+      color: 0xffd9a0, size: 26, sizeAttenuation: false,
+      transparent: true, opacity: 0.9, depthTest: false,
+    }));
+    this.flashPoints.frustumCulled = false;
+    this.flashPoints.renderOrder = 5;
+    this.scene.add(this.flashPoints);
+  }
+
+  /** 記録上の、そのユニットの時刻 t の位置（無ければ null） */
+  _posAt(id, t) {
+    const s = this._stateAt(t).get(id);
+    return s ? new THREE.Vector3(s.x, s.y, s.z) : null;
+  }
+
+  /** 飛翔中の弾と、着弾の光を時刻 t の姿へ更新する */
+  _applyTracers(t) {
+    if (!this.tracerLines) return;
+    const P = this.tracerLines.geometry.attributes.position.array;
+    const C = this.tracerLines.geometry.attributes.color.array;
+    const F = this.flashPoints.geometry.attributes.position.array;
+    let n = 0; let nf = 0;
+
+    for (const sh of this.shots) {
+      if (sh.hitAt != null && t >= sh.hitAt && t < sh.hitAt + FLASH_SEC && nf < MAX_TRACERS) {
+        F[nf * 3] = sh.to.x; F[nf * 3 + 1] = sh.to.y; F[nf * 3 + 2] = sh.to.z;
+        nf++;
+      }
+      if (t < sh.t0 || t > sh.t1 || n >= MAX_TRACERS) continue;
+      const k = (t - sh.t0) / Math.max(0.01, sh.t1 - sh.t0);
+      const c = TRACER_COLOR[sh.side] || TRACER_COLOR.blue;
+      const i = n * 6;
+      // 発射点 → いまの弾頭。発射点側を暗くして進行方向が読めるようにする
+      P[i] = sh.from.x; P[i + 1] = sh.from.y; P[i + 2] = sh.from.z;
+      P[i + 3] = sh.from.x + (sh.to.x - sh.from.x) * k;
+      P[i + 4] = sh.from.y + (sh.to.y - sh.from.y) * k;
+      P[i + 5] = sh.from.z + (sh.to.z - sh.from.z) * k;
+      C[i] = c[0] * TRACER_TAIL; C[i + 1] = c[1] * TRACER_TAIL; C[i + 2] = c[2] * TRACER_TAIL;
+      C[i + 3] = c[0]; C[i + 4] = c[1]; C[i + 5] = c[2];
+      n++;
+    }
+
+    this.tracerLines.geometry.attributes.position.needsUpdate = true;
+    this.tracerLines.geometry.attributes.color.needsUpdate = true;
+    this.tracerLines.geometry.setDrawRange(0, n * 2);
+    this.tracerLines.visible = n > 0;
+    this.flashPoints.geometry.attributes.position.needsUpdate = true;
+    this.flashPoints.geometry.setDrawRange(0, nf);
+    this.flashPoints.visible = nf > 0;
   }
 
   /** 時刻 t の各ユニットの状態。id -> {x,y,z,h,hp} */

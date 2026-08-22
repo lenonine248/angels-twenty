@@ -43,19 +43,23 @@
       const prev = AT.battle;
 
       // **組み上がった瞬間に凍らせる。**
-      // buildBattle は最後に loop.setSpeed(1) を呼ぶので、放っておくと
-      // 実時間のループが新しい戦闘を進め始める。こちらが気付くのは 30ms 後の
-      // ポーリングなので、**何フレーム進んだかが実行のたびに変わる**。
+      // buildBattle は最後に速度を戻すので、放っておくと実時間のループが
+      // 新しい戦闘を進め始める。こちらが気付くのは 30ms 後のポーリングなので、
+      // **何フレーム進んだかが実行のたびに変わる**。
       // 同じ種でも結果がずれる原因はこれだった（シミュレーション自体は決定論的）。
-      // setSpeed を一時的に乗っ取って、0 ステップも進まないようにする。
+      // 速度と一時停止の両方を一時的に乗っ取り、0 ステップも進まないようにする。
       const setSpeed = AT.loop.setSpeed.bind(AT.loop);
-      AT.loop.setSpeed = () => setSpeed(0);
+      const setPaused = AT.loop.setPaused.bind(AT.loop);
+      AT.loop.setSpeed = () => {};
+      AT.loop.setPaused = () => setPaused(true);
+      setPaused(true);
 
       AT.startStage(stageIndex, opts.seed);
       const wait = () => {
         if (!AT.battle || AT.battle === prev) { setTimeout(wait, 30); return; }
         AT.loop.setSpeed = setSpeed;
-        setSpeed(0);
+        AT.loop.setPaused = setPaused;
+        setPaused(true);
         if (opts.setup) opts.setup(AT.battle);
         const r = step(trace);
         r.seed = AT.battle.seed;

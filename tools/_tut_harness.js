@@ -36,7 +36,7 @@
     document.querySelector('[data-act="startTutorial"]').click();
     for (let i = 0; i < 80 && (!AT.battle || AT.battle === prev); i++) await sleep(100);
     await sleep(400);
-    AT.loop.setSpeed(0);
+    AT.loop.setPaused(true);
     return !!AT.battle;
   };
 
