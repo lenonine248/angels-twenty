@@ -86,8 +86,20 @@ const CLUTTER_LOOKDOWN = 250;
  * 毎秒 18% になる。代償は大きい — 真横を向くということは、
  * 敵に背を向けも正対もしないまま、低空で速度を失うということ。
  */
+/**
+ * アクティブレーダー弾のシーカーが目標を探し続ける時間(秒)（§28.13）。
+ * これを過ぎても視界に何も入らなければ諦める。
+ */
+const SEEKER_SEARCH_SEC = 6;
+
+/**
+ * セミアクティブ弾が照射切れに耐える**合計**時間(秒)（§28.13）。
+ * この間は最後に分かっていた場所へ飛ぶ。照射が戻れば誘導を続ける。
+ */
+const SARH_COAST_SEC = 2;
+
 const NOTCH_CHANCE_PER_SEC = 0.10;
-const NOTCH_TOLERANCE = 20 * (Math.PI / 180);
+export const NOTCH_TOLERANCE = 20 * (Math.PI / 180);
 /** この速度を下回ると失推 */
 const MIN_SPEED_RATIO = 0.35;
 /** 誘導に必要な視線を確認する間隔(秒) */
@@ -142,6 +154,9 @@ export class Missile {
     this.lostAt = 0;
     this._minDist = null;         // 目標への最接近距離（§28.1）
     this._openingFor = 0;         // 離れ続けている秒数
+    this._decoyTries = 0;         // この弾に対して撒かれたデコイの数（§28.13）
+    this._searchSince = null;     // 終末シーカーが探し始めた時刻（§28.13）
+    this._coastFor = 0;           // 照射が切れていた合計秒数（§28.13）
 
     // アクティブレーダー弾の終末誘導（§28.2）。
     // 中途は発射機の索敵レーダーから位置をもらい、**相手に警報は出ない**。
@@ -257,19 +272,43 @@ export class Missile {
       if (this.target && this.target.static) {
         this.seekTarget = { pos: this.lastKnown, alive: true, speed: 0, isPoint: true };
       }
-      else this._goStupid();
+      else this._goStupid('目標消失');
       return;
     }
-    this.lastKnown.copy(t.pos);
+    // セミアクティブは、照射が切れているあいだ目標の位置を知り続けられない。
+    // 位置の記憶を更新してよいのは照らせているときだけなので、
+    // 他の誘導方式より先にここで見る（§28.13）。
+    if (this.guidance === 'sarh') {
+      // 発射機がレーダーで照射し続けている必要がある
+      const l = this.launcher;
+      if (!l || !l.alive) { this._goStupid('発射機喪失'); return; }
+      if (!illuminates(l, this.target, world, true)) {
+        // **一瞬切れただけで諦めない**（§28.13）。
+        //
+        // 実測で AAM-M の失敗理由は照射切れが最も多く（21件中15件）、
+        // 切れた瞬間の幾何は**すべて水平40°ちょうど** — ロック扇の縁だった。
+        // 撃った本人が回避に入って目標が扇から滑り出る。
+        // 「誘導を優先」を全機に強制すると SCRAMBLE は 10/12 → 2/12 に落ちるので、
+        // 回避を選ぶ AI の判断は正しい。**扇の縁を出入りするたびに
+        // 弾が死ぬ**という作りのほうが行き過ぎている。
+        //
+        // 数秒のあいだ最後に分かっていた場所へ飛び、その間に照射が戻れば続ける。
+        // 戻らなければ諦める。記憶は更新されないので、逃げ続ければ必ず外れる。
+        // 猶予は**1発につき合計**で数える。戻っても使った分は返らない。
+        // 切れるたびに満額の猶予を与えると、扇を出たり入ったりするだけで
+        // いつまでも飛び続ける（撃ちっぱなしと変わらなくなる）。
+        this._coastFor += dt;
+        if (this._coastFor > SARH_COAST_SEC) { this._goStupid('照射切れ'); return; }
+        this.seekTarget = { pos: this.lastKnown, alive: true, speed: 0, isPoint: true };
+        return;
+      }
+      this.seekTarget = this.target;      // 慣性飛行から戻ったら掴み直す
+    }
+
+    this.lastKnown.copy(this.seekTarget.pos);
 
     switch (this.guidance) {
-      case 'sarh': {
-        // 発射機がレーダーで照射し続けている必要がある
-        const l = this.launcher;
-        if (!l || !l.alive) { this._goStupid(); return; }
-        if (!illuminates(l, this.target, world, true)) { this._goStupid(); return; }
-        break;
-      }
+      case 'sarh': break;                 // 上で見た
       case 'arh': {
         // 終末に入っていれば、掴んだ目標をそのまま追う（下の共通処理へ）
         if (this.active) break;
@@ -286,8 +325,8 @@ export class Missile {
     }
 
     // ノッチ（§28.5）と地面クラッター（§28.6）。どちらも真横を向くのが条件。
-    if (this._notchLost(dt, world, t)) { this._goStupid(); return; }
-    if (this._clutterLost(dt, world, t)) { this._goStupid(); return; }
+    if (this._notchLost(dt, world, t)) { this._goStupid('ノッチ'); return; }
+    if (this._clutterLost(dt, world, t)) { this._goStupid('クラッター'); return; }
 
     // シーカーの視線（地形に遮られたら見失う）
     this._losTimer -= dt;
@@ -295,7 +334,7 @@ export class Missile {
       this._losTimer = LOS_INTERVAL;
       this._losOk = world.terrain.hasLineOfSight(this.pos, this._losPoint(t), 6, 200);
     }
-    if (!this._losOk) this._goStupid();
+    if (!this._losOk) this._goStupid('地形遮蔽');
   }
 
   /**
@@ -357,10 +396,20 @@ export class Missile {
    * 味方は掴まない。いまの AI は射線に味方が居るかを見ないので、
    * 含めると自軍を撃ち続けることになる（§28.2）。
    *
-   * 視界に何も無ければ捕捉しない → 誘導喪失 → §28.1 で自爆。
+   * **掴めるまで探し続ける**（§28.13）。1回の走査で視界に何も無くても、
+   * そこで諦めるのは早い。実測では AAM-A の**発射6発すべて**が
+   * 「終末で捕捉できず」で失われていた。原因は幾何で、
+   * `activeRange`(10km) をわずかに超える 10.1km から撃つと
+   * **発射 0.5 秒でシーカーが入る**。そのとき弾はまだ発射機の機首方向を
+   * 向いていて（ロックは ±40° まで許されるので目標は最大でそれだけ外れる）、
+   * 視界 ±30° に目標が入っていない。旋回して機首が向いた頃には
+   * とっくに誘導喪失している。
+   *
+   * 探し続ける間は中途誘導のまま、記憶した位置へ飛ぶ。
+   * `SEEKER_SEARCH_SEC` を過ぎても掴めなければ諦める
+   * — **空に向かって飛ぶ**という撃ちっぱなしの弱点は残す。
    */
   _goActive(world) {
-    this.active = true;
     const w = this.weapon;
     const fov = (w.seekerFov || 30) * (Math.PI / 180);
     const reach = w.seekerRange || 12000;
@@ -380,7 +429,17 @@ export class Missile {
       if (score < bestD) { bestD = score; best = u; }
     }
 
-    if (!best) { this._goStupid(); return; }
+    if (!best) {
+      if (this._searchSince == null) this._searchSince = this.age;
+      if (this.age - this._searchSince > SEEKER_SEARCH_SEC) {
+        this._goStupid('終末で捕捉できず');
+        return;
+      }
+      // まだ探す。記憶した位置へ向かい続ける
+      this.seekTarget = { pos: this.lastKnown, alive: true, speed: 0, isPoint: true };
+      return;
+    }
+    this.active = true;
     this.target = best;
     this.seekTarget = best;
     this._minDist = null;            // 掴み直したので最接近の記録も入れ替える
@@ -434,9 +493,10 @@ export class Missile {
     return rng < CLUTTER_CHANCE_PER_SEC * dt;
   }
 
-  _goStupid() {
+  _goStupid(reason = '?') {
     if (this.lost) return;
     this.lost = true;
+    this.lostReason = reason;      // 何で切れたか（較正で内訳を割るため）
     this.lostAt = this.age;
     this.seekTarget = null;
   }

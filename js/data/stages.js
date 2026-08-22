@@ -50,8 +50,17 @@ export const STAGES = [
         // 進発位置は自軍飛行場から約37km。爆撃機の到達まで約4分。
         // これ以上遠ざけると迎撃が遠方になり、護衛と戦っている間に
         // 爆撃機だけが抜けてくるため、かえって守りにくくなる。
-        { type: 'J-7', name: 'BANDIT 1', x: 38000, z: 14000, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'] },
-        { type: 'J-7', name: 'BANDIT 2', x: 39500, z: 15200, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'] },
+        // **搭載は2発**（既定の敵機は AAM-M+AAM-S+AAM-S の3発）。
+        //
+        // §28.13 で兵装の作りを直したら、このミッションだけ 16/18 → 10/18 まで落ちた。
+        // 敵も同じ兵装を積んでいるので、**弾が良くなるほど正面での撃ち合いが
+        // 決定的になり、時間制限つきの目的を持つこちらが不利になる**。
+        // 弾種を落とす（AAM-S×3）と逆に難しくなった（6/18）ので、効くのは弾数のほう。
+        // J-7 は低速・低旋回の迎撃機なので、こちらより積めないのは筋も通る。
+        { type: 'J-7', name: 'BANDIT 1', x: 38000, z: 14000, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'],
+          loadout: ['AAM-M', 'AAM-S'] },
+        { type: 'J-7', name: 'BANDIT 2', x: 39500, z: 15200, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'],
+          loadout: ['AAM-M', 'AAM-S'] },
         { type: 'B-9', name: 'RAIDER 1', x: 41000, z: 16500, agl: 5600, aiMode: 'STRIKE', tags: ['raid', 'bomber'],
           strikeTargetTag: 'home' },
       ],

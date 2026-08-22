@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { WEAPONS } from '../data/weapons.js';
-import { Missile, Decoy, decoyMatches } from './missile.js';
+import { Missile, Decoy, decoyMatches, NOTCH_TOLERANCE } from './missile.js';
 import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.js';
 import { headingOf, angleDiff, DEG } from './unit.js';
 import { clamp } from '../core/rng.js';
@@ -100,6 +100,13 @@ const TOF_SCALE = 15;
 /**
  * セミアクティブの照射を保てる目安(秒)。飛翔時間がこれに近づくほど、
  * 着弾前に誘導が切れる見込みが上がる（§28.8）。
+ *
+ * §28.13 で照射切れに合計2秒の慣性飛行を許したので、実態としては
+ * 20 より伸びている（AAM-M の照射切れは実測 15件 → 8件）。
+ * **それでも 20 のままにしてある。** 30 に伸ばすと見積りが上がり、
+ * AI が早く撃ち始めて AAM-M の発射数が 39 → 51 に増え、
+ * SCRAMBLE が 15/18 → 12/18 に落ちた。`FIRE_THRESHOLD` の置き直しと
+ * 一緒でなければ動かせない（`DECOY_GEOM_TYPICAL` の注記を読むこと）。
  */
 const SARH_HOLD_SEC = 20;
 /**
@@ -111,8 +118,81 @@ const SARH_HOLD_SEC = 20;
  */
 const DECOY_REACT_SEC = 7;
 
+/**
+ * 見積りの側で使う「よくある幾何」の係数（§28.13）。
+ *
+ * 実際のデコイは、ノッチに入っているかで効きが変わり（`decoyNotchFactor`）、
+ * 2発目以降は落ちる（`decoyRepeatFactor`）。撃つ瞬間には相手がどう機動するか
+ * 分からないので、見積りでは**平均的な値**を1つ掛ける。
+ *
+ * §28.13 の前は掛けていなかったので、6〜10km で **予測0.17 対 実測0.47** と
+ * 4倍近く外れていた。表示の「中」が実態を表さなくなる。
+ *
+ * **ところが 0.55 を入れたら SCRAMBLE が 15/18 → 8/18 に落ちた。**
+ * 見積りが上がると AI が早く撃ち始め、AAM-M の発射数が 39 → 78 に倍増して、
+ * 8〜14km でばかり撃つようになる（0〜4km の発射は 16件 → 1件）。
+ * §28.4 と §28.8 でも同じことが起きている — **目盛りを動かすなら、
+ * それを読む `FIRE_THRESHOLD` も同時に置き直さないといけない**。
+ * それは1回の変更に混ぜるには大きいので、いまは 1（補正なし）で置いてある。
+ * 見積りが実測より低いままなのは分かっていて残している課題（§28.13）。
+ */
+const DECOY_GEOM_TYPICAL = 1;
+
 export function decoyFactor(dist) {
   return clamp(0.15 + dist / 12000, 0.15, 0.85);
+}
+
+/**
+ * 2発目以降のデコイの効き（§28.13）。
+ *
+ * **回数を重ねれば必ず効く、という作りが不具合だった。**
+ * チャフ4発を1.2秒間隔で撒くと、8km では1回あたり 0.62 でも累積 95% になる。
+ * 実測でも 6〜10km 帯だけが崩れていた（109発中68発がデコイ、命中は26%）。
+ *
+ * 実機のシーカーは、一度はねのけた束には掛かりにくい。追尾ゲートが
+ * その目標を既に分離できているので、同じ機体が同じ幾何から撒く次の束は
+ * 同じ判別を通ることになる。**独立な振り直しにはならない。**
+ *
+ * 「撒く量」ではなく「撒き始めの一発」で決まるので、
+ * 練度＝どれだけ早く撒くか（§28.4.1）の意味も強まる。
+ */
+const DECOY_REPEAT = 0.45;
+
+export function decoyRepeatFactor(tries) {
+  return Math.pow(DECOY_REPEAT, tries);
+}
+
+/**
+ * ノッチと重ねたときのレーダー用デコイの効き（§28.13）。
+ *
+ * **チャフとノッチは同じ動作なので、二重には効かない。**
+ * どちらも「照射源に対して真横を向く」ことで成立する。真横を向いた機体は
+ * 接近速度が消えるのでクラッターに紛れる（ノッチ、10%/秒）。
+ * チャフが効くのも同じ理屈 — 撒いた瞬間にほぼ静止する雲を、
+ * シーカーが接近速度の差で分離できなくなるから。
+ *
+ * 実測では、1回の機動に対して防御が二重に乗っていた。
+ * その結果 **AAM-S の射程（7km）まで詰めても AAM-M が当たらない**
+ * （実測で 29発中6命中、14がデコイ）。詰めた見返りが無いのは行き過ぎ。
+ *
+ * ノッチに入っている間、チャフは効きを落とす。防御はノッチ側が担う。
+ * 真横を向いていない機体 — 自分の攻撃を続けている機体 — にとっては
+ * チャフが唯一の手段なので、そこでは今までどおり効く。**選択になる。**
+ *
+ * 赤外線には関係ない（フレアはドップラで分離するものではない）。
+ */
+const DECOY_IN_NOTCH = 0.25;
+
+export function decoyNotchFactor(m, unit) {
+  if (m.guidance !== 'sarh' && m.guidance !== 'arh') return 1;
+  const src = m.guidance === 'arh' && m.active ? m : m.launcher;
+  if (!src || src.alive === false || !src.pos) return 1;
+  const off = Math.abs(Math.abs(angleDiff(
+    headingOf(unit.pos.x - src.pos.x, unit.pos.z - src.pos.z), unit.heading,
+  )) - Math.PI / 2);
+  // 段差にしない。ノッチの許容角の2倍で完全に戻る
+  const t = clamp(off / (NOTCH_TOLERANCE * 2), 0, 1);
+  return DECOY_IN_NOTCH + (1 - DECOY_IN_NOTCH) * t;
 }
 
 /** ミサイルの最小射程（近すぎると誘導が間に合わない） */
@@ -248,7 +328,8 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
     // **撒く暇があるかも見る。** 至近で撃った弾には撒く時間が無い。
     // これを入れないと近距離を過小評価する（実測: 予測0.41 に対し実測0.85）。
     const chanceToUse = clamp(tof / DECOY_REACT_SEC, 0, 1);
-    const per = (1 - (weapon.decoyResist ?? 0.5)) * decoyFactor(dist) * chanceToUse;
+    const per = (1 - (weapon.decoyResist ?? 0.5)) * decoyFactor(dist) * chanceToUse
+      * DECOY_GEOM_TYPICAL;
     p *= Math.pow(1 - per, DECOY_SHOTS);
 
     // **セミアクティブは、着弾まで照射を保てるかを見る**（§28.8）。
@@ -779,7 +860,11 @@ export class CombatSystem {
     for (const m of this.world.missiles) {
       if (!m.alive || m.target !== unit || m.lost) continue;
       if (!decoyMatches(m.guidance, kind)) continue;
-      const chance = (1 - m.weapon.decoyResist) * decoyFactor(m.pos.distanceTo(unit.pos));
+      const chance = (1 - m.weapon.decoyResist)
+        * decoyFactor(m.pos.distanceTo(unit.pos))
+        * decoyNotchFactor(m, unit)
+        * decoyRepeatFactor(m._decoyTries);
+      m._decoyTries++;
       if (this.world.rng() < chance) {
         m.seekTarget = decoy;
         this.world.onDecoyed?.(m, decoy);

@@ -63,6 +63,11 @@ const DECOY_TTI_EARLY = 11;
 const DECOY_TTI_LATE = 3.5;
 /** 連続投射の間隔(秒) */
 const DECOY_INTERVAL = 1.2;
+/**
+ * 照射を保つと決めるのに要求する余裕(秒)（§28.13）。
+ * 自分の弾がこれだけ先に着くと見込めるときだけ、回避を後回しにする。
+ */
+const HOLD_MARGIN = 3;
 
 /**
  * ここから終末の切り返しに寄せ始める残り秒数（§28.5）。
@@ -967,9 +972,45 @@ export class Aircraft extends Unit {
    * まさに今誘導している弾を自分で外してしまう。
    */
   _guidingSarh(world) {
-    if (!world.missiles) return false;
-    return world.missiles.some((m) => m.alive && !m.lost
-      && m.launcher === this && m.guidance === 'sarh');
+    return this._mySarh(world) != null;
+  }
+
+  /** いま誘導しているセミアクティブ弾のうち、最も着弾が近いもの */
+  _mySarh(world) {
+    if (!world.missiles) return null;
+    let best = null;
+    let bestTti = Infinity;
+    for (const m of world.missiles) {
+      if (!m.alive || m.lost || m.launcher !== this || m.guidance !== 'sarh') continue;
+      if (!m.seekTarget || !m.seekTarget.pos) continue;
+      const tti = m.pos.distanceTo(m.seekTarget.pos) / Math.max(60, m.speed);
+      if (tti < bestTti) { bestTti = tti; best = m; }
+    }
+    if (best) best._tti = bestTti;
+    return best;
+  }
+
+  /**
+   * 回避に入らず照射を保つか（§28.13）。
+   *
+   * セミアクティブ弾は、撃った本人が目標をレーダーの扇に入れ続けないと
+   * 誘導が切れる。ところが AI は**常に回避を選んでいた**ので、
+   * 自分で撃った弾を自分で外していた。実測で AAM-M の失敗理由の内訳は
+   * 照射切れ15・目標消失4・ノッチ2 — **デコイではなくこれが本丸**だった。
+   * 6P 払う AAM-M×3 が、無料の AAM-S×3 に負けていた（3/12 対 8/12）。
+   *
+   * 判断は単純に**どちらが先に着弾するか**。自分の弾のほうが先に着き、
+   * かつ相手の弾まで余裕があるなら、数秒だけ照射を保つ値打ちがある。
+   * 迷ったら逃げる（余裕 `HOLD_MARGIN` を要求する）。
+   *
+   * 「誘導を優先」を選んでいるプレイヤーの機体は今までどおり常に保つ。
+   */
+  _worthHoldingLock(world, threat) {
+    const mine = this._mySarh(world);
+    if (!mine) return false;
+    const inTti = Math.hypot(threat.pos.x - this.pos.x, threat.pos.z - this.pos.z)
+      / Math.max(60, threat.speed);
+    return mine._tti + HOLD_MARGIN < inTti;
   }
 
   /**
@@ -1027,9 +1068,13 @@ export class Aircraft extends Unit {
     const m = this.threats[0];
     if (!m || !m.alive) return null;
 
-    // 誘導優先の設定なら、自分のミサイルを誘導している間は回避機動を取らない。
+    // 自分のミサイルを誘導している間は回避機動を取らない。
     // （デコイだけは撒く。撃ち勝つために被弾リスクを受け入れる選択）
-    if (!this.evadeWhileGuiding && this._guidingSarh(world)) {
+    //
+    // 「誘導を優先」を選んだ機体は常に。そうでない機体も、
+    // **自分の弾のほうが先に着くなら**数秒だけ保つ（§28.13）。
+    if ((!this.evadeWhileGuiding && this._guidingSarh(world))
+        || this._worthHoldingLock(world, m)) {
       const d = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
       this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed));
       return null;

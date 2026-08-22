@@ -58,6 +58,7 @@
         await AT.bench.runOne(i, false, { seed, setup: setup(est) });
         for (const [m, s] of AT.battle._calibShots) {
           if (s.結末 === '未') s.結末 = m.lost ? '誘導喪失' : '外れ';
+          if (m.lost) s.理由 = m.lostReason || '?';
           rows.push(s);
         }
       }
