@@ -74,6 +74,18 @@ const BREAK_TTI = 2.5;
 /** クランクで振る角度を、ロックの扇の何割までにするか（§28.7） */
 const CRANK_FRACTION = 0.6;
 
+/** コーナー速度の既定値（巡航速度に対する割合・§29.2） */
+const CORNER_FRACTION = 0.85;
+
+/** ミリタリー推力（AB無し）の上限。最大速度・加速度に対する割合（§29.3） */
+const MIL_SPEED_FRACTION = 0.78;
+const MIL_ACCEL_FRACTION = 0.55;
+
+/** 帰投中の巡航高度と、上げてよい条件（§29.5） */
+const RTB_CRUISE_ALT = 8000;
+const RTB_CLIMB_MIN_DIST = 15000;
+const RTB_CLEAR_RANGE = 30000;
+
 const _tmp = new THREE.Vector3();
 
 export class Aircraft extends Unit {
@@ -89,6 +101,14 @@ export class Aircraft extends Unit {
     this.pos.y = o.alt ?? 3000;
     this.desiredAlt = this.pos.y;
     this.desiredSpeed = spec.cruiseSpeed;
+    /**
+     * アフターバーナーの方針（§29.3）。'save' | 'normal' | 'max'
+     * 指揮官が指定するのは**意図**で、いつ点火するかは機体が決める。
+     */
+    this.abMode = 'normal';
+    this.abActive = false;
+    /** 標準方針で「いま焚きたい」状況か（攻撃指示・空戦中）。毎ステップ決める */
+    this._abWanted = false;
 
     this.fuelMax = spec.fuelSeconds * loadoutFuelBonus(this.loadout);
     this.fuel = this.fuelMax;
@@ -453,20 +473,98 @@ export class Aircraft extends Unit {
     return this.speed / Math.max(0.01, this.effectiveTurnRate);
   }
 
-  /** 実効旋回率(rad/s)。速度・損傷・搭載量・高度で変化する。 */
+  /**
+   * 実効旋回率(rad/s)。**構造の限界と揚力の限界の、低いほうを取る**（§29.2）。
+   *
+   *   構造限界 ω_s(V) = ω_ref × 巡航速度 / V     定G。速いほど鈍い
+   *   揚力限界 ω_l(V) = K × σ(高度) × V          遅いほど鈍い
+   *
+   * 両者が交わる速度が**コーナー速度**で、そこが旋回率の頂点になる。
+   *
+   * 以前は構造側だけを持っていたので、**遅いほど良く曲がる**一方向だった
+   * （`clamp` の上限 1.5 が偶然その代わりをしていた）。
+   * つまり遅く飛ぶ理由が無い代わりに、**速く飛ぶ理由も無かった**。
+   *
+   * `σ` は揚力側だけに掛ける。構造の限界は空気の濃さと関係が無い。
+   * こうすると**高度が上がるほどコーナー速度が上がる**という関係が自然に出て、
+   * 高空では最大速度でも揚力制限に当たる ＝ どの速度でも曲がれなくなる。
+   */
   get effectiveTurnRate() {
     const base = this.spec.turnRate * DEG;
-    const speedFactor = clamp(this.spec.cruiseSpeed / Math.max(60, this.speed), 0.45, 1.5);
+    const cruise = this.spec.cruiseSpeed;
+    const v = Math.max(60, this.speed);
+    const vc = this.cornerSpeed;
+
+    const structural = base * (cruise / v);
+    const lift = base * (cruise / (vc * vc)) * turnFactor(this.pos.y) * v;
+
     const hpFactor = 0.6 + 0.4 * (this.hp / this.maxHp);
     // ハードポイント0の機体（早期警戒機）でゼロ除算しないよう下限を置く
     const loadFactor = 1 - 0.25 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.hardpoints));
-    // 薄い空気では揚力が足りず曲がれない
-    return base * speedFactor * hpFactor * loadFactor * turnFactor(this.pos.y);
+    return Math.min(structural, lift) * hpFactor * loadFactor;
   }
 
-  /** その高度で出せる水平最大速度(m/s) */
+  /**
+   * 帰投中、高度を上げてよいほど周りが静かか（§29.5）。
+   *
+   * 飛来ミサイルが無く、探知している敵機・SAM が近くにいないこと。
+   * 見えていない脅威までは考えない — こちらも知らないものは避けられない。
+   */
+  _rtbClear(world) {
+    if (this.threats.length > 0) return false;
+    const det = world.detection;
+    if (!det) return true;
+    for (const [, c] of det.contactsFor(this.side)) {
+      const t = c.unit;
+      if (!t || !t.alive || t.side === this.side) continue;
+      const air = t.kind === 'aircraft' && !t.onGround;
+      if (!air && t.kind !== 'sam') continue;
+      if (this.pos.distanceTo(t.pos) < RTB_CLEAR_RANGE) return false;
+    }
+    return true;
+  }
+
+  /** 海面でのコーナー速度(m/s)。高度が上がると実効的にはこれより上がる */
+  get cornerSpeed() {
+    return this.spec.cornerSpeed || this.spec.cruiseSpeed * CORNER_FRACTION;
+  }
+
+  /**
+   * その高度で出せる水平最大速度(m/s)。**アフターバーナー全開の値**（§29.3）。
+   *
+   * `spec.maxSpeed` は AB を焚いた状態の数字として読む。データは書き換えない。
+   * 中距離ミサイルの射程も、この状態で撃つことを前提にしている。
+   */
   get altitudeMaxSpeed() {
     return this.spec.maxSpeed * maxSpeedFactor(this.pos.y);
+  }
+
+  /** ミリタリー推力（AB無し）で出せる水平最大速度(m/s) */
+  get milSpeed() {
+    return this.altitudeMaxSpeed * MIL_SPEED_FRACTION;
+  }
+
+  /**
+   * いま AB を焚いているか（§29.3）。
+   *
+   * **操作は「意図」を選ばせる**（温存 / 標準 / 全力）。常時ON/OFF にしないのは、
+   * 常時ON なら燃料が4分で尽き、常時OFF ならミサイルから逃げられないので、
+   * **どちらの端も選ばれない**から。いつ点火するかは機体が決める。
+   */
+  get afterburner() {
+    if (this.onGround || !this.alive) return false;
+    // 出したい速度がミリタリーで届かないときだけ意味がある
+    if (this.desiredSpeed <= this.milSpeed) return false;
+    switch (this.abMode) {
+      case 'max':  return true;
+      case 'save': return this.threats.length > 0;       // 逃げるときだけ
+      default:     return this.threats.length > 0 || this._abWanted;
+    }
+  }
+
+  /** 比エネルギー(m)。高度と速度を足し合わせた「戦う余力」（§29.4） */
+  get specificEnergy() {
+    return this.pos.y + (this.speed * this.speed) / (2 * 9.81);
   }
 
   /** 現在高度での推力の割合（UI表示用） */
@@ -644,6 +742,14 @@ export class Aircraft extends Unit {
         desiredHeading = headingOf(dx, dz);
         desiredAlt = fix.y;
         desiredSpeed = dist > 12000 ? this.spec.cruiseSpeed : this.spec.minSpeed * 1.35;
+
+        // 周りが静かなら燃費のいい高度まで上げる（§29.5）。
+        // 燃料消費は 6,000m 超で 0.7倍、1,000m 未満で 1.4倍。帰るだけなら高いほうが得。
+        // 脅威があれば低空のまま帰る — 燃費より生き延びるほうが先。
+        if (dist > RTB_CLIMB_MIN_DIST && this._rtbClear(world)) {
+          desiredAlt = Math.max(desiredAlt, Math.min(RTB_CRUISE_ALT, this.spec.ceiling - 800));
+        }
+
         if (dist < 2200) {
           this.state = 'landing';
           this.airbase = ab;
@@ -745,6 +851,35 @@ export class Aircraft extends Unit {
       if (this.desiredAlt < floor) this.desiredAlt = floor;
     }
     desiredAlt = this.desiredAlt;
+    // 「全力」は**移動中も速く飛ぶ**（§29.3）。
+    //
+    // これが無いと「標準」と区別が付かない。巡航速度はミリタリー推力の
+    // 内側なので、交戦していないあいだは AB を焚く理由がそもそも生まれない。
+    // 早く着くことに価値がある場面（迎撃の間に合わせ）で選ぶ意味を持たせる。
+    if (this.abMode === 'max' && this.state === 'flying'
+        && o && o.type !== 'rtb' && o.type !== 'orbit') {
+      desiredSpeed = Math.max(desiredSpeed, this.altitudeMaxSpeed * 0.9);
+    }
+
+    // **コーナー速度を下回らない**（§29.2）。
+    //
+    // 下回ると曲がれなくなり、曲がれないから逃げられず、さらに速度を失う。
+    // 実機の操縦者が最初に覚えることで、AI にも同じことをさせる。
+    // これが無いと、コーナー速度を入れた瞬間に**AIが自分で罠にはまる**
+    // （実測: 空戦中に 111m/s まで落ちて、旋回率が半分以下になっていた）。
+    //
+    // 掛けるのは戦っているあいだだけ。着陸進入や待機旋回では遅くてよい。
+    const fighting = !this.onGround && this.state === 'flying'
+      && (this.acmMode || this.threats.length > 0 || this.breaking);
+    if (fighting) desiredSpeed = Math.max(desiredSpeed, this.cornerSpeed);
+
+    // 「標準」方針で AB を焚きたい状況（§29.3）。
+    // 敵機への攻撃指示が出ている、または空戦機動に入っているとき。
+    // 対地攻撃や移動では焚かない — そこは燃料のほうが大事。
+    const o2 = this.order;
+    this._abWanted = !!(o2 && o2.type === 'attack' && o2.target && o2.target.alive
+      && o2.target.kind === 'aircraft' && !o2.target.onGround);
+
     this.desiredSpeed = clamp(desiredSpeed, this.spec.minSpeed, this.altitudeMaxSpeed);
   }
 
@@ -1044,7 +1179,12 @@ export class Aircraft extends Unit {
     // 高空では推力が落ちるため、失った速度を取り戻すのに時間がかかる。
     // 逆に降下すれば位置エネルギーを速度に変換でき、水平最大速度を
     // 数割超えて突っ込める（一撃離脱の根拠になる）。
-    const thrust = this.spec.accel * thrustFactor(this.pos.y);
+    // ミリタリー推力と AB 推力を分ける（§29.3）。
+    // spec.accel は AB 側の値。AB を焚いていなければ落として使う。
+    const ab = this.afterburner;
+    this.abActive = ab;
+    const thrust = this.spec.accel * thrustFactor(this.pos.y)
+      * (ab ? 1 : MIL_ACCEL_FRACTION);
     // 降下中は速度を捨てにくい（絞っても位置エネルギーが速度に変わり続ける）。
     // これが無いと降下しても巡航速度まで減速してしまい、一撃離脱が成立しない。
     const decelLimit = thrust * (vs < 0 ? 0.15 : 0.6);
@@ -1058,7 +1198,7 @@ export class Aircraft extends Unit {
     accel -= turnRatio * TURN_DRAG * speedFrac;
 
     const diveBonus = 1 + 0.35 * clamp(-vs / this.spec.climbRate, 0, 1);
-    const speedCap = this.altitudeMaxSpeed * diveBonus;
+    const speedCap = (ab ? this.altitudeMaxSpeed : this.milSpeed) * diveBonus;
     this.speed = clamp(this.speed + accel * dt, this.spec.minSpeed, speedCap);
 
     // --- 位置 ---
@@ -1129,7 +1269,10 @@ export class Aircraft extends Unit {
 
   _consumeFuel(dt, world) {
     let rate = 1;
-    if (this.speed > this.spec.cruiseSpeed * 1.15) rate *= 3;          // アフターバーナー域
+    // アフターバーナー（§29.3）。以前は速度で推し量っていたが、
+    // 焚いているかどうかそのもので決める。降下で速度が乗っただけの機体が
+    // 燃料を3倍で消していた。
+    if (this.abActive) rate *= 3;
     if (this.pos.y > 6000) rate *= 0.7;
     else if (this.pos.y < 1000) rate *= 1.4;
     rate *= 1 + 0.3 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.hardpoints));

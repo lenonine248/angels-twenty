@@ -107,6 +107,12 @@ export class Hud {
         this._detailKey = null;
         return;
       }
+      const ab = e.target.closest('button[data-ab]');
+      if (ab) {
+        for (const u of this.commands.selection) u.abMode = ab.dataset.ab;
+        this._detailKey = null;
+        return;
+      }
       const decoy = e.target.closest('button[data-decoy]');
       if (decoy) {
         for (const u of this.commands.selection) u.autoDecoy = !u.autoDecoy;
@@ -294,7 +300,7 @@ export class Hud {
       Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
       u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.autoDecoy ? 1 : 0, u.fireThreshold,
       u.autoWeapons.GUN === false ? 1 : 0,
-      u.radarMode, u.radarActive ? 1 : 0,
+      u.radarMode, u.radarActive ? 1 : 0, u.abMode, u.abActive ? 1 : 0,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
       Object.entries(u.autoWeapons).map(([k, v]) => k + v).join(''),
     ].join('|');
@@ -353,10 +359,16 @@ export class Hud {
 
     const p = altitudeProfile(u.pos.y);
     const cls = (v) => (v >= 0.8 ? 'good' : v >= 0.6 ? 'mid' : 'bad');
+    // 比エネルギー（§29.4）。高度と速度を足し合わせた「まだ戦える余力」。
+    // 速度と高度は交換できる資産（§5.2.1）なので、合計で見せる。
+    const es = Math.round(u.specificEnergy);
+    const esCls = es >= 9000 ? 'good' : es >= 6000 ? 'mid' : 'bad';
     d.perf.innerHTML =
-      `<span class="pf ${cls(p.thrust)}">推力 ${Math.round(p.thrust * 100)}%</span>`
+      `<span class="pf ${esCls}">エネルギー ${es.toLocaleString()}m</span>`
+      + `<span class="pf ${u.abActive ? 'good' : ''}">${u.abActive ? 'AB 点火' : 'AB 待機'}</span>`
+      + `<span class="pf ${cls(p.thrust)}">推力 ${Math.round(p.thrust * 100)}%</span>`
       + `<span class="pf ${cls(p.turn)}">旋回 ${Math.round(p.turn * 100)}%</span>`
-      + `<span class="pf ${p.missileRange >= 1.3 ? 'good' : 'mid'}">ミサイル射程 ×${p.missileRange.toFixed(2)}</span>`;
+      + `<span class="pf ${p.missileRange >= 1.3 ? 'good' : 'mid'}">射程 ×${p.missileRange.toFixed(2)}</span>`;
 
     if (d.svc && u.airbase) {
       const pr = u.airbase.serviceProgress(u);
@@ -413,6 +425,17 @@ export class Hud {
       + `<span class="svc-meta ${u.radarActive ? 'rdr-on' : 'rdr-off'}">${
         u.radarActive ? '放射中' : '沈黙'}</span>`;
 
+    // アフターバーナーの方針（§29.3）。**意図を選ばせる**ので、
+    // 常時ON/OFF ではなく「どこまで燃料を使ってよいか」を指定する。
+    const AB = [
+      ['save', '温存', '巡航を保つ。ミサイルから逃げるときだけ焚く'],
+      ['normal', '標準', '敵機と交戦するときに焚く。移動や対地では焚かない'],
+      ['max', '全力', '効くなら焚く。燃料の減りは受け入れる（消費3倍）'],
+    ];
+    const abBtns = `<span class="svc-meta">AB</span>`
+      + AB.map(([id, label, tip]) => `<button class="autow${(u.abMode || 'normal') === id ? '' : ' off'}"
+        data-ab="${id}" title="${tip}">${label}</button>`).join('');
+
     // AIが自動発射に踏み切る命中期待度
     const th = ['low', 'mid', 'high'];
     const thLabel = { low: '低', mid: '中', high: '高' };
@@ -432,7 +455,8 @@ export class Hud {
       ${taskRow}
       <div class="dt-add">${autos}${guard}
         <span class="dt-group"><span class="svc-meta">自動発射</span>${thBtns}</span></div>
-      <div class="dt-add">${radar}</div>`;
+      <div class="dt-add">${radar}</div>
+      <div class="dt-add">${abBtns}</div>`;
   }
 
   _groundPanel(u) {
