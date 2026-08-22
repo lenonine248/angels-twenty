@@ -42,8 +42,17 @@ function save() {
 }
 
 /** ミッション開始 */
-export function begin(stage, loadouts) {
+/**
+ * @param {string} version その戦闘を遊んだ版（§31）
+ * @param {?number} seed   その戦闘の乱数の種（§24）
+ */
+export function begin(stage, loadouts, version, seed) {
   current = {
+    // **版を必ず残す。** これが無いと、調整の前後の記録が同じファイルに
+    // 混ざって、どちらの数字を見ているのか分からなくなる（実際そうなった）。
+    version: version || '?',
+    // 種も残す。気になる回をあとから同じ条件で再現できる（AT.startStage(i, seed)）
+    seed: seed ?? null,
     stage: stage.id,
     name: stage.name,
     points: stage.weaponPoints,

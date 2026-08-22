@@ -3,10 +3,17 @@
 ゲームはミッションが終わるたびに devserver.py へ記録を送り、
 playlog.jsonl に1行1件で追記される。難易度調整の一次資料。
 
-    python tools/playlog.py            ステージごとの傾向
-    python tools/playlog.py --runs     1回ごとの結果
-    python tools/playlog.py --events   損失・撃墜の起きた場所と時刻
-    python tools/playlog.py --stage s2 ステージを絞る
+    python tools/playlog.py                 ステージごとの傾向
+    python tools/playlog.py --runs          1回ごとの結果
+    python tools/playlog.py --events        損失・撃墜の起きた場所と時刻
+    python tools/playlog.py --stage s2      ステージを絞る
+    python tools/playlog.py --version 2.20  版を絞る
+    python tools/playlog.py --all           すべての版を混ぜて見る
+    python tools/playlog.py --versions      版ごとの件数だけ出す
+
+**既定では最新の版の記録だけを見る。**
+調整の前後で釣り合いが変わるので、版をまたいで平均すると
+「どちらの数字を見ているのか」が分からなくなる。混ぜるのは --all のときだけ。
 """
 
 import collections
@@ -42,6 +49,43 @@ def load(stage=None):
                 continue
             runs.append(r)
     return runs
+
+
+def version_of(r):
+    """版。Beta 2.20 より前の記録には入っていないので、その旨を返す。"""
+    return r.get("version") or "(版の記録なし)"
+
+
+def newest_version(runs):
+    """いちばん最後に記録された版。"""
+    for r in reversed(runs):
+        v = r.get("version")
+        if v:
+            return v
+    return None
+
+
+def pick_version(runs, want, use_all):
+    """既定では最新の版だけを返す。落とした件数も返して、黙って捨てないようにする。"""
+    if use_all or not runs:
+        return runs, None
+    target = want or newest_version(runs)
+    if not target:
+        return runs, None
+    kept = [r for r in runs if version_of(r) == target]
+    return kept, (target, len(runs) - len(kept))
+
+
+def versions_table(runs):
+    by = collections.OrderedDict()
+    for r in runs:
+        by.setdefault(version_of(r), []).append(r)
+    print(f"{'版':<18}{'回数':>5}{'クリア':>9}  ステージ")
+    print("-" * 60)
+    for v, list_ in by.items():
+        cleared = sum(1 for r in list_ if r.get("result") == "clear")
+        stages = " ".join(sorted({r.get("stage", "?") for r in list_}))
+        print(f"{v:<18}{len(list_):>5}{f'{cleared}/{len(list_)}':>9}  {stages}")
 
 
 def summary(runs):
@@ -87,10 +131,13 @@ def runs_table(runs):
         hits = sum(r["hits"].values())
         pk = f"{hits / shots:.0%}" if shots else "-"
         used = (r.get("points") or 0) - (r.get("pointsLeft") or 0)
-        print(f"{r['at'][:16]}  {r['name']:<14}{r['result']:<6}"
+        # 種も出す。気になる回は AT.startStage(i, 種) でそのまま再現できる
+        seed = r.get("seed")
+        print(f"{r['at'][:16]}  {version_of(r):<11}{r['name']:<14}{r['result']:<6}"
               f"{r['sec']:>5}秒  評価{r.get('rank') or '-'}  "
               f"撃墜{r['kills']} 損失{r['losses']} 使用{used}P  "
-              f"発射{shots}/命中{hits}({pk})  {r.get('loadout')}")
+              f"発射{shots}/命中{hits}({pk})  "
+              f"種{seed if seed is not None else '-'}  {r.get('loadout')}")
 
 
 def events(runs):
@@ -107,17 +154,41 @@ def main():
     stage = None
     if "--stage" in args:
         stage = args[args.index("--stage") + 1]
+    want = None
+    if "--version" in args:
+        want = args[args.index("--version") + 1]
+        if not want.startswith("Beta"):
+            want = "Beta " + want
     runs = load(stage)
     if not runs:
         print("記録がありません。devserver.py 経由で遊ぶと playlog.jsonl に溜まります。")
         return
+
+    if "--versions" in args:
+        versions_table(runs)
+        return
+
+    runs, picked = pick_version(runs, want, "--all" in args)
+    if not runs:
+        print(f"版 {want} の記録がありません。--versions で一覧を出せます。")
+        return
+
     if "--events" in args:
         events(runs)
     elif "--runs" in args:
         runs_table(runs)
     else:
         summary(runs)
-        print(f"\n合計 {len(runs)} 件 / 詳細は --runs, --events")
+
+    tail = " / 詳細は --runs, --events, --versions"
+    if picked:
+        target, dropped = picked
+        note = f"\n{target} の {len(runs)} 件"
+        if dropped:
+            note += f"（ほかの版 {dropped} 件は除いた。混ぜるなら --all）"
+        print(note + tail)
+    else:
+        print(f"\n合計 {len(runs)} 件" + tail)
 
 
 if __name__ == "__main__":

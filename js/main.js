@@ -18,6 +18,7 @@ import { loadProgress, markCleared, markRating, resetProgress, saveSettings } fr
 import { evaluate, isBetterRank, RANKS } from './data/rating.js';
 import { AudioManager } from './core/audio.js';
 import * as telemetry from './core/telemetry.js';
+import { VERSION } from './core/version.js';
 import { Recorder, pickRecordingFile } from './core/recorder.js';
 import { Aircraft } from './sim/aircraft.js';
 import { GroundUnit, findFlatSpot } from './sim/ground.js';
@@ -544,7 +545,7 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   logLines.length = 0;
   objectivesKey = null;
   // チュートリアルはプレイ記録に残さない（難易度調整の資料が濁る）
-  if (!asTutorial) telemetry.begin(stage, loadouts);
+  if (!asTutorial) telemetry.begin(stage, loadouts, VERSION, battleSeed);
   pushLog(asTutorial ? `チュートリアル ${stage.name} 開始` : `任務 ${stage.name} 開始`);
 
   battle = {
