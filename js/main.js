@@ -881,12 +881,19 @@ function handleDeaths(world) {
     }
 
     const air = u.kind === 'aircraft';
-    world.effects.explosion(u.pos, air ? 420 : 520, air ? 'air' : 'ground');
-    if (air) {
-      u.forward(_deathVel).multiplyScalar(u.speed);
-      world.effects.wreck(u.pos, _deathVel, 'aircraft');
-    } else {
-      world.effects.wreck(u.pos, null, 'ground');
+
+    // **見えていない敵の爆発は描かない。**
+    // ログは既に見えているものだけに絞っていたのに、演出は誰にでも見えていた。
+    // 「記憶している目標を攻撃したが、当たったか分からない」（§3）という
+    // せっかくの状態が、爆発が上がるかどうかで**一目でばれていた**。
+    if (mine || playerSees(world, u)) {
+      world.effects.explosion(u.pos, air ? 420 : 520, air ? 'air' : 'ground');
+      if (air) {
+        u.forward(_deathVel).multiplyScalar(u.speed);
+        world.effects.wreck(u.pos, _deathVel, 'aircraft');
+      } else {
+        world.effects.wreck(u.pos, null, 'ground');
+      }
     }
     if (battle) { if (mine) battle.losses++; else battle.kills++; }
     const cause = u.deathCause === 'fuel' ? '燃料切れ'

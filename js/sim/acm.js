@@ -341,9 +341,20 @@ function approachAlt(self, target, flat) {
     if (flat > handoff) return hold;
   }
   const above = self.pos.y - target.pos.y;
-  if (flat > 4000 && above > 0 && above < PERCH_ALT) {
-    // 少し上に付けて入る。降下ぶんが速度になる
-    return target.pos.y + PERCH_ALT;
+  if (flat > 4000 && above > 0) {
+    // 少し上に付けて入る。降下ぶんが速度になる。
+    //
+    // **段差にしない。** 以前は `above < PERCH_ALT` の内側でだけ
+    // 「目標＋900m」を指令していたので、登ってしきい値を越えた瞬間に
+    // 指令が目標と同高度へ落ち、降りるとまた上がった。
+    // 実測で**毎秒ほぼ1回**上下の向きが反転していた（接近中にだけ起きる）。
+    //
+    // 上に行くほど上乗せを減らす形にすると、ちょうど PERCH_ALT で釣り合って
+    // **そこに落ち着く**。狙い（少し上に付ける）はそのままで、輪だけが消える。
+    // 上限を単に外すと、高いところから降りてこなくなって別の問題が出た
+    // （実測でミッション1のクリアが 5/6 → 3/6）。
+    const taper = clamp(1 - (above - PERCH_ALT) / PERCH_ALT, 0, 1);
+    return target.pos.y + PERCH_ALT * taper;
   }
   return target.pos.y;
 }

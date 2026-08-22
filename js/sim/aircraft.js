@@ -607,7 +607,20 @@ export class Aircraft extends Unit {
 
       case 'attack': {
         const t = o.target;
-        if (!t || !t.alive) { this._advanceOrder(); break; }
+        if (!t) { this._advanceOrder(); break; }
+        if (!t.alive) {
+          // **静止目標に限り**、こちらがまだ健在だと思っているなら行って確かめる。
+          // 即座に指示を解いていたので、**指示が消えた瞬間に「壊れている」と分かった**。
+          //
+          // 空中目標には掛けない。航空機のコンタクトは記憶ではなく外挿で
+          // 20秒ほど残るので、掛けると**死んだ敵機を延々と追う**ことになる
+          // （実測でミッション1のクリアが 5/6 → 2/6 に落ちた）。
+          const c = t.static && world.detection
+            ? world.detection.contactsFor(this.side).get(t.id) : null;
+          if (!c) { this._advanceOrder(); break; }
+          desiredHeading = headingOf(c.pos.x - this.pos.x, c.pos.z - this.pos.z);
+          break;
+        }
         const dx = t.pos.x - this.pos.x, dz = t.pos.z - this.pos.z;
         desiredHeading = headingOf(dx, dz);
 

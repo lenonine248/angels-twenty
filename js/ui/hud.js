@@ -384,14 +384,18 @@ export class Hud {
    * 「自動」を切ると、AIがその兵装を勝手に使わなくなる（高価な兵装の温存）。
    */
   _weaponPanel(u) {
-    if (!u.loadout.length) {
-      return '<div class="dt-load"><label>兵装</label><span class="chip empty">なし</span></div>';
-    }
-    const chips = u.loadout.map((id, i) => {
-      const on = u.selectedWeapon === id ? ' picked' : '';
-      return `<button class="chip pick${on}" data-pick="${id}" data-i="${i}"
-        title="この兵装を指定して攻撃する">${id}</button>`;
-    }).join('');
+    // **兵装が空でも、機体そのものの設定は出し続ける。**
+    // レーダー・AB・機銃・デコイ・自動発射のしきい値は搭載と関係が無いのに、
+    // 兵装ゼロで早期 return していたので**まとめて消えていた**。
+    // 撃ち尽くして帰る途中こそ、レーダーやABを触りたい。
+    const empty = !u.loadout.length;
+    const chips = empty
+      ? '<span class="chip empty">なし</span>'
+      : u.loadout.map((id, i) => {
+        const on = u.selectedWeapon === id ? ' picked' : '';
+        return `<button class="chip pick${on}" data-pick="${id}" data-i="${i}"
+          title="この兵装を指定して攻撃する">${id}</button>`;
+      }).join('');
 
     const kinds = [...new Set(u.loadout)];
     const autos = kinds.map((id) => {

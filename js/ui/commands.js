@@ -287,7 +287,14 @@ export class CommandController {
     const formation = this._selectedFormation();
     if (formation && !append) {
       const leader = formation.leader;
-      formation.issue({ type: 'move', x: p.x, z: p.z, alt: leader.order?.alt ?? leader.desiredAlt });
+      // player:true を忘れない。落とすと `_playerLocked` を通らず、
+      // **パイロットAIが次のtickで即座に上書きする**（連携モードだと顕著）。
+      // 個別指示の側には最初から付いていたので、
+      // 「1機ずつなら効くのに編隊だと効かない」という形で出ていた。
+      formation.issue({
+        type: 'move', x: p.x, z: p.z,
+        alt: leader.order?.alt ?? leader.desiredAlt, player: true,
+      });
       for (const u of formation.members) {
         u.patrolArea = { x: p.x, z: p.z, alt: leader.desiredAlt, radius: 4500 };
       }
@@ -434,7 +441,12 @@ export class CommandController {
   _unitAtScreen(px, py, side) {
     let best = null, bestD = PICK_RADIUS_PX;
     for (const u of this.world.units) {
-      if (!u.alive) continue;
+      // **記憶しているだけの敵は、既に壊れていても掴める。**
+      // `!u.alive` で弾いていたので、地図に出ているのにクリックできない＝
+      // **壊れていることが分かってしまった**（§3 の「攻撃したが結果を見ていない」が台無し）。
+      // 探知の側は正しく作られていて、見ていない前で壊れた静止目標の記憶は残る。
+      // 自軍は生きているものだけ（死んだ僚機に指示は出せない）。
+      if (side ? !u.alive : (!u.alive && !this.world.isVisibleToPlayer(u))) continue;
       if (side && u.side !== side) continue;
       if (!this.world.isVisibleToPlayer(u)) continue;
       // 敵は「探知した位置」で掴む（逆探知だけの目標は真の位置とずれている）
