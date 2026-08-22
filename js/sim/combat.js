@@ -98,6 +98,11 @@ const DECOY_SHOTS = 1;
 const TOF_SPEED_FRAC = 0.8;
 const TOF_SCALE = 15;
 /**
+ * セミアクティブの照射を保てる目安(秒)。飛翔時間がこれに近づくほど、
+ * 着弾前に誘導が切れる見込みが上がる（§28.8）。
+ */
+const SARH_HOLD_SEC = 20;
+/**
  * これだけ飛翔時間があれば、相手はデコイを撒き切れるとみる(秒)。
  *
  * 較正して 7 にした。4 だと近距離を過小に見ていた（予測0.48／実測0.85）。
@@ -245,6 +250,14 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
     const chanceToUse = clamp(tof / DECOY_REACT_SEC, 0, 1);
     const per = (1 - (weapon.decoyResist ?? 0.5)) * decoyFactor(dist) * chanceToUse;
     p *= Math.pow(1 - per, DECOY_SHOTS);
+
+    // **セミアクティブは、着弾まで照射を保てるかを見る**（§28.8）。
+    //
+    // これが抜けていたので、AI は AAM-M を遠距離で撃ち続けていた。
+    // ミッション1で実測すると **30発撃って命中ゼロ**（17がデコイ、13が誘導喪失）。
+    // 飛翔時間が伸びるほど、相手が扇から出る・ノッチに入る・地形に隠れる
+    // 機会が増える。撃ちっぱなしの弾には無い、この兵装だけの代償。
+    if (weapon.guidance === 'sarh') p *= clamp(1 - tof / SARH_HOLD_SEC, 0.1, 1);
 
     // 高度による回避余力は**足さない**。飛翔時間の項に既に含まれている
     // （相手が何秒動けるか）ので、重ねると同じものを二度引くことになる。
