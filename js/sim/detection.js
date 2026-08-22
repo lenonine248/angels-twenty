@@ -175,6 +175,36 @@ export class DetectionSystem {
 
   contactsFor(side) { return this.contacts[side]; }
 
+  /**
+   * その陣営が、その飛来ミサイルを画面に出せるか（§28.3）。
+   *
+   * **自軍の弾は常に見える。** 撃った弾がどう飛んだかは、
+   * 命中期待度を学ぶ唯一の手がかりなので隠さない。
+   *
+   * 敵の弾は「気づける範囲」に入ったときだけ。判定の基準は
+   * `sim/combat.js` の `WARN_RANGE`（レーダー弾14km／赤外線弾5km）と同じで、
+   * **AI が反応できる範囲とプレイヤーに見える範囲を一致させる**。
+   * ここがずれていると「なぜ AI は避けないのか」が説明できない。
+   *
+   * 目視（8km）でも見える。近くを通り過ぎる弾は、狙われていなくても見えるべき。
+   */
+  missileVisible(side, m, warnRange) {
+    if (!m || !m.alive) return false;
+    if (m.side === side) return true;
+    // アクティブレーダー弾は、シーカーを入れるまで存在を知られない（§28.2）
+    const silent = m.active === false;
+    const warn = m.guidance === 'ir' ? warnRange.ir : warnRange.radar;
+    for (const u of this.world.units) {
+      if (u.side !== side || !u.alive) continue;
+      if (u.kind !== 'aircraft') continue;
+      const d = m.pos.distanceTo(u.pos);
+      if (!silent && m.target === u && d <= warn) return true;      // 自分が狙われている
+      const vis = u.spec && u.spec.visualRange ? u.spec.visualRange : 0;
+      if (vis > 0 && d <= vis) return true;                          // 目視
+    }
+    return false;
+  }
+
   /** その陣営がこのユニットを画面に出せるか */
   isVisible(side, unit) {
     if (unit.side === side) return unit.alive;

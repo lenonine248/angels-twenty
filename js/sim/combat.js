@@ -61,11 +61,54 @@ const BOMB_COOLDOWN = 0.5;
 /** ミサイル警報が出る距離。レーダー誘導は逆探知で早く分かるが、赤外線は目視まで気づけない。 */
 const WARN_RANGE = { radar: 14000, ir: 5000 };
 
+/**
+ * デコイの効き方（§28.4）。**遠いほど騙されやすい。**
+ *
+ * 以前は逆だった（3km以内でしか効かず、近いほど効きやすい）。
+ * 実機は遠距離ほどレーダーの分解能セルが大きく、チャフの雲と機体が
+ * 同じセルに入るのでシーカーを引き剥がせる。近づくほど分離して見えるので騙せない。
+ * 赤外線も同じ理屈。
+ *
+ * これが3つを同時に解く。
+ * 1. **AAM-M と AAM-A に差が付く。** AAM-M は発射直後から誘導するので
+ *    騙されやすい帯を長く通る。AAM-A は 10km でアクティブになるので飛ばせる
+ * 2. **ノーエスケープゾーンが生まれる。** 遠くから撃った弾は撒かれ、
+ *    詰めてから撃った弾は当たる。「掴んだまま近づく」が最適解になる
+ * 3. **命中期待度に幅ができる**（§28.8）。距離で命中率が大きく変わるので、
+ *    式がそれを写せば「高」「低」が出るようになる
+ *
+ * 上限を 0.85 で止めるのは、**チャフ1発で AAM-M が確実に死ぬ**のを避けるため。
+ * 搭載数は据え置き（実測で外れの半分が既にデコイなので、増やすと当たらなくなる）。
+ */
+/**
+ * 期待度の見積りで、何発ぶん撒かれると見るか（§28.8）。
+ *
+ * 2発ぶんで見積もったら**8km より遠くへ一発も撃たなくなった**（実測）。
+ * 実際には撒くたびにミサイルが近づいて効きが落ちるし、弾数も尽きる。
+ * 「遠いうちに撒いた1発ぶんが効く」と見るのが実測に近い。
+ */
+const DECOY_SHOTS = 1;
+
+export function decoyFactor(dist) {
+  return clamp(0.15 + dist / 12000, 0.15, 0.85);
+}
+
 /** ミサイルの最小射程（近すぎると誘導が間に合わない） */
 const MIN_RANGE = { 'AAM-S': 400, default: 1500 };
 
-/** AIが自動発射に踏み切る命中期待度のしきい値 */
-export const FIRE_THRESHOLD = { low: 0.15, mid: 0.35, high: 0.60 };
+/**
+ * AIが自動発射に踏み切る命中期待度のしきい値。
+ *
+ * **§28.4 で目盛りが変わったので置き直した。**
+ * それまでの見積りは 0.35〜0.49 しか出ておらず（実測266発）、
+ * しきい値 0.35 は「ほぼ常に撃つ」と同義だった。
+ * デコイを距離から引くようにして幅が出た結果、同じ 0.35 のままだと
+ * **8km より遠くへ一発も撃たなくなった**。
+ *
+ * いまの実測はおおよそ 0〜4km で 0.5、8〜14km で 0.2、14km 超で 0.03。
+ * 「2割当たるなら、基地へ向かう爆撃機には撃つ」が既定であるべき。
+ */
+export const FIRE_THRESHOLD = { low: 0.07, mid: 0.15, high: 0.35 };
 
 /**
  * 機銃のしきい値はミサイルより低く取る。
@@ -166,8 +209,17 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
     const dx = target.pos.x - shooter.pos.x, dz = target.pos.z - shooter.pos.z;
     const aspect = Math.abs(angleDiff(headingOf(-dx, -dz), target.heading)) / Math.PI;
     p *= weapon.guidance === 'ir' ? (0.7 + 0.3 * aspect) : (1 - 0.4 * aspect);
-    // デコイ耐性。ここを重く見すぎると短距離AAMがいつまでも撃てない。
-    p *= 0.7 + 0.3 * (weapon.decoyResist ?? 0.5);
+
+    // デコイを**§28.4 の曲線から直接引く**。
+    //
+    // 実測で当たらない理由の 58% がデコイなので、耐性を係数で軽く見るだけでは
+    // 足りない。デコイは遠いほど効くので、ここを距離と結びつけないと
+    // **AI は 14km 先へ命中率3%の弾を撃ち続ける**（実際そうなっていた）。
+    //
+    // 撒かれる回数は 2 発ぶんと見積もる。搭載は4発だが、
+    // 効くのは遠いうちに撒いた最初の1〜2発なので。
+    const per = (1 - (weapon.decoyResist ?? 0.5)) * decoyFactor(dist);
+    p *= Math.pow(1 - per, DECOY_SHOTS);
     // 高空の目標は旋回で振り切りにくい
     p *= 0.82 + 0.18 * (1 - turnFactor(target.pos.y));
     // 相手の対抗手段の残量は見ない（残弾を数えるのは過剰な情報なので）
@@ -198,10 +250,16 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
   return clamp(p, 0.02, 0.97);
 }
 
-/** 命中期待度の表示ラベル */
+/**
+ * 命中期待度の表示ラベル。
+ *
+ * しきい値と同じ目盛りに揃える（§28.8）。この game では 35% が「良い射点」で、
+ * 60% は近距離の一部でしか出ない。以前の 0.6/0.32 は、
+ * 見積りが 0.35〜0.49 しか出ていなかったので**全部「中」**になっていた。
+ */
 export function hitLabel(p) {
-  if (p >= 0.6) return { text: '高', cls: 'good' };
-  if (p >= 0.32) return { text: '中', cls: 'mid' };
+  if (p >= FIRE_THRESHOLD.high) return { text: '高', cls: 'good' };
+  if (p >= FIRE_THRESHOLD.mid) return { text: '中', cls: 'mid' };
   return { text: '低', cls: 'bad' };
 }
 
@@ -274,6 +332,10 @@ export class CombatSystem {
       const t = m.target;
       if (!t || !t.threats || !t.alive) continue;
       if (m.lost) continue;
+      // アクティブレーダー弾は、シーカーを入れるまで気づかれない（§28.2）。
+      // 中途は母機の索敵レーダーで導かれているだけなので、
+      // 「自分に向かって何かが飛んで来ている」という情報が相手に無い。
+      if (m.active === false) continue;
       const dist = m.pos.distanceTo(t.pos);
       const warn = m.guidance === 'ir' ? WARN_RANGE.ir : WARN_RANGE.radar;
       if (dist > warn) continue;
@@ -674,9 +736,7 @@ export class CombatSystem {
     for (const m of this.world.missiles) {
       if (!m.alive || m.target !== unit || m.lost) continue;
       if (!decoyMatches(m.guidance, kind)) continue;
-      const dist = m.pos.distanceTo(unit.pos);
-      if (dist > 3000) continue;
-      const chance = (1 - m.weapon.decoyResist) * clamp(1 - dist / 3000, 0.25, 1);
+      const chance = (1 - m.weapon.decoyResist) * decoyFactor(m.pos.distanceTo(unit.pos));
       if (this.world.rng() < chance) {
         m.seekTarget = decoy;
         this.world.onDecoyed?.(m, decoy);

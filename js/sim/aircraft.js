@@ -53,6 +53,17 @@ const ARRIVE_FACTOR = 0.9;
  */
 export const RWR_AIR_FACTOR = 1.5;
 
+/**
+ * デコイを撒き始める残り秒数（§28.4.1）。練度で変わる。
+ *
+ * 練度1で 11秒 ＝ レーダー弾の警戒範囲(14km)に入った直後。
+ * デコイは遠いほど効く（§28.4）ので、これが最良の撒き方になる。
+ */
+const DECOY_TTI_EARLY = 11;
+const DECOY_TTI_LATE = 3.5;
+/** 連続投射の間隔(秒) */
+const DECOY_INTERVAL = 1.2;
+
 const _tmp = new THREE.Vector3();
 
 export class Aircraft extends Unit {
@@ -654,8 +665,7 @@ export class Aircraft extends Unit {
       const m = this.threats[0];
       if (m && m.alive) {
         const d = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
-        this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed),
-          4.5 * (0.45 + 0.55 * this.skill));
+        this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed));
       }
     }
     const evade = !this.manual && this.threats.length > 0 ? this._evade(world, dt) : null;
@@ -795,19 +805,33 @@ export class Aircraft extends Unit {
 
   /**
    * デコイ投射（誘導方式に合わせてフレア／チャフを選ぶ）。
-   * 練度が低いほど気づくのが遅く、撒き始めが遅れる。
+   *
+   * **練度は「どれだけ早く撒くか」に効く**（§28.4.1）。
+   * デコイは遠いほど効くので、警報を受けてすぐ撒くのが最良。
+   * 引きつけてから撒くのはほとんど無駄になる。
+   *
+   * これ以前は逆で、着弾4.5秒前（約5km）に撒いていた。
+   * 新しい効き方では**そこが最も効かない瞬間**になる。
+   *
+   * 練度が初めて「見て分かる軸」になる。発射間隔や照準精度に散らばっていた
+   * ときは、プレイヤーから何が違うのか分からなかった。
    *
    * 回避機動から切り出してある。手動モードは機動しないがデコイは撒くため。
    *
    * @param {number} tti 着弾までの概算秒数
-   * @param {number} limit 撒き始める秒数
    */
-  _maybeDeployDecoy(world, dt, m, tti, limit) {
+  _maybeDeployDecoy(world, dt, m, tti) {
     this._decoyTimer -= dt;
     if (!this.autoDecoy || !world.combat) return;
-    if (tti >= limit || this._decoyTimer > 0) return;
+    if (tti >= this._decoyStartTti() || this._decoyTimer > 0) return;
     const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
-    if (world.combat.deployDecoy(this, kind)) this._decoyTimer = 1.2;
+    if (world.combat.deployDecoy(this, kind)) this._decoyTimer = DECOY_INTERVAL;
+  }
+
+  /** 撒き始める残り秒数。練度が高いほど早い（§28.4.1） */
+  _decoyStartTti() {
+    const k = clamp(this.skill ?? 1, 0, 1);
+    return DECOY_TTI_LATE + (DECOY_TTI_EARLY - DECOY_TTI_LATE) * k;
   }
 
   _evade(world, dt) {
@@ -818,7 +842,7 @@ export class Aircraft extends Unit {
     // （デコイだけは撒く。撃ち勝つために被弾リスクを受け入れる選択）
     if (!this.evadeWhileGuiding && this._guidingSarh(world)) {
       const d = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
-      this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed), 4.5);
+      this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed));
       return null;
     }
 
@@ -827,7 +851,7 @@ export class Aircraft extends Unit {
     const bearing = headingOf(dx, dz);
     const tti = dist / Math.max(60, m.speed);      // 到達までの概算秒数
 
-    this._maybeDeployDecoy(world, dt, m, tti, 4.5 * (0.45 + 0.55 * this.skill));
+    this._maybeDeployDecoy(world, dt, m, tti);
 
     // ミサイルを真横に置く向きのうち、旋回量が少ない方を選ぶ
     const left = bearing - Math.PI / 2;

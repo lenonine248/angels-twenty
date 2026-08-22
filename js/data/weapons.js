@@ -47,7 +47,7 @@ export const WEAPONS = {
     id: 'AAM-A',
     name: 'アクティブAAM',
     kind: 'aam',
-    guidance: 'arh',          // アクティブレーダー → 撃ちっぱなし
+    guidance: 'arh',          // アクティブレーダー
     slots: 2,
     cost: 6,
     range: 20000,
@@ -57,7 +57,13 @@ export const WEAPONS = {
     decoyResist: 0.85,        // デコイに騙されにくい
     damage: 200,
     rearmSeconds: 30,
-    desc: '撃った瞬間に離脱できる。デコイに騙されにくい信頼の一発',
+    // 終末誘導（§28.2）。ここまでは発射機の索敵レーダーから位置をもらう。
+    // **中途のあいだ相手に警報は出ない**のが、この兵装の値打ち。
+    activeRange: 10000,       // 予測位置までこの距離でシーカーを入れる
+    seekerFov: 30,            // シーカー視界(±deg)。外れていれば捕捉できない
+    seekerRange: 12000,
+    midcourseInterval: 2,     // 位置をもらい直す間隔(秒)。あえて粗くする
+    desc: '中途は母機のレーダーで導き、終末で自ら探す。気づかれるのが遅い',
   },
 
   'AGM': {

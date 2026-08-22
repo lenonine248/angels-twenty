@@ -40,6 +40,19 @@ const COAST_TIME = 50;
  * 実弾は外れたら自爆するし、残しておく利点も無い。
  */
 const LOST_SELF_DESTRUCT = 5;
+
+/**
+ * 目標を通り過ぎたと判断するまで（§28.1）。
+ *
+ * **最接近点を過ぎて離れ始めたら自爆する。** これが無いと、外した弾が
+ * 寿命（AAM-M で約103秒）まで目標を追い続け、**その周りを回り始める**。
+ *
+ * 1フレームの揺れで誤爆しないよう、距離と時間の両方で見る。
+ * 加速中は判定しない — 発射直後は母機の速度しか無いので、
+ * 逃げる目標に対して**一時的に離される**（それを通過と誤認する）。
+ */
+const OVERSHOOT_SEC = 0.5;
+const OVERSHOOT_MARGIN = 150;
 /** この速度を下回ると失推 */
 const MIN_SPEED_RATIO = 0.35;
 /** 誘導に必要な視線を確認する間隔(秒) */
@@ -92,6 +105,14 @@ export class Missile {
     this.alive = true;
     this.lost = false;            // 誘導喪失（以後は直進し、少し飛んでから自爆）
     this.lostAt = 0;
+    this._minDist = null;         // 目標への最接近距離（§28.1）
+    this._openingFor = 0;         // 離れ続けている秒数
+
+    // アクティブレーダー弾の終末誘導（§28.2）。
+    // 中途は発射機の索敵レーダーから位置をもらい、**相手に警報は出ない**。
+    // 予測位置まで詰めたところでシーカーを入れ、そこで初めて気づかれる。
+    this.active = weapon.guidance !== 'arh';   // arh 以外は最初から「見えている」扱い
+    this._midcourseTimer = 0;
     this.lastKnown = target ? target.pos.clone() : this.pos.clone();
 
     // ロケットモーターは短時間で燃え尽き、以後は慣性で飛ぶ。
@@ -146,7 +167,7 @@ export class Missile {
     const spent = this.age > this.boostTime
       && this.speed < this.weapon.speed * MIN_SPEED_RATIO;
     const lostTooLong = this.lost && this.age - this.lostAt > LOST_SELF_DESTRUCT;
-    if (spent || lostTooLong || this.age > this.lifetime) {
+    if (spent || lostTooLong || this.age > this.lifetime || this._overshot(dt)) {
       this.destroy(world, 'spent');
       return;
     }
@@ -214,6 +235,12 @@ export class Missile {
         if (!illuminates(l, this.target, world)) { this._goStupid(); return; }
         break;
       }
+      case 'arh': {
+        // 終末に入っていれば、掴んだ目標をそのまま追う（下の共通処理へ）
+        if (this.active) break;
+        this._midcourse(dt, world);
+        return;
+      }
       case 'arm': {
         // 目標が電波を止めたら誘導が切れる。ただし完全に諦めるのではなく、
         // 最後に捉えた放射源の位置へ慣性で向かう（_armMemory）。
@@ -230,6 +257,96 @@ export class Missile {
       this._losOk = world.terrain.hasLineOfSight(this.pos, this._losPoint(t), 6, 200);
     }
     if (!this._losOk) this._goStupid();
+  }
+
+  /**
+   * 目標を通り過ぎたか（§28.1）。
+   *
+   * 最接近距離を覚えておき、そこから `OVERSHOOT_MARGIN` 以上離れた状態が
+   * `OVERSHOOT_SEC` 続いたら通過とみなす。
+   */
+  _overshot(dt) {
+    if (this.age < this.boostTime) return false;      // 加速中は判定しない
+    const t = this.seekTarget && this.seekTarget.pos ? this.seekTarget : this.target;
+    if (!t || !t.pos) return false;
+    const d = this.pos.distanceTo(t.pos);
+    if (this._minDist == null || d < this._minDist) {
+      this._minDist = d;
+      this._openingFor = 0;
+      return false;
+    }
+    if (d > this._minDist + OVERSHOOT_MARGIN) this._openingFor += dt;
+    else this._openingFor = 0;
+    return this._openingFor >= OVERSHOOT_SEC;
+  }
+
+  /**
+   * アクティブレーダー弾の中途誘導（§28.2）。
+   *
+   * 発射機の**索敵レーダー**（ロックではない）から、粗い間隔で位置をもらう。
+   * 更新が粗いぶん予測位置がずれるので、**ノッチとドラッグが効く**。
+   *
+   * 発射機が黙る・死ぬ・扇から外れると、もらった最後の位置へ飛ぶ。
+   * つまり**空に向かって飛ぶ**ことがある。撃ちっぱなしの弾に初めて弱点ができる。
+   */
+  _midcourse(dt, world) {
+    const w = this.weapon;
+
+    // 発射機が見えている間だけ位置を更新する（間隔は粗く）
+    this._midcourseTimer -= dt;
+    if (this._midcourseTimer <= 0) {
+      this._midcourseTimer = w.midcourseInterval || 2;
+      const l = this.launcher;
+      if (l && l.alive && this.target && this.target.alive
+          && illuminates(l, this.target, world)) {
+        this.lastKnown.copy(this.target.pos);
+      }
+    }
+
+    // 予測位置まで詰めたらシーカーを入れる
+    if (this.pos.distanceTo(this.lastKnown) <= (w.activeRange || 10000)) {
+      this._goActive(world);
+      return;
+    }
+    // まだ中途。記憶した位置へ向かう
+    this.seekTarget = { pos: this.lastKnown, alive: true, speed: 0, isPoint: true };
+  }
+
+  /**
+   * シーカーを入れる。予測位置に最も近い**敵機**を掴む。
+   *
+   * 味方は掴まない。いまの AI は射線に味方が居るかを見ないので、
+   * 含めると自軍を撃ち続けることになる（§28.2）。
+   *
+   * 視界に何も無ければ捕捉しない → 誘導喪失 → §28.1 で自爆。
+   */
+  _goActive(world) {
+    this.active = true;
+    const w = this.weapon;
+    const fov = (w.seekerFov || 30) * (Math.PI / 180);
+    const reach = w.seekerRange || 12000;
+
+    let best = null;
+    let bestD = Infinity;
+    for (const u of world.units) {
+      if (!u.alive || u.kind !== 'aircraft' || u.onGround) continue;
+      if (u.side === this.side) continue;                 // 味方は掴まない
+      const d = this.pos.distanceTo(u.pos);
+      if (d > reach) continue;
+      // シーカーの視界内か（弾の向きから測る）
+      const to = _v7.copy(u.pos).sub(this.pos).normalize();
+      if (this.dir.angleTo(to) > fov) continue;
+      // 予測位置に最も近いものを選ぶ
+      const score = u.pos.distanceTo(this.lastKnown);
+      if (score < bestD) { bestD = score; best = u; }
+    }
+
+    if (!best) { this._goStupid(); return; }
+    this.target = best;
+    this.seekTarget = best;
+    this._minDist = null;            // 掴み直したので最接近の記録も入れ替える
+    this._openingFor = 0;
+    world.onMissileActive?.(this, best);
   }
 
   _goStupid() {
@@ -493,6 +610,7 @@ const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
 const _v5 = new THREE.Vector3();
 const _v6 = new THREE.Vector3();
+const _v7 = new THREE.Vector3();
 const _sa = new THREE.Vector3();
 const _sb = new THREE.Vector3();
 

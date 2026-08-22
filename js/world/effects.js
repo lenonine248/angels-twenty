@@ -11,6 +11,12 @@
 import * as THREE from 'three';
 
 const MISSILE_COLOR = { blue: 0x9fd8ff, red: 0xffb08a };
+/**
+ * 敵の弾に気づける距離（§28.3）。`sim/combat.js` の `WARN_RANGE` と同じ値。
+ * **AI が反応できる範囲と、画面に出る範囲を一致させる**ためにここでも使う。
+ * ずれていると「なぜ AI は避けないのか」がプレイヤーに説明できない。
+ */
+const MISSILE_WARN_RANGE = { radar: 14000, ir: 5000 };
 const TRAIL_COLOR = { blue: 0x7ab8d8, red: 0xd89878 };
 const MAX_TRAIL = 40;
 
@@ -514,6 +520,11 @@ export class Effects {
   _syncMissiles(world, size) {
     const seen = new Set();
     for (const m of world.missiles) {
+      // 気づけていない弾は出さない（§28.3）。
+      // 自軍の弾は常に見える。敵の弾は警戒範囲か目視に入ったときだけ。
+      // 判定は sim/detection.js に置いてある（AI が反応できる範囲と揃えるため）。
+      if (world.detection && world.detection.missileVisible
+          && !world.detection.missileVisible(world.playerSide, m, MISSILE_WARN_RANGE)) continue;
       seen.add(m.id);
       let v = this.missileViews.get(m.id);
       if (!v) {
