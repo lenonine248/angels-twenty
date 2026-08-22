@@ -29,6 +29,7 @@ import { Mission, MISSION } from './sim/mission.js';
 import { SIDE, resetUnitIds } from './sim/unit.js';
 import { PilotAI } from './ai/pilot.js';
 import { pruneFormations, resetFormationIds } from './ai/formation.js';
+import { Commander } from './ai/commander.js';
 import { CommandController } from './ui/commands.js';
 import { Hud } from './ui/hud.js';
 import { ScreenManager } from './ui/briefing.js';
@@ -202,6 +203,9 @@ ${err.message}`);
     get minimap() { return minimap; },
     get tutorial() { return tutorial; },
     scene, loop, screens, progress, audio, stages: STAGES, tutorials: TUTORIALS, telemetry,
+    // 司令官AI（§27）。いまは検証（tools/bench.js）から使う。
+    // 敵に付けるかは種を固定して測ってから決める（§27.6）。
+    Commander,
     get recording() { return lastRecording; },
     get review() { return review; },
     get replay() { return replay; },
