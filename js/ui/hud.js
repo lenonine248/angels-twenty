@@ -107,6 +107,19 @@ export class Hud {
         this._detailKey = null;
         return;
       }
+      // 増槽（§32.2）
+      const tankAuto = e.target.closest('button[data-tankauto]');
+      if (tankAuto) {
+        for (const u of this.commands.selection) u.autoDropTank = !u.autoDropTank;
+        this._detailKey = null;
+        return;
+      }
+      const tankDrop = e.target.closest('button[data-tankdrop]');
+      if (tankDrop) {
+        for (const u of this.commands.selection) u.dropTank(this.world, true);
+        this._detailKey = null;
+        return;
+      }
       const ab = e.target.closest('button[data-ab]');
       if (ab) {
         for (const u of this.commands.selection) u.abMode = ab.dataset.ab;
@@ -177,6 +190,11 @@ export class Hud {
       case 'launch':
         for (const u of sel) if (u.airbase) u.airbase.launch(u, this.world);
         notify('takeoff', {});
+        break;
+      case 'autolaunch':
+        // 整備が終わったら自動で発進（§32.4）
+        for (const u of sel) u.autoLaunch = !u.autoLaunch;
+        this._detailKey = null;
         break;
       default: break;
     }
@@ -300,7 +318,8 @@ export class Hud {
       Math.round(u.desiredAlt / 250), u.onGround ? 1 : 0,
       u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.autoDecoy ? 1 : 0, u.fireThreshold,
       u.autoWeapons.GUN === false ? 1 : 0,
-      u.radarMode, u.radarActive ? 1 : 0, u.abMode, u.abActive ? 1 : 0,
+      u.radarMode, u.radarActive ? 1 : 0, u.abMode, u.abActive ? 1 : 0, u.airbrake > 0.3 ? 1 : 0,
+      u.autoDropTank ? 1 : 0,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
       Object.entries(u.autoWeapons).map(([k, v]) => k + v).join(''),
     ].join('|');
@@ -366,6 +385,8 @@ export class Hud {
     d.perf.innerHTML =
       `<span class="pf ${esCls}">エネルギー ${es.toLocaleString()}m</span>`
       + `<span class="pf ${u.abActive ? 'good' : ''}">${u.abActive ? 'AB 点火' : 'AB 待機'}</span>`
+      // エアブレーキ（§32.1）。出ている間だけ出す。自動なので操作の対象ではない
+      + (u.airbrake > 0.3 ? '<span class="pf mid">ブレーキ</span>' : '')
       + `<span class="pf ${cls(p.thrust)}">推力 ${Math.round(p.thrust * 100)}%</span>`
       + `<span class="pf ${cls(p.turn)}">旋回 ${Math.round(p.turn * 100)}%</span>`
       + `<span class="pf ${p.missileRange >= 1.3 ? 'good' : 'mid'}">射程 ×${p.missileRange.toFixed(2)}</span>`;
@@ -414,7 +435,16 @@ export class Hud {
       // デコイは回避機動と別の判断。手動モードでは機動しないがデコイは撒ける。
       + `<button class="autow${u.autoDecoy ? '' : ' off'}" data-decoy="1"
         title="飛来ミサイルに対してフレア／チャフを自動で撒くか">
-        デコイ${u.autoDecoy ? ' 自動' : ' 停止'}</button>`;
+        デコイ${u.autoDecoy ? ' 自動' : ' 停止'}</button>`
+      // 増槽（§32.2）。積んでいるときだけ出す。
+      // 自動は「空になったら落とす」、投棄は「残っていても今すぐ落とす」
+      + (u.loadout.includes('TANK')
+        ? `<button class="autow${u.autoDropTank ? '' : ' off'}" data-tankauto="1"
+            title="増槽の中身を使い切ったら自分で落とすか。持ち帰れば付け直す手間が要らない">
+            増槽${u.autoDropTank ? ' 自動' : ' 保持'}</button>`
+          + `<button class="autow" data-tankdrop="1"
+            title="中身が残っていても今すぐ落とす。旋回率と燃費が戻る">投棄</button>`
+        : '');
 
     // レーダーの扱い（§26.5）。切ると見えなくなるが、こちらも見えなくなる。
     // いま出しているかどうかは自動のときに変わるので、状態も添える。
@@ -523,14 +553,28 @@ export class Hud {
     // 整備が終わっていない機体を発進させると、そのぶん補給されないまま出る
     // （それ自体は部分補給として許している）。事故と区別できるよう警告を出す。
     const pend = ground && u.airbase ? u.airbase.pendingService(u) : null;
+    // これから使う兵装ポイントも出す（§32.6）。
+    // 帰投して積み直すぶんが黙って引かれていたので、
+    // クリア評価の「節約」が気づかないうちに落ちていた。
+    const cost = pend && pend.cost > 0
+      ? `使用予定 ${pend.cost}P（残り ${this.world.weaponPoints}P）。`
+      : '';
     const warn = pend
       ? `<div class="dt-warn">${pend.waiting
         ? '整備の順番待ちです。このまま発進すると補給を受けずに出ます'
-        : `整備中（${pend.kinds.join('・')} 残り ${Math.ceil(pend.remainingSec)}秒）。`
+        : `整備中（${pend.kinds.join('・')} 残り ${Math.ceil(pend.remainingSec)}秒）。${cost}`
           + 'このまま発進すると、残りは補給されません'}</div>`
       : '';
+    // 整備の途中なら「終わったら発進」を出す（§32.4）。
+    // 終わるのを見張って押しに戻る手間だけを省く。**発進すると解除される**ので、
+    // 次に帰ってきたときに勝手に飛び出すことはない。
+    const auto = ground && pend && !pend.waiting
+      ? `<button data-cmd="autolaunch" class="wide${u.autoLaunch ? '' : ' off'}"
+          title="整備が終わった時点で自動で発進する。一度きりで、発進すると解除される">
+          ${u.autoLaunch ? '整備後に発進する' : '整備後に発進'}</button>`
+      : '';
     const actions = ground
-      ? `<button data-cmd="launch" class="wide go${pend ? ' warn' : ''}">発進</button>${warn}`
+      ? `<button data-cmd="launch" class="wide go${pend ? ' warn' : ''}">発進</button>${auto}${warn}`
       : '<button data-cmd="rtb" class="wide">帰投</button><button data-cmd="clear">指示解除</button>';
     return `<div class="dt-alt"><label>目標高度</label>${btns}
       <span class="dt-spacer"></span>${actions}</div>`;

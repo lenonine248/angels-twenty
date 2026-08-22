@@ -508,6 +508,10 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     if (m.target && m.target.side === world.playerSide) world.log(`${m.target.name} デコイ有効`);
   };
   world.onDecoy = (unit) => audio.flare(unit.pos);
+  // 増槽の投棄（§32.2）。自分の機体のときだけ知らせる
+  world.onTankDropped = (unit) => {
+    if (unit.side === world.playerSide) world.log(`${unit.name} 増槽を投棄`);
+  };
   world.onMissileHit = (m, target, dist) => {
     world.recorder?.event('hit', loop.simTime,
       { unit: m.launcher, target, weapon: m.weapon.id, pos: m.pos,

@@ -58,6 +58,12 @@ const MAX_AAM_PER_TARGET = 1;
 const FIRE_COOLDOWN = 3.5;
 const BOMB_COOLDOWN = 0.5;
 
+/**
+ * 無誘導爆弾の偏差の取り方（§32.5）。1 で落下時間ぶん完全に先を狙う。
+ * 0 にすると「いまの位置を狙う」＝ §32.5 以前の挙動に戻る（A/B 用）。
+ */
+const BOMB_LEAD = 1;
+
 /** ミサイル警報が出る距離。レーダー誘導は逆探知で早く分かるが、赤外線は目視まで気づけない。 */
 const WARN_RANGE = { radar: 14000, ir: 5000 };
 
@@ -651,18 +657,41 @@ export class CombatSystem {
       // 投下点は掴んでいる座標から計算するほかない。逆探知だけで掴んでいる
       // 目標なら、そのぶんずれたところへ落ちる。
       const aim = this.world.believedPosOf(shooter.side, target) || target.pos;
-      const bdx = aim.x - shooter.pos.x, bdz = aim.z - shooter.pos.z;
-      const bflat = Math.hypot(bdx, bdz);
       const h = shooter.pos.y - aim.y;
       if (h < 60 || h > w.dropAltMax) return false;
-      if (Math.abs(angleDiff(headingOf(bdx, bdz), shooter.heading)) > 16 * DEG) return false;
       // 母機の上下速度を含めた落下時間 h = -vy*t + g*t^2/2 を解く
       const pitch = shooter.pitch || 0;
       const vy = shooter.speed * Math.sin(pitch);
       const vh = shooter.speed * Math.cos(pitch);
       const fallTime = (vy + Math.sqrt(vy * vy + 2 * 9.8 * h)) / 9.8;
       const throwRange = vh * fallTime;               // 投下点から着弾点までの水平距離
+
+      // **動く目標には落下時間ぶん先を狙う**（§32.5）。
+      //
+      // 落下時間は高度だけで決まり、水平距離には依らないので一度で解ける。
+      // 4000m から 200m/s で落とすと落下は約28秒。時速50kmの車両でも
+      // 400m 進むので、いまの位置を狙うと**必ず手前に落ちる**。
+      //
+      // これは高度を上げるほど大きくなる**系統誤差**で、
+      // プレイヤーには「対空砲の射程外から落とすと当たらない」としか見えない。
+      // 手前へずれると分かっていても手の打ちようがない ─ 学習できない罰なので取り除く。
+      // 散布界（`bombDispersion`・高度に比例）はそのまま残すので、
+      // **高く入るほど散る**という高度の駆け引きは変わらない。
+      let ax = aim.x, az = aim.z;
+      if (target.speed > 0 && target.heading != null) {
+        const lead = target.speed * fallTime * BOMB_LEAD;
+        ax += Math.sin(target.heading) * lead;
+        az -= Math.cos(target.heading) * lead;
+      }
+      const bdx = ax - shooter.pos.x, bdz = az - shooter.pos.z;
+      const bflat = Math.hypot(bdx, bdz);
+      if (Math.abs(angleDiff(headingOf(bdx, bdz), shooter.heading)) > 16 * DEG) return false;
       // 爆風半径と同程度の窓で投下する。狭すぎると投下機会を逃し続ける。
+      //
+      // **「解を跨いだ瞬間に放す」に変えてみたが、測ったら悪化した**
+      // （高度3000mで撃破 4/4 → 0/4）。窓に入っている間ずっと投下条件が成立し、
+      // 詰めながら1本ずつ落とすぶんが軒並み late になるため。
+      // 窓の中心で放つ形（いまの式）のほうが、結果として散らばりが小さい。
       return Math.abs(bflat - throwRange) < 130;
     }
 

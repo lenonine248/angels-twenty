@@ -173,6 +173,10 @@ export class Airbase extends GroundUnit {
       if (slot.tasks.length === 0) {
         slot.ac.state = 'ready';
         this.slots.splice(i, 1);
+        // 整備が終わったら自動で発進する（§32.4）。
+        // **操作しなければ従来どおり手動**。指示を出しに戻る手間を省くだけで、
+        // 「気づいたら勝手に飛んでいた」にはしない。
+        if (slot.ac.autoLaunch) this.launch(slot.ac, world);
       }
     }
   }
@@ -252,8 +256,17 @@ export class Airbase extends GroundUnit {
       if (!kinds.includes(k)) kinds.push(k);
     }
     if (!kinds.length) return null;
+    // これから使う兵装ポイント（§32.6）。
+    //
+    // 帰投すると**既定の搭載に戻すぶんが黙って引かれていた**。
+    // 撃った弾を積み直すだけでも高い兵装ならポイントを食い、
+    // クリア評価の「節約」を割る。使う前に見えれば、
+    // 「安い兵装に積み替える／このまま出す」を選べる。
+    const cost = slot.tasks.reduce(
+      (n, t) => n + (t.type === 'weapon' ? (getWeapon(t.weaponId).cost || 0) : 0), 0);
     return {
       kinds,
+      cost,
       remainingSec: slot.tasks.reduce((n, t) => n + (t.time - t.done), 0),
       waiting: false,
     };
@@ -279,6 +292,11 @@ export class Airbase extends GroundUnit {
     ac._rtbTriggered = false;
     ac.withdrawing = false;
     if (ac.order && ac.order.type === 'rtb') ac.clearOrders();
+
+    // 自動発進は**一度きり**（§32.4）。
+    // 残したままにすると、次に帰ってきたときにプレイヤーが忘れているうちに
+    // また飛び出す。押した本人がその場で意図した1回だけに効かせる。
+    ac.autoLaunch = false;
 
     ac.state = 'takeoff';
     ac._rotated = false;

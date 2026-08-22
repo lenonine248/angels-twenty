@@ -42,6 +42,21 @@ const ESCAPE_TURNS = [0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3, Math.PI];
 const CLIMB_DEMAND_LIMIT = 0.65;
 /** 巡航速度・最大舵時の減速(m/s^2)。旋回はエネルギーを消費する。 */
 const TURN_DRAG = 5.5;
+
+/**
+ * エアブレーキ（§32.1）。
+ *
+ * アフターバーナーを入れてから、射撃姿勢に入っても減速し切れずに
+ * **追い越す**ことが増えた。実測では track/lag の 26% で要求速度より
+ * 20m/s 以上、9% で 50m/s 以上速い。
+ *
+ * 抗力なので**速度の2乗に比例**する。速いときほどよく効く
+ * ＝ 追い越しそうなときほど効く、という素直な形になる。
+ * 減速の手段なので AI が減速したいときだけ自動で出す（プレイヤーの操作は要らない）。
+ */
+const AIRBRAKE_DRAG = 5;        // 巡航速度での減速(m/s^2)
+const AIRBRAKE_DEADBAND = 8;    // これ未満の速度差では出さない(m/s)
+const AIRBRAKE_RATE = 3;        // 出し入れの速さ(1/s)
 /** 到達判定の基準を旋回半径の何倍にするか */
 const ARRIVE_FACTOR = 0.9;
 /**
@@ -106,6 +121,9 @@ export class Aircraft extends Unit {
     this.pos.y = o.alt ?? 3000;
     this.desiredAlt = this.pos.y;
     this.desiredSpeed = spec.cruiseSpeed;
+    this.airbrake = 0;            // エアブレーキの開き（0〜1・§32.1）
+    this.autoDropTank = true;     // 空になった増槽を自分で落とすか（§32.2）
+    this.autoLaunch = false;      // 整備が終わったら自動で発進するか（§32.4・発進のたびに戻る）
     /**
      * アフターバーナーの方針（§29.3）。'save' | 'normal' | 'max'
      * 指揮官が指定するのは**意図**で、いつ点火するかは機体が決める。
@@ -558,6 +576,14 @@ export class Aircraft extends Unit {
    */
   get afterburner() {
     if (this.onGround || !this.alive) return false;
+    // 燃料が尽きたら焚けない（§32.3）。
+    //
+    // 帰る場所の無い機体（マップ外を拠点とする敵編隊）は燃料切れでも落とさない
+    // 決まりなので、**燃料が無限に等しく、AB も無限に焚けていた**。
+    // 落とさないのはそのままに、AB だけは使えなくする。
+    // 長く居座るほど動けなくなる ─ 燃料切れが「戦果が転がり込む」ではなく
+    // 「相手が鈍る」という形で効く。
+    if (this.fuel <= 0) return false;
     // 出したい速度がミリタリーで届かないときだけ意味がある
     if (this.desiredSpeed <= this.milSpeed) return false;
     switch (this.abMode) {
@@ -1255,6 +1281,19 @@ export class Aircraft extends Unit {
     const speedFrac = clamp(this.speed / this.spec.cruiseSpeed, 0.25, 1.4);
     accel -= turnRatio * TURN_DRAG * speedFrac;
 
+    // エアブレーキ（§32.1）。**decelLimit の外側で引く** —
+    // 推力を絞るのとは別の手段なので、絞り切ったところから更に減速できる。
+    // 降下中も効く（`decelLimit` は降下中 0.15 倍まで落ちるが、
+    // 実機の減速板は降下中こそ使う）。ただし一撃離脱を殺さないよう、
+    // 出すのは AI が減速したいときだけで、要求速度に届けば自動で戻る。
+    const wantBrake = this.speed - this.desiredSpeed > AIRBRAKE_DEADBAND;
+    this.airbrake += ((wantBrake ? 1 : 0) - this.airbrake)
+      * Math.min(1, dt * AIRBRAKE_RATE);
+    if (this.airbrake > 0.01) {
+      const q = (this.speed / this.spec.cruiseSpeed) ** 2;
+      accel -= this.airbrake * AIRBRAKE_DRAG * q;
+    }
+
     const diveBonus = 1 + 0.35 * clamp(-vs / this.spec.climbRate, 0, 1);
     const speedCap = (ab ? this.altitudeMaxSpeed : this.milSpeed) * diveBonus;
     this.speed = clamp(this.speed + accel * dt, this.spec.minSpeed, speedCap);
@@ -1336,6 +1375,11 @@ export class Aircraft extends Unit {
     rate *= 1 + 0.3 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.hardpoints));
 
     this.fuel -= rate * dt;
+
+    // 空になった増槽は自分で落とす（§32.2）。
+    // 地上に居るあいだは落とさない（整備で外せばよい）
+    if (this.autoDropTank && !this.onGround) this.dropTank(world);
+
     if (this.fuel <= 0) {
       this.fuel = 0;
       // 帰る場所が無い機体（マップ外を拠点とする敵編隊など）は燃料切れで落とさない。
@@ -1352,6 +1396,34 @@ export class Aircraft extends Unit {
 
   /** 燃料残量の割合 0..1 */
   get fuelRatio() { return this.fuel / this.fuelMax; }
+
+  /**
+   * 増槽を投棄する（§32.2）。
+   *
+   * `droppable: true` は最初から付いていたが、**どこからも使われていなかった**。
+   *
+   * 増槽の燃料は**先に使う**ものとして扱う。空になった増槽を提げたままだと、
+   * 中身が無いのに旋回率(−25%満載)と燃費(+30%満載)の代償だけを払い続ける。
+   *
+   * 持ち帰れば整備で付け直す手間（`rearmSeconds` 15秒）が要らない。
+   * その代わり空のまま運ぶ代償を負う ─ **どちらを取るかの選択**にする。
+   *
+   * @param {boolean} force 中身が残っていても落とす（手動投棄）
+   */
+  dropTank(world, force = false) {
+    const i = this.loadout.lastIndexOf('TANK');
+    if (i < 0) return false;
+    const rest = this.loadout.slice();
+    rest.splice(i, 1);
+    // その増槽ぶんを使い切っているか。使い切っていれば、
+    // いま残っている燃料は本体の容量に収まっている
+    const restMax = this.spec.fuelSeconds * loadoutFuelBonus(rest);
+    if (!force && this.fuel > restMax) return false;
+    this.loadout.splice(i, 1);
+    this.refreshFuelCapacity();
+    world?.onTankDropped?.(this);
+    return true;
+  }
 
   /**
    * 搭載が変わったら燃料容量を計算し直す。
