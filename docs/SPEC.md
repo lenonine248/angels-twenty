@@ -1,6 +1,7 @@
 # ANGELS TWENTY — 仕様書 v1.6
 
-> **Beta 2.22 を公開中**（<https://lenonine248.github.io/angels-twenty/>）。
+> **手元は Beta 2.22 / 公開中は Beta 2.11**（<https://lenonine248.github.io/angels-twenty/>）。
+> Beta 2.12〜2.22 は未 push。
 > P1〜P12 と §22〜§26 まで実装済み。
 > **保留**: §26.6 の敵AI側の規則（敵を黙らせても勝敗が動かない。§26.6.1）。
 > **未実装**: §22.3.7 / §22.4.3 の残り、キャンペーン。
