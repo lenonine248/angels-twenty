@@ -178,13 +178,28 @@ export class PilotAI {
       }
       return;
     }
-    // 敵から離れる方向へ、低空で退避する
-    const away = headingOf(u.pos.x - enemy.pos.x, u.pos.z - enemy.pos.z);
-    const dist = 22000;
+    // **自陣側へ後退する**（§28.9）。敵から離れる方向ではない。
+    //
+    // 「敵から離れる」だけだと帰る場所の概念が無いので、
+    // 早期警戒機はマップの端まで逃げて、そこに張り付いて攻撃できなくなる。
+    // **地図を広げても直らない**（より遠くまで逃げるだけ）。
+    //
+    // 退避先は自軍飛行場、無ければ哨戒エリア。そのどちらも無い機体
+    // （マップ外を拠点とする編隊）だけは、従来どおり敵から離れる方向へ。
+    const home = u.nearestBase(this.world) || this._patrolArea(u);
+    let tx; let tz;
+    if (home) {
+      tx = home.pos ? home.pos.x : home.x;
+      tz = home.pos ? home.pos.z : home.z;
+    } else {
+      const away = headingOf(u.pos.x - enemy.pos.x, u.pos.z - enemy.pos.z);
+      tx = u.pos.x + Math.sin(away) * 22000;
+      tz = u.pos.z - Math.cos(away) * 22000;
+    }
     u.setOrder({
       type: 'move',
-      x: u.pos.x + Math.sin(away) * dist,
-      z: u.pos.z - Math.cos(away) * dist,
+      x: tx,
+      z: tz,
       alt: Math.max(0, this.world.terrain.heightAt(u.pos.x, u.pos.z)) + 700,
       speed: u.altitudeMaxSpeed * 0.95,
     });

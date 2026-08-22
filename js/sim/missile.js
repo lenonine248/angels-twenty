@@ -10,6 +10,7 @@
 import * as THREE from 'three';
 import { clamp } from '../core/rng.js';
 import { missileDragFactor } from '../core/atmosphere.js';
+import { angleDiff } from './unit.js';
 
 /**
  * 直撃と判定する距離(m)。**目標の大きさを足して使う**（`hitRadii`）。
@@ -53,6 +54,40 @@ const LOST_SELF_DESTRUCT = 5;
  */
 const OVERSHOOT_SEC = 0.5;
 const OVERSHOOT_MARGIN = 150;
+
+/**
+ * 地面に紛れて見失う（§28.6）。
+ *
+ * 地表近くで真横を向いている目標は、**地面の反射に紛れる**ので
+ * レーダーのシーカーが分離しにくい。見下ろしているときだけ起きる。
+ *
+ * 確率は毎秒 8%。デコイ（1発で最大55%）よりはっきり低くする。
+ * そのぶん代償が大きい — 地面すれすれで真横を向くということは、
+ * 機銃にも対空砲にも無防備になるということ。
+ * **確率が低くても選ぶ価値がある**、という関係にしたい。
+ */
+const CLUTTER_CHANCE_PER_SEC = 0.08;
+const CLUTTER_MAX_AGL = 300;
+const CLUTTER_BEAM_TOLERANCE = 20 * (Math.PI / 180);
+/** 見下ろしていると言える高度差(m) */
+const CLUTTER_LOOKDOWN = 250;
+
+/**
+ * ドップラー・ノッチ（§28.5）。
+ *
+ * **照射しているものに対して真横を向くと、近づきも遠ざかりもしない。**
+ * レーダーは地面と同じ「動いていないもの」として捨てるので、追尾が切れる。
+ *
+ * ビームを「照射源に対して」取るようにしただけでは、何の得にもならない
+ * （実際、変えた直後は AAM-M の命中率がむしろ上がった）。
+ * **効き目を与えるのがこの仕組み**で、ここまでで初めてノッチが成立する。
+ *
+ * 毎秒 10%。§28.6 の地面クラッターと重なると、低空のビームは
+ * 毎秒 18% になる。代償は大きい — 真横を向くということは、
+ * 敵に背を向けも正対もしないまま、低空で速度を失うということ。
+ */
+const NOTCH_CHANCE_PER_SEC = 0.10;
+const NOTCH_TOLERANCE = 20 * (Math.PI / 180);
 /** この速度を下回ると失推 */
 const MIN_SPEED_RATIO = 0.35;
 /** 誘導に必要な視線を確認する間隔(秒) */
@@ -232,7 +267,7 @@ export class Missile {
         // 発射機がレーダーで照射し続けている必要がある
         const l = this.launcher;
         if (!l || !l.alive) { this._goStupid(); return; }
-        if (!illuminates(l, this.target, world)) { this._goStupid(); return; }
+        if (!illuminates(l, this.target, world, true)) { this._goStupid(); return; }
         break;
       }
       case 'arh': {
@@ -249,6 +284,10 @@ export class Missile {
       }
       default: break;
     }
+
+    // ノッチ（§28.5）と地面クラッター（§28.6）。どちらも真横を向くのが条件。
+    if (this._notchLost(dt, world, t)) { this._goStupid(); return; }
+    if (this._clutterLost(dt, world, t)) { this._goStupid(); return; }
 
     // シーカーの視線（地形に遮られたら見失う）
     this._losTimer -= dt;
@@ -347,6 +386,52 @@ export class Missile {
     this._minDist = null;            // 掴み直したので最接近の記録も入れ替える
     this._openingFor = 0;
     world.onMissileActive?.(this, best);
+  }
+
+  /**
+   * 照射源から見て真横を向かれ、追尾が切れるか（§28.5）。
+   *
+   * 見るのは**照射しているもの**。セミアクティブなら発射機、
+   * アクティブの終末なら弾自身。赤外線には効かない。
+   */
+  _notchLost(dt, world, t) {
+    if (!t.heading && t.heading !== 0) return false;
+    let src = null;
+    if (this.guidance === 'sarh') src = this.launcher;
+    else if (this.guidance === 'arh') src = this.active ? this : this.launcher;
+    else return false;
+    if (!src || src.alive === false) return false;
+
+    const dx = t.pos.x - src.pos.x, dz = t.pos.z - src.pos.z;
+    const los = Math.atan2(dx, -dz);
+    const off = Math.abs(Math.abs(angleDiff(los, t.heading)) - Math.PI / 2);
+    if (off > NOTCH_TOLERANCE) return false;
+
+    const rng = world.rng ? world.rng() : Math.random();
+    return rng < NOTCH_CHANCE_PER_SEC * dt;
+  }
+
+  /**
+   * 地表のクラッターに紛れて見失うか（§28.6）。
+   *
+   * 条件はすべて満たしたときだけ。低空にいるだけでは起きない —
+   * **真横を向いていること**が要る。
+   */
+  _clutterLost(dt, world, t) {
+    if (this.guidance !== 'sarh' && this.guidance !== 'arh' && this.guidance !== 'command') return false;
+    if (!t.beaming) return false;                                  // 真横を向いていない
+    const ground = Math.max(0, world.terrain.heightAt(t.pos.x, t.pos.z));
+    if (t.pos.y - ground > CLUTTER_MAX_AGL) return false;           // 低くない
+    if (this.pos.y - t.pos.y < CLUTTER_LOOKDOWN) return false;      // 見下ろしていない
+
+    // 弾から見て真横か
+    const dx = t.pos.x - this.pos.x, dz = t.pos.z - this.pos.z;
+    const los = Math.atan2(dx, -dz);
+    const off = Math.abs(Math.abs(angleDiff(los, t.heading)) - Math.PI / 2);
+    if (off > CLUTTER_BEAM_TOLERANCE) return false;
+
+    const rng = world.rng ? world.rng() : Math.random();
+    return rng < CLUTTER_CHANCE_PER_SEC * dt;
   }
 
   _goStupid() {
@@ -537,7 +622,13 @@ function isGroundTarget(t) {
 }
 
 /** 発射機が目標をレーダーで照射し続けているか（セミアクティブ誘導の条件） */
-function illuminates(launcher, target, world) {
+/**
+ * @param {boolean} lock ロック（STT）として見るか（§28.7）。
+ *   セミアクティブの誘導は**ロックの扇**（狭い）で見る。
+ *   アクティブの中途誘導は**索敵の扇**（広い）で見る — こちらは
+ *   ロックしていないからこそ相手に警報が出ない（§28.2）。
+ */
+function illuminates(launcher, target, world, lock = false) {
   if (!launcher.spec || !target) return false;
 
   // 地上発射（SAM）は全方位レーダー。沈黙すれば誘導が切れる。
@@ -560,8 +651,14 @@ function illuminates(launcher, target, world) {
     let diff = bearing - launcher.heading;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
-    if (Math.abs(diff) > (launcher.spec.radarFovH || 60) * (Math.PI / 180)) return false;
-    if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > (launcher.spec.radarFovV || 30) * (Math.PI / 180)) return false;
+    const fovH = lock
+      ? (launcher.spec.radarLockFovH ?? launcher.spec.radarFovH ?? 60)
+      : (launcher.spec.radarFovH || 60);
+    const fovV = lock
+      ? (launcher.spec.radarLockFovV ?? launcher.spec.radarFovV ?? 30)
+      : (launcher.spec.radarFovV || 30);
+    if (Math.abs(diff) > fovH * (Math.PI / 180)) return false;
+    if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > fovV * (Math.PI / 180)) return false;
   }
   return world.terrain.hasLineOfSight(launcher.pos, target.pos, 8, 400);
 }

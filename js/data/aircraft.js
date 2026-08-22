@@ -18,8 +18,18 @@ export const AIRCRAFT_TYPES = {
     hp: 90,
     hardpoints: 4,
     radarRange: 40000,
-    radarFovH: 60,        // 機首から左右±60°
+    radarFovH: 60,        // 索敵: 機首から左右±60°
     radarFovV: 30,
+    // ロック（AAM-M誘導中）の扇。索敵より狭い（§28.7）。
+    // クランク角が 48° → 24° になり、掴んだまま逃げる余地が減る。
+    //
+    // 仕様では ±25° としたが、測ったら**扇の幅はほとんど効かなかった**
+    // （±25/±40/±60 で AAM-M の命中率が 0.09/0.15/0.13、誘導喪失は全部18%）。
+    // 効いていたのは扇ではなく、**発射の可否を索敵の扇で見ていたこと**だった。
+    // ロックの扇の外へ撃てるので、発射した瞬間に誘導が切れていた。
+    // そちらを直したうえで、クランクを浅くする効果だけを残す値にしてある。
+    radarLockFovH: 40,
+    radarLockFovV: 20,
     visualRange: 8000,
     fuelSeconds: 720,     // 巡航12分
     // 機銃: 弾数は少ないが**弾が速い**。動く目標に当てられる（一撃離脱向き）
@@ -52,6 +62,8 @@ export const AIRCRAFT_TYPES = {
     radarRange: 32000,
     radarFovH: 60,
     radarFovV: 30,
+    radarLockFovH: 40,
+    radarLockFovV: 20,
     visualRange: 8000,
     fuelSeconds: 900,     // 15分
     // 機銃: すべて中庸。弾速も拡散も両者の間で、一発が軽い
@@ -83,6 +95,8 @@ export const AIRCRAFT_TYPES = {
     radarRange: 24000,
     radarFovH: 55,
     radarFovV: 30,
+    radarLockFovH: 38,
+    radarLockFovV: 20,
     visualRange: 8000,
     fuelSeconds: 1080,    // 18分
     // 機銃: 弾は遅いが拡散が細かく、弾数が多い。対地掃射に向く。

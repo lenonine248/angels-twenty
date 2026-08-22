@@ -11,7 +11,7 @@ import { Missile, Decoy, decoyMatches } from './missile.js';
 import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.js';
 import { headingOf, angleDiff, DEG } from './unit.js';
 import { clamp } from '../core/rng.js';
-import { effectiveMissileRange, turnFactor } from '../core/atmosphere.js';
+import { effectiveMissileRange } from '../core/atmosphere.js';
 
 // 機銃は実体弾（sim/bullet.js）。拡散・弾速・弾数は機種ごと（data/aircraft.js の gunSpec）。
 //
@@ -88,6 +88,23 @@ const WARN_RANGE = { radar: 14000, ir: 5000 };
  * 「遠いうちに撒いた1発ぶんが効く」と見るのが実測に近い。
  */
 const DECOY_SHOTS = 1;
+
+/**
+ * 飛翔時間の見積り（§28.8）。
+ *
+ * `TOF_SPEED_FRAC` は設計速度に対する平均速度。飛翔中に減速するので 1 未満。
+ * `TOF_SCALE` は「何秒で当たらなくなるか」の目盛りで、較正で決めた値。
+ */
+const TOF_SPEED_FRAC = 0.8;
+const TOF_SCALE = 15;
+/**
+ * これだけ飛翔時間があれば、相手はデコイを撒き切れるとみる(秒)。
+ *
+ * 較正して 7 にした。4 だと近距離を過小に見ていた（予測0.48／実測0.85）。
+ * 実際には、詰めてから撃った弾に対して相手が撒ける回数は少ない。
+ * 遠くから撃たれたときに早めに撒いてしまい、**手元に残っていない**のもある。
+ */
+const DECOY_REACT_SEC = 7;
 
 export function decoyFactor(dist) {
   return clamp(0.15 + dist / 12000, 0.15, 0.85);
@@ -199,10 +216,18 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
   const dist = shooter.pos.distanceTo(target.pos);
   const eff = effectiveMissileRange(weapon, (shooter.pos.y + target.pos.y) * 0.5);
   const frac = dist / Math.max(1, eff);
-  // 射程の何割で撃つか。縁で撃つほど当たらない。
   let p = clamp(1.18 - frac * 1.35, 0.03, 0.95);
 
   if (target.kind === 'aircraft' && !target.onGround) {
+    // **飛翔時間で見る**（§28.8）。距離ではない。
+    //
+    // 距離で見ていたときは、射程の割合しか効かず、**全弾が「中」に落ちた**
+    // （実測266発、予測は 0.35〜0.49 しか動かなかった）。
+    // 効いているのは「相手が何秒動けるか」であって、何メートル先かではない。
+    // 飛翔中に減速するので、平均速度は設計速度の 8 割で見る。
+    const tof = dist / Math.max(1, weapon.speed * TOF_SPEED_FRAC);
+    p = clamp(1.15 - tof / TOF_SCALE, 0.02, 0.97);
+
     // アスペクト。誘導方式で得意な角度が逆になる。
     //   赤外線: 排気を見るので後方から撃つほど当たる
     //   レーダー: 接近速度が乗る正面ほど当たる
@@ -212,16 +237,17 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
 
     // デコイを**§28.4 の曲線から直接引く**。
     //
-    // 実測で当たらない理由の 58% がデコイなので、耐性を係数で軽く見るだけでは
+    // 実測で当たらない理由の 6 割がデコイなので、耐性を係数で軽く見るだけでは
     // 足りない。デコイは遠いほど効くので、ここを距離と結びつけないと
-    // **AI は 14km 先へ命中率3%の弾を撃ち続ける**（実際そうなっていた）。
-    //
-    // 撒かれる回数は 2 発ぶんと見積もる。搭載は4発だが、
-    // 効くのは遠いうちに撒いた最初の1〜2発なので。
-    const per = (1 - (weapon.decoyResist ?? 0.5)) * decoyFactor(dist);
+    // **AI は 14km 先へ命中率4%の弾を撃ち続ける**（実際そうなっていた）。
+    // **撒く暇があるかも見る。** 至近で撃った弾には撒く時間が無い。
+    // これを入れないと近距離を過小評価する（実測: 予測0.41 に対し実測0.85）。
+    const chanceToUse = clamp(tof / DECOY_REACT_SEC, 0, 1);
+    const per = (1 - (weapon.decoyResist ?? 0.5)) * decoyFactor(dist) * chanceToUse;
     p *= Math.pow(1 - per, DECOY_SHOTS);
-    // 高空の目標は旋回で振り切りにくい
-    p *= 0.82 + 0.18 * (1 - turnFactor(target.pos.y));
+
+    // 高度による回避余力は**足さない**。飛翔時間の項に既に含まれている
+    // （相手が何秒動けるか）ので、重ねると同じものを二度引くことになる。
     // 相手の対抗手段の残量は見ない（残弾を数えるのは過剰な情報なので）
   } else {
     // 動かない目標は回避しない。射程の縁でなければまず当たる。
@@ -499,7 +525,9 @@ export class CombatSystem {
     if (w.guidance === 'arm' && !target.emitting) return '電波なし';
     const off = offBoresight(shooter, dx, dz, dy) / DEG;
     if (w.guidance === 'sarh' || w.guidance === 'arh') {
-      if (!inRadarFan(shooter, dx, dz, dy, flat)) return `扇の外 ${Math.round(off)}度`;
+      if (!inRadarFan(shooter, dx, dz, dy, flat, w.guidance === 'sarh')) {
+        return `${w.guidance === 'sarh' ? 'ロックの扇' : '扇'}の外 ${Math.round(off)}度`;
+      }
     } else if (off > 45) {
       return `射角外 ${Math.round(off)}度`;
     }
@@ -562,8 +590,10 @@ export class CombatSystem {
 
       case 'sarh':
       case 'arh':
-        // レーダー誘導は自機のレーダー扇に入っていることが条件
-        if (!inRadarFan(shooter, dx, dz, dy, flat)) return false;
+        // レーダー誘導は自機のレーダー扇に入っていることが条件。
+        // セミアクティブは**着弾まで**保持する必要があるので、
+        // 発射の可否も狭いロックの扇で判定する（§28.7）。
+        if (!inRadarFan(shooter, dx, dz, dy, flat, w.guidance === 'sarh')) return false;
         return los();
 
       case 'arm':
@@ -768,8 +798,15 @@ function offBoresight(shooter, dx, dz, dy) {
   return Math.hypot(yaw, pitch);
 }
 
-/** 自機のレーダー扇に入っているか */
-function inRadarFan(shooter, dx, dz, dy, flat) {
+/**
+ * 自機のレーダー扇に入っているか。
+ *
+ * @param {boolean} lock ロック（STT）の扇で見るか（§28.7）。
+ *   **セミアクティブ（AAM-M）は必ずこちら。** 索敵の扇で発射を許すと、
+ *   ロックの扇の外にいる目標へ撃ててしまい、**発射した瞬間に誘導が切れる**。
+ *   実際そうなっていて、誘導喪失26件のうち18件が「機首から25度ちょうど」だった。
+ */
+function inRadarFan(shooter, dx, dz, dy, flat, lock = false) {
   const spec = shooter.spec;
   // レーダーを切っていれば扇そのものが無い（§26.4）。
   // AAM-M も AAM-A も、ここを通れないので撃てなくなる。
@@ -777,7 +814,9 @@ function inRadarFan(shooter, dx, dz, dy, flat) {
   if (!spec || range <= 0) return false;
   if (Math.hypot(flat, dy) > range) return false;
   if (spec.omniRadar) return true;
-  if (Math.abs(angleDiff(headingOf(dx, dz), shooter.heading)) > (spec.radarFovH || 60) * DEG) return false;
-  if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > (spec.radarFovV || 30) * DEG) return false;
+  const fovH = lock ? (spec.radarLockFovH ?? spec.radarFovH ?? 60) : (spec.radarFovH || 60);
+  const fovV = lock ? (spec.radarLockFovV ?? spec.radarFovV ?? 30) : (spec.radarFovV || 30);
+  if (Math.abs(angleDiff(headingOf(dx, dz), shooter.heading)) > fovH * DEG) return false;
+  if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > fovV * DEG) return false;
   return true;
 }

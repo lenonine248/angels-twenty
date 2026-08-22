@@ -64,6 +64,16 @@ const DECOY_TTI_LATE = 3.5;
 /** 連続投射の間隔(秒) */
 const DECOY_INTERVAL = 1.2;
 
+/**
+ * ここから終末の切り返しに寄せ始める残り秒数（§28.5）。
+ * 真横を向いたまま待つと最後は追いつかれるので、突っ込む向きへ寄せて
+ * ミサイルに大きな先行角を取らせる。
+ */
+const BREAK_TTI = 2.5;
+
+/** クランクで振る角度を、ロックの扇の何割までにするか（§28.7） */
+const CRANK_FRACTION = 0.6;
+
 const _tmp = new THREE.Vector3();
 
 export class Aircraft extends Unit {
@@ -138,6 +148,8 @@ export class Aircraft extends Unit {
     this._decoyTimer = 0;
     /** デコイを自動で撒くか（§9.5）。兵装の自動使用と同じ扱いの独立トグル */
     this.autoDecoy = true;
+    /** いまビーム機動中か（§28.6 の低空ノッチ判定が読む） */
+    this.beaming = false;
     this.evading = false;
     this.cranking = false;
 
@@ -513,7 +525,16 @@ export class Aircraft extends Unit {
           // クランク機動だけは機動より優先する。
           // AAM-M を誘導している間は照射を切らさないほうが得。
           if (this._guidingSarhAt(t, world)) {
-            const crank = Math.max(10, (this.spec.radarFovH || 60) - 12) * DEG;
+            // クランクの角度は**ロックの扇**から決める（§28.7）。
+            // 索敵の扇（±60°）で計算していたので 48° まで振れて、
+            // 掴んだまま逃げる代償がほとんど無かった。
+            // クランクは**扇の6割**まで。残りは余裕として空ける。
+            //
+            // 「扇いっぱいまで振る」にしたら、誘導が切れた 26 件のうち 18 件が
+            // **自分の機首が扇の縁に届いた**ことによる自滅だった。
+            // 目標が少し動くだけで切れるので、クランクが自分の首を絞めていた。
+            const lockFov = this.spec.radarLockFovH ?? this.spec.radarFovH ?? 60;
+            const crank = Math.max(8, lockFov * CRANK_FRACTION) * DEG;
             const off = angleDiff(headingOf(dx, dz), this.heading);
             desiredHeading = headingOf(dx, dz) + (off >= 0 ? -crank : crank);
             this.cranking = true;
@@ -660,7 +681,7 @@ export class Aircraft extends Unit {
     //
     // 手動モードは機動しない。ただし**デコイは撒く**（自動使用の設定に従う）。
     // 「機動するかどうか」と「対抗手段を使うかどうか」は別の判断なので分けてある。
-    if (this.threats.length === 0) this._evadeSide = null;   // 脅威が消えたら選び直す
+    if (this.threats.length === 0) { this._evadeSide = null; this.beaming = false; }
     if (this.manual) {
       const m = this.threats[0];
       if (m && m.alive) {
@@ -828,6 +849,26 @@ export class Aircraft extends Unit {
     if (world.combat.deployDecoy(this, kind)) this._decoyTimer = DECOY_INTERVAL;
   }
 
+  /**
+   * その弾を「照らしている」もの（§28.5）。
+   *
+   * これに対して真横を向くのがノッチ。誘導方式で違う。
+   *
+   * | 兵装 | 照射源 |
+   * |---|---|
+   * | AAM-M（セミアクティブ）| 発射機 |
+   * | AAM-A（中途）| 発射機の索敵レーダー |
+   * | AAM-A（終末）| ミサイル自身 |
+   * | AAM-S（赤外線）| 無し（ビームは効かない。フレアと機動と地形で対処） |
+   */
+  _illuminatorOf(m) {
+    if (m.guidance === 'sarh') return m.launcher && m.launcher.alive ? m.launcher : null;
+    if (m.guidance === 'arh' && m.active === false) {
+      return m.launcher && m.launcher.alive ? m.launcher : null;
+    }
+    return null;                                  // 弾自身、または効かない
+  }
+
   /** 撒き始める残り秒数。練度が高いほど早い（§28.4.1） */
   _decoyStartTti() {
     const k = clamp(this.skill ?? 1, 0, 1);
@@ -848,10 +889,19 @@ export class Aircraft extends Unit {
 
     const dx = m.pos.x - this.pos.x, dz = m.pos.z - this.pos.z;
     const dist = Math.hypot(dx, dz);
-    const bearing = headingOf(dx, dz);
     const tti = dist / Math.max(60, m.speed);      // 到達までの概算秒数
 
     this._maybeDeployDecoy(world, dt, m, tti);
+
+    // ビームは**照射しているもの**に対して取る（§28.5）。
+    //
+    // セミアクティブ（AAM-M）を照らしているのは発射機であって、飛んでくる弾ではない。
+    // 弾に対して真横を向いても、発射機から見た速度成分は消えないので何も起きない。
+    // 以前は誘導方式を問わず弾に対して取っていたので、
+    // **AAM-M へのノッチが物理的に成立していなかった**。
+    const src = this._illuminatorOf(m) || m;
+    const bx = src.pos.x - this.pos.x, bz = src.pos.z - this.pos.z;
+    const bearing = headingOf(bx, bz);
 
     // ミサイルを真横に置く向きのうち、旋回量が少ない方を選ぶ
     const left = bearing - Math.PI / 2;
@@ -863,7 +913,21 @@ export class Aircraft extends Unit {
       this._evadeSide = Math.abs(angleDiff(left, this.heading))
         < Math.abs(angleDiff(right, this.heading)) ? -1 : 1;
     }
-    const heading = this._evadeSide < 0 ? left : right;
+    let heading = this._evadeSide < 0 ? left : right;
+    this.beaming = true;
+
+    // 終末は**ミサイルへ舵を切る**（§28.5）。
+    //
+    // 真横を向いたまま待つと、最後は必ず追いつかれる。突っ込む向きへ寄せると
+    // ミサイルは短時間で大きな先行角を取らされ、曲がり切れなくなる。
+    // しきい値で切り替えず、tti で連続的に寄せる — 段差にすると
+    // ミサイルの機動で tti が前後するたびに機首が暴れる（§22 の教訓）。
+    const missileBearing = headingOf(dx, dz);
+    const breakMix = clamp((BREAK_TTI - tti) / BREAK_TTI, 0, 1);
+    if (breakMix > 0) {
+      heading += angleDiff(missileBearing, heading) * breakMix;
+      this.beaming = breakMix < 0.5;
+    }
 
     // 終末に近いほど深く降ろす。
     // 「tti<8 なら地面すれすれ、そうでなければ現在高度」のような段差にすると、
