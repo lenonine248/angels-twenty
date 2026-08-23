@@ -204,17 +204,65 @@ export function decoyRepeatFactor(tries) {
  * 交戦の86%が正面（§22.3.6.1）なうえ、この地図は実際の戦域より縮尺が小さいので、
  * 立ち上がりを早めにして釣り合いを取る。
  */
+/** 温度が分からない相手を見積もるときの既定値（§35.3） */
+const HEAT_TYPICAL = 0.5;
+/**
+ * 温度がロック距離に効く度合い（§35.3）。基準は巡航の温度。
+ * 絞れば 0.65倍まで縮み、AB を焚けば 1.3倍まで伸びる。
+ */
+const HEAT_CRUISE_REF = 0.45;
+const HEAT_RANGE_SLOPE = 1.0;
+const HEAT_RANGE_FLOOR = 0.65;
+const HEAT_RANGE_CEIL = 1.30;
+
+/**
+ * フレアの競り合い（§35.3）。機体の明るさ = 基礎 + 後方 + 温度。
+ * 明るいほどフレアは競り負ける。
+ */
+const SIG_BASE = 0.25;
+const SIG_REAR = 0.45;
+const SIG_HEAT = 0.30;
+const FLARE_FLOOR = 0.12;
+
 const IR_ASPECT_START = 0.3;
 const IR_ASPECT_WIDTH = 0.45;
 
-export function irLockRange(weapon, aspect) {
+export function irLockRange(weapon, aspect, heat = HEAT_TYPICAL) {
   const tail = weapon.range;
   const head = weapon.irHeadRange;
   if (head == null) return tail;
   // 排気が見え始める角度から伸びる。
   // `IR_ASPECT_START` までは機体の熱だけ、そこから満額まで滑らかに上がる。
   const f = clamp((aspect - IR_ASPECT_START) / IR_ASPECT_WIDTH, 0, 1);
-  return head + (tail - head) * f;
+  // **推力を絞れば掴まれにくい**（§35.3）。冷えた機体は背景との差が小さい。
+  // 基準は**巡航の温度**に置く — §34.1 で決めた 4000/5778/8000 は
+  // 「普通に飛んでいるとき」の数字であって、AB を焚いた状態のものではない。
+  const byHeat = clamp(1 + HEAT_RANGE_SLOPE * (clamp(heat, 0, 1) - HEAT_CRUISE_REF),
+    HEAT_RANGE_FLOOR, HEAT_RANGE_CEIL);
+  return Math.min(tail, (head + (tail - head) * f) * byHeat);
+}
+
+/**
+ * フレアが競り勝てるか（§35.3）。
+ *
+ * 赤外線シーカーは**より明るいもの**を追う。だから相手の見え方で決まる。
+ *
+ * | 機体が明るく見える条件 | |
+ * |---|---|
+ * | 後ろから見られている | 排気そのものが見える。**紛れの無い熱源**と競うことになる |
+ * | 温度が高い | アフターバーナーを焚いていれば、なおさら競り負ける |
+ *
+ * 逆に、正面から見られていて推力を絞っていれば機体は暗く、フレアがよく効く。
+ * **推力を切れば隠れられるが、そのぶん速度で負ける** — そこが選択になる。
+ */
+export function flareFactor(unit, missile) {
+  // 弾から見て機体の後ろ側にいる割合（1=真後ろ）
+  const dx = unit.pos.x - missile.pos.x, dz = unit.pos.z - missile.pos.z;
+  const rear = 1 - Math.abs(angleDiff(headingOf(dx, dz), unit.heading)) / Math.PI;
+  const heat = unit.heat ?? HEAT_TYPICAL;
+  // 機体自身の明るさ
+  const sig = clamp(SIG_BASE + SIG_REAR * rear + SIG_HEAT * heat, 0, 1);
+  return clamp(1 - sig, FLARE_FLOOR, 1);
 }
 
 /** 撃つ側から見た目標のアスペクト。0=正面から / 1=真後ろから */
@@ -350,7 +398,7 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
 
     // 赤外線は掴めない距離なら 0（§34）。ここを入れないと、
     // **撃てない相手に「中」と表示される**
-    if (weapon.guidance === 'ir' && dist > irLockRange(weapon, aspect)) return 0;
+    if (weapon.guidance === 'ir' && dist > irLockRange(weapon, aspect, target.heat)) return 0;
 
     // デコイを**§28.4 の曲線から直接引く**。
     //
@@ -738,7 +786,7 @@ export class CombatSystem {
         // **掴める距離はアスペクトで変わる**（§34）。
         // 排気が見えない正面・側方からは、ずっと近づかないと掴めない
         if (target.kind === 'aircraft'
-            && dist > irLockRange(w, aspectOf(shooter, target))) return false;
+            && dist > irLockRange(w, aspectOf(shooter, target), target.heat)) return false;
         return los();
       }
 
@@ -931,6 +979,7 @@ export class CombatSystem {
         if (!decoyMatches(m.guidance, kind)) continue;
         const chance = (1 - m.weapon.decoyResist)
           * decoyFactor(m.pos.distanceTo(unit.pos))
+          * flareFactor(unit, m)
           * decoyRepeatFactor(m._decoyTries);
         m._decoyTries++;
         if (this.world.rng() < chance) {

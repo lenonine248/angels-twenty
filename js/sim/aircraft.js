@@ -54,6 +54,29 @@ const TURN_DRAG = 5.5;
  * ＝ 追い越しそうなときほど効く、という素直な形になる。
  * 減速の手段なので AI が減速したいときだけ自動で出す（プレイヤーの操作は要らない）。
  */
+/**
+ * 機体の温度（§35.3）。0=冷えている 1=排気が最も明るい。
+ *
+ * 赤外線シーカーが掴むのは**熱**なので、推力の大小がそのまま
+ * 「見つかりやすさ」と「フレアで隠せるか」に効く。
+ *
+ * | | 温度 |
+ * |---|---|
+ * | アフターバーナー | 1.0 |
+ * | 加速中（ミリタリー推力） | 0.70 |
+ * | 巡航 | 0.45 |
+ * | 絞っている（エアブレーキを出している） | 0.15 |
+ *
+ * **すぐには冷えない。** エンジンと機体が持つ熱の分だけ遅れる。
+ * この遅れがあるから「撃たれてから絞る」では間に合わず、
+ * **撃たれる前から絞っておく**という判断が生まれる。
+ */
+const HEAT_AB = 1.0;
+const HEAT_MIL = 0.70;
+const HEAT_CRUISE = 0.45;
+const HEAT_IDLE = 0.15;
+const HEAT_TAU = 7;             // 目標の温度へ寄る時定数(秒)
+
 const AIRBRAKE_DRAG = 5;        // 巡航速度での減速(m/s^2)
 const AIRBRAKE_DEADBAND = 8;    // これ未満の速度差では出さない(m/s)
 const AIRBRAKE_RATE = 3;        // 出し入れの速さ(1/s)
@@ -137,6 +160,7 @@ export class Aircraft extends Unit {
     this.desiredAlt = this.pos.y;
     this.desiredSpeed = spec.cruiseSpeed;
     this.airbrake = 0;            // エアブレーキの開き（0〜1・§32.1）
+    this.heat = HEAT_CRUISE;      // 機体の温度（0〜1・§35.3）
     this.autoDropTank = true;     // 空になった増槽を自分で落とすか（§32.2）
     this.autoLaunch = false;      // 整備が終わったら自動で発進するか（§32.4・発進のたびに戻る）
     /**
@@ -591,6 +615,15 @@ export class Aircraft extends Unit {
    */
   get afterburner() {
     if (this.onGround || !this.alive) return false;
+    // **赤外線弾に追われているときは焚かない**（§35.3）。
+    //
+    // AB は排気が最も明るくなるので、フレアが競り負ける
+    // （実効 0.45 → 0.12）。しかも赤外線弾は目視の距離で撃たれるものなので、
+    // ここで得られる速度では**どのみち振り切れない**。
+    // 温存モードは「脅威があるときだけ焚く」作りなので、
+    // **いちばん焚いてはいけない場面で焚いていた。**
+    if (this._chasedByIr()) return false;
+
     // 燃料が尽きたら焚けない（§32.3）。
     //
     // 帰る場所の無い機体（マップ外を拠点とする敵編隊）は燃料切れでも落とさない
@@ -606,6 +639,14 @@ export class Aircraft extends Unit {
       case 'save': return this.threats.length > 0;       // 逃げるときだけ
       default:     return this.threats.length > 0 || this._abWanted;
     }
+  }
+
+  /** 赤外線誘導の弾に追われているか（§35.3） */
+  _chasedByIr() {
+    for (const m of this.threats) {
+      if (m.alive && !m.lost && m.guidance === 'ir') return true;
+    }
+    return false;
   }
 
   /** 比エネルギー(m)。高度と速度を足し合わせた「戦う余力」（§29.4） */
@@ -1298,6 +1339,13 @@ export class Aircraft extends Unit {
     this.abActive = ab;
     const thrust = this.spec.accel * thrustFactor(this.pos.y)
       * (ab ? 1 : MIL_ACCEL_FRACTION);
+
+    // 温度（§35.3）。推力の大小をそのまま追う。**遅れて追う**のが要点で、
+    // 「撃たれてから絞る」では間に合わない。
+    const heatTarget = ab ? HEAT_AB
+      : this.airbrake > 0.3 ? HEAT_IDLE
+        : this.desiredSpeed > this.speed + 5 ? HEAT_MIL : HEAT_CRUISE;
+    this.heat += (heatTarget - this.heat) * Math.min(1, dt / HEAT_TAU);
     // 降下中は速度を捨てにくい（絞っても位置エネルギーが速度に変わり続ける）。
     // これが無いと降下しても巡航速度まで減速してしまい、一撃離脱が成立しない。
     const decelLimit = thrust * (vs < 0 ? 0.15 : 0.6);

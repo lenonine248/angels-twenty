@@ -319,6 +319,7 @@ export class Hud {
       u.selectedWeapon || '', u.evadeWhileGuiding ? 1 : 0, u.autoDecoy ? 1 : 0, u.fireThreshold,
       u.autoWeapons.GUN === false ? 1 : 0,
       u.radarMode, u.radarActive ? 1 : 0, u.abMode, u.abActive ? 1 : 0, u.airbrake > 0.3 ? 1 : 0,
+      Math.round((u.heat ?? 0) * 20),
       u.autoDropTank ? 1 : 0,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
       Object.entries(u.autoWeapons).map(([k, v]) => k + v).join(''),
@@ -385,6 +386,8 @@ export class Hud {
     d.perf.innerHTML =
       `<span class="pf ${esCls}">エネルギー ${es.toLocaleString()}m</span>`
       + `<span class="pf ${u.abActive ? 'good' : ''}">${u.abActive ? 'AB 点火' : 'AB 待機'}</span>`
+      // 機体の温度（§35.3）。赤外線に掴まれやすさとフレアの効きを決める
+      + `<span class="pf ${u.heat > 0.75 ? 'mid' : u.heat < 0.3 ? 'good' : ''}">熱 ${Math.round((u.heat ?? 0.45) * 100)}%</span>`
       // エアブレーキ（§32.1）。出ている間だけ出す。自動なので操作の対象ではない
       + (u.airbrake > 0.3 ? '<span class="pf mid">ブレーキ</span>' : '')
       + `<span class="pf ${cls(p.thrust)}">推力 ${Math.round(p.thrust * 100)}%</span>`
