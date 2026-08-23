@@ -91,6 +91,21 @@ const HOLD_MARGIN = 3;
  */
 const BREAK_TTI = 2.5;
 
+/**
+ * **目視の内側では早くブレイクを始める、は測って取り消した**（§34.5）。
+ *
+ * 近距離で撃たれた弾にはチャフもノッチも間に合わないので、
+ * 最初から振り切りにかかるべき — という筋は通っていた。
+ * ところが `breakMix` はミサイルの方へ機首を寄せる量なので、
+ * 開始を早めると**9秒かけてミサイルへ半分向く長い旋回**になる。
+ * 「短時間だけの急激な機動」の逆で、実測でも ESCORT が
+ * 17/18 → 14/18・撃墜 2.9 → 1.9・損失 1.4 → 2.2 と、
+ * **殺せず、しかも死ぬ**という結果だった。
+ *
+ * 急激さは開始を早めることではなく、**コーナー速度まで落として
+ * 旋回半径を縮めること**で出す（下の `_evade` を参照）。
+ */
+
 /** クランクで振る角度を、ロックの扇の何割までにするか（§28.7） */
 const CRANK_FRACTION = 0.6;
 
@@ -1143,9 +1158,23 @@ export class Aircraft extends Unit {
     // ミサイルの機動で tti が前後するたびに機首が暴れる（§22 の教訓）。
     const missileBearing = headingOf(dx, dz);
     const breakMix = clamp((BREAK_TTI - tti) / BREAK_TTI, 0, 1);
+    let speed = this.spec.maxSpeed;
     if (breakMix > 0) {
       heading += angleDiff(missileBearing, heading) * breakMix;
       this.beaming = breakMix < 0.5;
+
+      // **最後の一瞬だけコーナー速度まで落とす**（§34.5）。
+      //
+      // 旋回半径は V²/(nG)。**速いまま曲がるのが一番曲がれない。**
+      // F-1 なら 320m/s で 1,333m、コーナー速度 187m/s で 455m と3倍違う。
+      //
+      // それまでは逆に速度が要る（ビームで離れ、チャフとノッチに
+      // 仕事をさせる時間を稼ぐ）ので、**終末の数秒だけ**捨てる。
+      // 速度を捨てるのは危険な賭けで、外せば次の弾に対して何もできない。
+      // だから「短時間だけの急激な機動」という形になる。
+      //
+      // エアブレーキ（§32.1）があるので、実際にこの速度まで落とせる。
+      speed = this.spec.maxSpeed + (this.cornerSpeed - this.spec.maxSpeed) * breakMix;
     }
 
     // 終末に近いほど深く降ろす。
@@ -1158,7 +1187,7 @@ export class Aircraft extends Unit {
     const dive = clamp(1 - tti / 9, 0, 1);
     const alt = this.pos.y - dive * 4000;
 
-    return { heading, alt, speed: this.spec.maxSpeed };
+    return { heading, alt, speed };
   }
 
   /**
