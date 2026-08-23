@@ -191,3 +191,18 @@ export function getType(id) {
   if (!t) throw new Error(`unknown aircraft type: ${id}`);
   return t;
 }
+
+/**
+ * 敵機の既定搭載。ステージ定義で `loadout` を書かなかった機体に使う。
+ *
+ * **データ側に置いてある**（§47）。調整パネルが「いま何を積んでいるか」を
+ * 出すために要るので、`main.js` に持たせると entry を import する形になる。
+ */
+export function defaultEnemyLoadout(type) {
+  const spec = getType(type);
+  if (!spec || spec.hardpoints === 0) return [];
+  if (spec.role === '爆撃') return ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'];
+  if (spec.role === '対地') return ['AGM', 'AGM', 'AAM-S'];
+  return ['AAM-M', 'AAM-S', 'AAM-S'];
+}
+

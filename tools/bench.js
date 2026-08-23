@@ -262,5 +262,14 @@
   }
 
   AT.bench = { stage, all, runOne, trace, summarize, ab, sig };
-  return 'bench ready';
+
+  // **調整パネル（§47）で触った値はベンチにもそのまま効く。**
+  // 気づかずに数字を読むと、変更の効きと調整の効きを取り違える。
+  const tuned = AT.tuning && AT.tuning.tunedIds ? AT.tuning.tunedIds() : [];
+  if (tuned.length) {
+    console.warn(`[bench] 調整パネルで触ったステージがあります: ${tuned.join(', ')}
+`
+      + '釣り合いを測るなら AT.tuning.resetAll() で戻してください。');
+  }
+  return tuned.length ? `bench ready（調整中: ${tuned.join(', ')}）` : 'bench ready';
 })();

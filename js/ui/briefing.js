@@ -14,6 +14,8 @@ import { ratingTargets } from '../data/rating.js';
 import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
 import { getType } from '../data/aircraft.js';
 import { Terrain, CELLS, MAP_SIZE } from '../world/terrain.js';
+import * as tuning from './tuning.js';
+import { isDebug } from '../core/debug.js';
 
 const LOADABLE = ['AAM-S', 'AAM-M', 'AAM-A', 'AGM', 'ARM', 'BOMB', 'TANK'];
 
@@ -34,6 +36,14 @@ export class ScreenManager {
     this.stage = null;
 
     this.root.addEventListener('click', (e) => this._onClick(e));
+    // 調整パネルの数値入力（§47）
+    this.root.addEventListener('change', (e) => {
+      if (!this._tuneOpen || !isDebug() || !this.stage || !e.target.dataset.tn) return;
+      if (tuning.handleInput(this.stage.id, e.target)) {
+        this.stage = STAGES.find((x) => x.id === this.stage.id);
+        this._renderBriefing();
+      }
+    });
   }
 
   // -------------------------------------------------------------- 画面
@@ -246,6 +256,7 @@ export class ScreenManager {
 
   showBriefing(stage) {
     this.stage = stage;
+    this._tuneOpen = false;
     // 前回このステージで組んだ搭載があればそれを復元する。
     // 出撃 → 途中でブリーフィングに戻る、を繰り返すたびに組み直しになると煩わしい。
     const saved = this._lastLoadouts.get(stage.id);
@@ -296,6 +307,10 @@ export class ScreenManager {
       </div>`;
     }).join('');
 
+    // **調整中であることを必ず見せる**（§47）。
+    // 印が無いと、触った値のままベンチの数字を読んでしまう。
+    const tuned = tuning.isTuned(stage.id) ? '<span class="tn-flag">調整中</span>' : '';
+
     const objectives = stage.objectives.map((o) =>
       `<li class="${o.fail ? 'obj-fail' : ''}">${o.label}${o.fail ? '（失敗条件）' : ''}</li>`).join('');
 
@@ -313,7 +328,7 @@ export class ScreenManager {
         <div class="bf-top">
           <div>
             <div class="screen-sub">BRIEFING</div>
-            <h1 class="bf-name">${stage.name}<small>${stage.title}</small></h1>
+            <h1 class="bf-name">${stage.name}<small>${stage.title}</small>${tuned}</h1>
           </div>
           <div class="bf-points">
             ${best ? `<span class="bf-best">最高評価 <b class="rank-${best}">${best}</b></span>` : ''}
@@ -346,9 +361,11 @@ export class ScreenManager {
 
         <div class="screen-foot">
           <button data-act="back" class="ghost">戻る</button>
+          ${isDebug() ? '<button data-act="tune" class="ghost">難易度調整</button>' : ''}
           <button data-act="launch" class="go"${left < 0 ? ' disabled' : ''}>出撃</button>
         </div>
-      </div>`);
+      </div>
+      ${this._tuneOpen && isDebug() ? tuning.render(stage.id) : ''}`);
 
     this._drawMap(stage);
   }
@@ -433,9 +450,38 @@ export class ScreenManager {
       return;
     }
 
+    // 調整パネル（§47）。開いている間だけ拾う
+    if (this._tuneOpen && isDebug() && this.stage && tuning.handle(this.stage.id, e)) {
+      this.stage = STAGES.find((x) => x.id === this.stage.id);
+      this._renderBriefing();
+      return;
+    }
+
     const act = e.target.closest('[data-act]');
     if (!act) return;
     switch (act.dataset.act) {
+      case 'tune':
+        if (!isDebug()) break;
+        this._tuneOpen = true;
+        this._renderBriefing();
+        break;
+      case 'tuneClose':
+        this._tuneOpen = false;
+        this._renderBriefing();
+        break;
+      case 'tuneReset':
+        tuning.reset(this.stage.id);
+        this.stage = STAGES.find((x) => x.id === this.stage.id);
+        this.resetLoadouts(this.stage);
+        this.showBriefing(this.stage);
+        this._tuneOpen = true;
+        this._renderBriefing();
+        break;
+      case 'tuneCopy': {
+        const out = document.getElementById('tnOut');
+        if (out) { out.textContent = tuning.snippet(this.stage.id); out.classList.remove('hidden'); }
+        break;
+      }
       case 'changelog': showChangelog(); break;
       case 'review': this.onReview?.(); break;
       case 'back':   this.showStageSelect(); break;

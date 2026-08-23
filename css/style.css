@@ -1014,3 +1014,56 @@ button.go.warn:hover + .dt-warn { display: block; }
 .svc-meta.rdr-on  { color: var(--amber); }
 .svc-meta.rdr-off { color: #6fd8e8; }
 .ur-silent { color: #6fd8e8; }
+
+/* ===== ステージの調整パネル（§47） =====
+   ブリーフィングの下に開く。作るための道具ではなく詰めるための道具なので、
+   触れるのは数と強さだけ（配置・地形・目標は出さない）。 */
+.tn-panel {
+  margin-top: 18px;
+  border: 1px solid var(--amber);
+  background: rgba(8, 16, 18, 0.85);
+}
+.tn-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--panel-line);
+}
+.tn-title { font-size: 12px; letter-spacing: 0.18em; color: var(--amber); margin-right: auto; }
+.tn-warn {
+  padding: 7px 14px; font-size: 11px; line-height: 1.6;
+  color: var(--text-dim); border-bottom: 1px solid var(--panel-line);
+}
+.tn-body { display: grid; grid-template-columns: 280px 1fr; gap: 18px; padding: 12px 14px 16px; }
+.tn-col .bf-section:first-child { margin-top: 0; }
+.tn-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 11px; }
+.tn-row label { width: 108px; color: var(--text-dim); flex: none; }
+.tn-row input {
+  width: 74px; font-family: inherit; font-size: 11px; padding: 2px 5px;
+  background: rgba(111, 216, 232, 0.08);
+  border: 1px solid var(--panel-line); color: var(--text);
+}
+.tn-note { color: var(--text-dim); font-size: 10px; }
+.tn-foe {
+  border: 1px solid var(--panel-line); background: rgba(8, 16, 18, 0.6);
+  padding: 8px 10px; margin-bottom: 7px;
+}
+.tn-foe.off { opacity: 0.4; }
+.tn-foe-head { display: flex; align-items: baseline; gap: 9px; font-size: 12px; margin-bottom: 5px; }
+.tn-foe-head b { color: var(--amber); font-weight: normal; }
+.tn-foe-head span { color: var(--text-dim); font-size: 10px; }
+.tn-add-foe { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 8px; }
+.tn-out {
+  margin: 0; padding: 10px 14px; max-height: 230px; overflow: auto;
+  border-top: 1px solid var(--panel-line);
+  font-family: inherit; font-size: 11px; line-height: 1.6;
+  color: var(--cyan); white-space: pre; user-select: text;
+}
+.tn-out.hidden { display: none; }
+/* 調整中であることの印。これが無いと、触った値のままベンチの数字を読んでしまう */
+.tn-flag {
+  font-size: 11px; letter-spacing: 0.1em; color: var(--amber);
+  border: 1px solid var(--amber); padding: 2px 8px; margin-left: 14px;
+  vertical-align: middle;
+}
+.sc-tuned { color: var(--amber); font-size: 10px; letter-spacing: 0.1em; }
+

@@ -29,6 +29,8 @@ import { resetMissileIds } from './sim/missile.js';
 import { Mission, MISSION } from './sim/mission.js';
 import { SIDE, resetUnitIds } from './sim/unit.js';
 import { PilotAI } from './ai/pilot.js';
+import * as tuning from './ui/tuning.js';
+import { isDebug, setDebug } from './core/debug.js';
 import { pruneFormations, resetFormationIds } from './ai/formation.js';
 import { Commander } from './ai/commander.js';
 import { CommandController } from './ui/commands.js';
@@ -42,7 +44,7 @@ import { isChangelogOpen, hideChangelog } from './ui/changelog.js';
 import { ReviewScreen } from './ui/review.js';
 import { ReplayPlayer } from './ui/replay.js';
 import { STAGES } from './data/stages.js';
-import { getType } from './data/aircraft.js';
+import { getType, defaultEnemyLoadout } from './data/aircraft.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -204,6 +206,14 @@ ${err.message}`);
     get minimap() { return minimap; },
     get tutorial() { return tutorial; },
     scene, loop, screens, progress, audio, stages: STAGES, tutorials: TUTORIALS, telemetry,
+    // ステージの調整パネル（§47）。コンソールからも戻せるようにしておく
+    tuning,
+    /**
+     * デバッグモード（§47.2）。**入り口はここだけ。**
+     * 画面にもURLにも出さないので、一般のプレイヤーが偶然入ることはない。
+     */
+    setDebug(v) { const on = setDebug(v); screens.showTitle(); return on ? 'debug on' : 'debug off'; },
+    get debug() { return isDebug(); },
     // 司令官AI（§27）。いまは検証（tools/bench.js）から使う。
     // 敵に付けるかは種を固定して測ってから決める（§27.6）。
     Commander,
@@ -780,14 +790,6 @@ function seedKnownContacts(world, units) {
  * 機種を見ずに一律で空対空を積むと、爆撃機が爆弾を1発も持たないまま
  * 目標上空へ飛んで対空砲に落ちるだけになる（実際そうなっていた）。
  */
-function defaultEnemyLoadout(type) {
-  const spec = getType(type);
-  if (!spec || spec.hardpoints === 0) return [];
-  if (spec.role === '爆撃') return ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'];
-  if (spec.role === '対地') return ['AGM', 'AGM', 'AAM-S'];
-  return ['AAM-M', 'AAM-S', 'AAM-S'];
-}
-
 /** 敵飛行場からの増援 */
 function spawnReinforcement(world, airbase, type, index) {
   const ac = world.spawn(new Aircraft({
