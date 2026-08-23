@@ -310,7 +310,11 @@ export class Missile {
    * 「地形に遮られている」と判定されてしまう。少し持ち上げて判定する。
    */
   _losPoint(t) {
-    if (t.kind && t.kind !== 'aircraft') return _v6.set(t.pos.x, t.pos.y + 40, t.pos.z);
+    // **`isGroundTarget` と同じ判定を使う**（§42）。
+    // 「最後に分かっていた座標」(isPoint) は `kind` を持たないので、
+    // ここだけ持ち上げから漏れていた。地表ちょうどの点を視線判定に使うと、
+    // 低空から撃ったときに終末で「地形に遮られている」と誤判定する。
+    if (isGroundTarget(t)) return _v6.set(t.pos.x, t.pos.y + 40, t.pos.z);
     return t.pos;
   }
 
@@ -524,6 +528,18 @@ export class Missile {
   _deceived(dt, world, t) {
     if (this.guidance !== 'sarh' && this.guidance !== 'arh'
         && this.guidance !== 'command') return false;
+    // **地上・水上目標は欺瞞しない**（§42）。
+    //
+    // ドップラー欺瞞は「動いている目標が、真横を向いて接近速度を消し、
+    // 地面と同じ“動かないもの”に紛れる」という仕組み。
+    // **最初から動かないものには意味が無い。**
+    //
+    // ところが地上目標では3条件がすべて自動的に成立していた —
+    // 見下ろしは機体が必ず上にいるので常に真、紛れる背景は対地高度0なので常に満額、
+    // ビームは `heading` が固定値0のまま**進入方位だけで決まって**いた。
+    // その結果、AGM（`command`）は進入方向が帯に入ると **0.9/秒で誘導を失い**、
+    // 目標のはるか手前で自爆していた（実測: 9km から撃って 3km 先で喪失）。
+    if (isGroundTarget(t)) return false;
     if (!t.heading && t.heading !== 0) return false;
 
     let src = null;
@@ -567,6 +583,9 @@ export class Missile {
   _screened(dt, world, t) {
     if (this.guidance !== 'sarh' && this.guidance !== 'arh'
         && this.guidance !== 'command') return false;
+    // 地上・水上目標はチャフを撒かないので元から成立しないが、
+    // `_deceived` と同じ理由で明示的に外す（§42）。
+    if (isGroundTarget(t)) return false;
     if (!t.heading && t.heading !== 0) return false;
     let src = null;
     if (this.guidance === 'sarh' || this.guidance === 'command') src = this.launcher;
