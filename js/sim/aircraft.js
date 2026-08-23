@@ -672,6 +672,9 @@ export class Aircraft extends Unit {
    */
   get afterburner() {
     if (this.onGround || !this.alive) return false;
+    // **そもそも積んでいない機種がある**（§39）。攻撃機と早期警戒機。
+    // 巡航速度は変わらず、失うのは一時的に速く逃げる手段だけ。
+    if (this.spec.noAfterburner) return false;
     // **赤外線弾に追われているときは焚かない**（§35.3）。
     //
     // AB は排気が最も明るくなるので、フレアが競り負ける

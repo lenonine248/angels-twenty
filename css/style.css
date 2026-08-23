@@ -562,6 +562,10 @@ button.chip.pick.picked {
 }
 #hoverInfo b { color: var(--hostile); font-weight: normal; }
 .hi-dist { color: var(--amber); }
+/* 飛翔中のミサイル情報（§39） */
+.hi-good { color: #7ec87e; }
+.hi-mid  { color: var(--amber); }
+.hi-bad  { color: var(--hostile); }
 .hi-hit.good { color: #7ec87e; }
 .hi-hit.mid { color: var(--amber); }
 .hi-hit.bad { color: var(--hostile); }

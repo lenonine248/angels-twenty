@@ -94,6 +94,13 @@ export const AIRCRAFT_TYPES = {
     turnRate: 16,         // ＝ 5.7G
     climbRate: 90,
     ceiling: 10000,
+    // **アフターバーナーを持たない**（§39）。
+    //
+    // 「速度は出ないが、対抗手段が多く燃費が良い」という役割にする。
+    // AB は燃料を3倍消すので、無いこと自体が長時間の作戦を支える
+    // （対地任務は交戦より進出と待機に時間がかかる）。
+    // 巡航速度は変わらない。失うのは**一時的に速く逃げる手段**だけ。
+    noAfterburner: true,
     hp: 160,
     hardpoints: 6,
     radarRange: 24000,
@@ -127,6 +134,11 @@ export const SUPPORT_TYPES = {
     maxSpeed: 200, cruiseSpeed: 160, minSpeed: 90,
     accel: 5, turnRate: 4, climbRate: 50, ceiling: 11000,
     hp: 220, hardpoints: 0,
+    // **アフターバーナーを持たない**（§39）。
+    //
+    // 陣地の奥を飛ぶうえに逃げ足まで速いと、狙う手段が実質的に無くなる。
+    // 見つけて詰めれば落とせる、という関係にする。
+    noAfterburner: true,
     // 全域制圧はやめた（§30.2）。地図は 51.2km 四方なので、90km では
     // どこに居ても全部見えていた。逆探知される距離も 135 → 90km に落ちる。
     radarRange: 60000,

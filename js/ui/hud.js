@@ -388,7 +388,8 @@ export class Hud {
     const esCls = es >= 9000 ? 'good' : es >= 6000 ? 'mid' : 'bad';
     d.perf.innerHTML =
       `<span class="pf ${esCls}">エネルギー ${es.toLocaleString()}m</span>`
-      + `<span class="pf ${u.abActive ? 'good' : ''}">${u.abActive ? 'AB 点火' : 'AB 待機'}</span>`
+      + `<span class="pf ${u.abActive ? 'good' : ''}">${u.spec.noAfterburner ? 'AB 非搭載'
+        : u.abActive ? 'AB 点火' : 'AB 待機'}</span>`
       // 機体の温度（§35.3）。赤外線に掴まれやすさとフレアの効きを決める
       + `<span class="pf ${u.heat > 0.75 ? 'mid' : u.heat < 0.3 ? 'good' : ''}">熱 ${Math.round((u.heat ?? 0.45) * 100)}%</span>`
       + `<span class="pf ${cls(p.thrust)}">推力 ${Math.round(p.thrust * 100)}%</span>`
@@ -474,9 +475,13 @@ export class Hud {
       ['normal', '標準', '敵機と交戦するときに焚く。移動や対地では焚かない'],
       ['max', '全力', '効くなら焚く。燃料の減りは受け入れる（消費3倍）'],
     ];
-    const abBtns = `<span class="svc-meta">AB</span>`
-      + AB.map(([id, label, tip]) => `<button class="autow${(u.abMode || 'normal') === id ? '' : ' off'}"
-        data-ab="${id}" title="${tip}">${label}</button>`).join('');
+    // 積んでいない機種（攻撃機・早期警戒機）では選ばせない（§39）。
+    // ボタンを出したまま何も起きないほうが分かりにくい。
+    const abBtns = u.spec.noAfterburner
+      ? `<span class="svc-meta">AB</span><span class="svc-meta" title="この機種はアフターバーナーを積んでいない">非搭載</span>`
+      : `<span class="svc-meta">AB</span>`
+        + AB.map(([id, label, tip]) => `<button class="autow${(u.abMode || 'normal') === id ? '' : ' off'}"
+          data-ab="${id}" title="${tip}">${label}</button>`).join('');
 
     // AIが自動発射に踏み切る命中期待度
     const th = ['low', 'mid', 'high'];

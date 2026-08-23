@@ -25,6 +25,7 @@ export class CommandController {
     this.world = world;
     this.selection = [];
     this.hoverUnit = null;
+    this.hoverMissile = null;
 
     this._dragStart = null;
     this._dragNow = null;
@@ -41,6 +42,7 @@ export class CommandController {
     this.world = world;
     this.selection = [];
     this.hoverUnit = null;
+    this.hoverMissile = null;
   }
 
   // ------------------------------------------------------------ 入力
@@ -63,6 +65,8 @@ export class CommandController {
         this._updateSelBox();
       }
       this.hoverUnit = this._unitAtScreen(e.clientX, e.clientY, null);
+      // ユニットが無いときだけ弾を拾う（機体の情報のほうが優先）
+      this.hoverMissile = this.hoverUnit ? null : this._missileAtScreen(e.clientX, e.clientY);
       this._updateHoverInfo(e.clientX, e.clientY);
     });
 
@@ -112,6 +116,7 @@ export class CommandController {
   _updateHoverInfo(px, py) {
     const box = document.getElementById('hoverInfo');
     if (!box) return;
+    if (!this.hoverUnit && this.hoverMissile) { this._showMissileInfo(box, px, py); return; }
     const u = this.hoverUnit;
     if (!u || !u.alive) { box.classList.add('hidden'); return; }
 
@@ -457,6 +462,63 @@ export class CommandController {
     return best;
   }
 
+  /**
+   * 自軍の飛翔中のミサイルを掴む（§39）。
+   *
+   * **自軍の弾だけ。** 敵弾の中身まで見えると、回避が読み合いではなく作業になる。
+   *
+   * 弾は 17km 先から飛ぶようになったので（§38）、飛翔中に何が起きているかが
+   * 見えないと外れた理由が分からない。速度・推進・引いているG・誘導の状態を出す。
+   */
+  _missileAtScreen(px, py) {
+    const w = this.world;
+    if (!w.missiles) return null;
+    let best = null, bestD = PICK_RADIUS_PX;
+    for (const m of w.missiles) {
+      if (!m.alive || m.side !== w.playerSide) continue;
+      const s = this._project(m.pos);
+      if (!s) continue;
+      const d = Math.hypot(s.x - px, s.y - py);
+      if (d < bestD) { bestD = d; best = m; }
+    }
+    return best;
+  }
+
+  /** 飛翔中の自軍ミサイルの状態を出す（§39） */
+  _showMissileInfo(box, px, py) {
+    const m = this.hoverMissile;
+    if (!m || !m.alive) { box.classList.add('hidden'); return; }
+    const w = m.weapon;
+
+    const rows = [`<b>${w.name || w.id}</b>`];
+    // 速度は設計速度に対する割合で見せる。失速の目安（35%）が読めるように。
+    const frac = w.speed ? m.speed / w.speed : 0;
+    const spdCls = frac < 0.45 ? 'bad' : frac < 0.7 ? 'mid' : 'good';
+    rows.push(`速度 <span class="hi-${spdCls}">${Math.round(m.speed)}m/s`
+      + `（設計の ${Math.round(frac * 100)}%）</span>`);
+    rows.push(m.age < m.boostTime ? '推進中' : '滑空');
+
+    // いま引いているG。旋回は速度を食うので、曲げられている弾ほど終末に届かない
+    const maxG = w.maxG ?? 0;
+    if (maxG) rows.push(`旋回 ${(maxG * (m._turnLoad || 0)).toFixed(1)}G / ${maxG}G`);
+
+    if (m.target) {
+      rows.push(`目標 ${m.target.name || '—'}`);
+      const dist = m.pos.distanceTo(m.target.pos);
+      // **推進中は設計速度で見積もる。** 発射直後の弾は母機の速度しか持って
+      // いないので、そのときの速度で割ると「あと187秒」のような数字になる
+      // （§37.3 で回避AIが同じ罠を踏んだ）。燃焼が終われば実速度でよい。
+      const v = m.age < m.boostTime ? w.speed * 0.8 : Math.max(60, m.speed);
+      rows.push(`残り ${(dist / 1000).toFixed(1)}km（約${Math.round(dist / v)}秒）`);
+    }
+    rows.push(`誘導 <span class="hi-${m.lost ? 'bad' : 'good'}">${missileGuidanceLabel(m)}</span>`);
+
+    box.innerHTML = rows.join('<br>');
+    box.style.left = `${px + 16}px`;
+    box.style.top = `${py + 14}px`;
+    box.classList.remove('hidden');
+  }
+
   /** 画面座標 → 地形上のワールド座標 */
   _groundAtScreen(px, py) {
     const ndc = new THREE.Vector2(
@@ -492,6 +554,26 @@ export class CommandController {
 // ---------------------------------------------------------------- 地形レイキャスト
 
 const _tmpVec = new THREE.Vector3();
+/**
+ * 飛翔中のミサイルの誘導状態を1語で（§39）。
+ *
+ * 外れた弾がなぜ外れたのかは `lostReason` に入っている（§28.13 で足した）。
+ * 飛んでいる間の状態も同じ言葉で出しておくと、記録と突き合わせて読める。
+ */
+function missileGuidanceLabel(m) {
+  if (m.lost) return `喪失（${m.lostReason || '?'}）`;
+  switch (m.weapon.guidance) {
+    case 'sarh':
+      // 照射が切れている間は最後に分かっていた場所へ飛ぶ（合計2秒まで）
+      return m.painting ? '照射中' : '慣性（照射切れ）';
+    case 'arh':
+      return m.active ? '自ら追尾' : '中途誘導（母機のレーダー）';
+    case 'ir':   return '赤外線追尾';
+    case 'arm':  return m.target && m.target.emitting ? '電波追尾' : '慣性（電波停止）';
+    default:     return '誘導中';
+  }
+}
+
 const _raycaster = new THREE.Raycaster();
 const _p = new THREE.Vector3();
 
