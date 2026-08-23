@@ -108,7 +108,7 @@
 
     // 射手は原点、目標は +Z 方向へ R 離れた点。射手は目標を向く
     shooter.pos.set(0, alt, 0);
-    shooter.heading = 0;                        // +Z 方向（headingOf(0, R) = 0）
+    shooter.heading = Math.PI;                  // +Z 方向（headingOf(0, R) = π）
     shooter.speed = shooter.spec.cruiseSpeed * 1.2;
     shooter.onGround = false;
     shooter.state = 'flying';
@@ -117,8 +117,8 @@
     shooter.radarMode = 'on';
 
     target.pos.set(0, alt, R);
-    // aspect 0 は「射手のほうを向いている」＝ heading = π
-    target.heading = Math.PI - (aspectDeg * Math.PI) / 180;
+    // aspect 0 は「射手のほうを向いている」＝ -Z 方向 ＝ heading 0
+    target.heading = (aspectDeg * Math.PI) / 180;
     target.speed = target.spec.cruiseSpeed * 1.2;
     target.onGround = false;
     target.state = 'flying';

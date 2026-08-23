@@ -120,6 +120,22 @@ const CORNER_FRACTION = 0.8;
  * **曲げられた弾ほど遅くなる**ようにすると、回避機動そのものが報われる。
  */
 const TURN_DRAG = 0.03;
+
+/**
+ * 比例航法の航法定数（§34.2）。
+ *
+ * 指令加速度 = N × 接近速度 × 視線角速度。実機の誘導弾は 3〜5 を使う。
+ * **視線角速度がゼロ（＝衝突コースに乗っている）なら舵を切らない**ので、
+ * 少ないGで当たる。従来の先行追尾は「目標が直進する前提の未来位置」を
+ * 毎フレーム狙い直すので、目標が曲がるたびに狙点が振られて舵を無駄に使っていた。
+ */
+const NAV_CONSTANT = 3.5;
+
+/**
+ * 視線へ寄せる動きに切り替える角度（§34.2）。
+ * これより機首が外れているか、離れつつある間は比例航法が成立しない。
+ */
+const GATHER_ANGLE = 60 * (Math.PI / 180);
 /** 誘導に必要な視線を確認する間隔(秒) */
 const LOS_INTERVAL = 0.25;
 /** ARM が電波を失ったときの慣性誘導の誤差（残距離に対する割合） */
@@ -176,6 +192,8 @@ export class Missile {
     this._searchSince = null;     // 終末シーカーが探し始めた時刻（§28.13）
     this._coastFor = 0;           // 照射が切れていた合計秒数（§28.13）
     this._turnLoad = 0;           // 直近フレームで引いたGの割合（§33.6）
+    this._prevTargetPos = null;   // 比例航法で目標の速度を差分から取るため（§34.2）
+    this._prevTargetRef = null;   // その位置を測った相手。入れ替わったら測り直す
 
     // アクティブレーダー弾の終末誘導（§28.2）。
     // 中途は発射機の索敵レーダーから位置をもらい、**相手に警報は出ない**。
@@ -254,8 +272,14 @@ export class Missile {
     this._updateGuidance(dt, world);
 
     if (!this.lost && this.seekTarget) {
-      const aim = this._leadPoint();
-      this._steerTowards(aim, dt);
+      // 動かない目標（地上）は従来の追尾で足りる。進入高度の細工もそちらにある。
+      // 動く目標には比例航法を使う（§34.2）
+      if (isGroundTarget(this.seekTarget)) {
+        this._steerTowards(this._leadPoint(), dt);
+      } else {
+        this._targetDist = this.pos.distanceTo(this.seekTarget.pos);
+        this._guide(dt, this.seekTarget);
+      }
     }
 
     this.pos.addScaledVector(this.dir, this.speed * dt);
@@ -621,7 +645,74 @@ export class Missile {
     return Math.min(structural, aero);
   }
 
-  /** 旋回率の上限内で目標方向へ向きを寄せる */
+  /**
+   * 比例航法（§34.2）。
+   *
+   * **指令加速度 = N × 接近速度 × 視線角速度**、向きは視線に垂直。
+   * 視線角速度がゼロ＝衝突コースに乗っているときは舵を切らないので、
+   * 少ないGで当たる。これが無いと、実機どおりのG（20〜30）では当たらない。
+   *
+   * 従来は「目標が直進する前提の未来位置」を毎フレーム狙い直していた。
+   * 目標が曲がるたびに狙点が振られ、舵を無駄に使って速度を捨てていた。
+   *
+   * 発射直後に機首が目標から外れていても、そのぶん視線角速度が大きく出るので
+   * 同じ式で寄っていく。掴み直しのための別の場合分けは要らない。
+   */
+  _guide(dt, t) {
+    const r = _v4.copy(t.pos).sub(this.pos);
+    const dist = r.length();
+    if (dist < 1 || dt <= 0) return;
+    const rHat = _v5.copy(r).divideScalar(dist);
+
+    // 目標の速度は位置の差分から取る。機体・デコイ・座標のどれでも同じ扱いになる。
+    //
+    // **誘導対象が入れ替わったら測り直す。** デコイに移った・掴み直した・
+    // 照射が切れて座標を追い始めた、のいずれでも前の目標の位置が残っていると、
+    // 1フレームだけ**とんでもない速度**が出て弾が明後日へ飛ぶ。
+    const tv = _v6.set(0, 0, 0);
+    if (this._prevTargetRef === t && this._prevTargetPos) {
+      tv.copy(t.pos).sub(this._prevTargetPos).divideScalar(dt);
+    }
+    if (!this._prevTargetPos) this._prevTargetPos = new THREE.Vector3();
+    this._prevTargetPos.copy(t.pos);
+    this._prevTargetRef = t;
+
+    const mv = _v7.copy(this.dir).multiplyScalar(this.speed);   // 自分の速度
+    const vRel = _v8.copy(tv).sub(mv);
+
+    // 視線角速度ベクトル ω = (r × vRel) / |r|²
+    const omega = _v9.copy(r).cross(vRel).divideScalar(dist * dist);
+    const vc = -vRel.dot(rHat);            // 接近速度
+
+    // **比例航法は「近づいている」ことを前提にした式**なので、
+    // 機首が目標から大きく外れている間は成立しない（指令がゼロになって向き直れない）。
+    // 発射直後に視線へ寄せる動きは、実機でも誘導とは別に行う。
+    const off = this.dir.angleTo(rHat);
+    if (vc <= 0 || off > GATHER_ANGLE) {
+      const maxTurn = this.turnRateAt(this.speed) * dt;
+      if (off > 1e-6) {
+        const axis = _v10.crossVectors(this.dir, rHat).normalize();
+        this.dir.applyAxisAngle(axis, Math.min(off, maxTurn)).normalize();
+      }
+      this._turnLoad = 1;
+      return;
+    }
+
+    // 指令加速度 a = N · vc · (ω × r̂)
+    const aCmd = _v10.copy(omega).cross(rHat).multiplyScalar(NAV_CONSTANT * vc);
+
+    // 引ける横加速度の上限は ω_max × V（最大Gと動圧から決まる・§33.6）
+    const maxA = this.turnRateAt(this.speed) * this.speed;
+    const mag = aCmd.length();
+    this._turnLoad = maxA > 0 ? clamp(mag / maxA, 0, 1) : 0;
+    if (mag > maxA && mag > 1e-6) aCmd.multiplyScalar(maxA / mag);
+
+    // 速度ベクトルを曲げる
+    mv.addScaledVector(aCmd, dt);
+    this.dir.copy(mv).normalize();
+  }
+
+  /** 旋回率の上限内で目標方向へ向きを寄せる（動かない目標用） */
   _steerTowards(aim, dt) {
     const desired = _v4.copy(aim).sub(this.pos).normalize();
     const angle = this.dir.angleTo(desired);
@@ -831,6 +922,9 @@ const _v4 = new THREE.Vector3();
 const _v5 = new THREE.Vector3();
 const _v6 = new THREE.Vector3();
 const _v7 = new THREE.Vector3();
+const _v8 = new THREE.Vector3();
+const _v9 = new THREE.Vector3();
+const _v10 = new THREE.Vector3();
 const _sa = new THREE.Vector3();
 const _sb = new THREE.Vector3();
 

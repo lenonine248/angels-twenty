@@ -18,10 +18,10 @@ export const WEAPONS = {
     cost: 0,
     // **射程はアスペクトで変わる**（§34）。ここは後方（排気が見える）の値
     range: 8000,
-    irHeadRange: 4000,        // 正面〜側方（機体の熱しか見えない）のロック距離
+    irHeadRange: 3000,        // 正面〜側方（機体の熱しか見えない）のロック距離
     speed: 850,               // m/s
     turnRate: 55,             // deg/s （表示・見積り用の目安。操舵は maxG から決まる）
-    maxG: 83,                 // 最大G（§33.6）。設計速度で 55°/s になる値
+    maxG: 30,                 // 最大G（§34.2）。実機の短射程弾は身軽
     fireAndForget: true,
     decoyResist: 0.25,        // 0=騙されやすい 1=騙されない
     damage: 200,
@@ -39,7 +39,7 @@ export const WEAPONS = {
     range: 20000,
     speed: 1100,
     turnRate: 28,             // 表示・見積り用の目安
-    maxG: 55,                 // 最大G（§33.6）。設計速度で 28°/s になる値
+    maxG: 22,                 // 最大G（§34.2）。実機の中距離弾は 20〜30G
     fireAndForget: false,     // ここが AAM-A との決定的な差
     decoyResist: 0.35,
     damage: 200,
@@ -57,7 +57,7 @@ export const WEAPONS = {
     range: 20000,
     speed: 1100,
     turnRate: 34,             // 表示・見積り用の目安
-    maxG: 66,                 // 最大G（§33.6）。設計速度で 34°/s になる値
+    maxG: 25,                 // 最大G（§34.2）
     fireAndForget: true,
     decoyResist: 0.85,        // デコイに騙されにくい
     damage: 200,
@@ -166,7 +166,7 @@ WEAPONS['SAM-M'] = {
   range: 19000,
   speed: 1250,                // 強力なブースター
   turnRate: 24,
-  maxG: 53,                   // 最大G（§33.6）。設計速度で 24°/s になる値
+  maxG: 20,                   // 最大G（§34.2）。地上発射で大型
   fireAndForget: false,
   decoyResist: 0.55,
   damage: 220,
