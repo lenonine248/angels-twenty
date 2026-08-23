@@ -1624,6 +1624,27 @@ await AT.bench.stage(0, 6, { seeds: [11, 22, 33, 44, 55, 66] })  // 種を指定
 発進と任務の割り当てまでを担い、どの敵を撃つかはゲーム本体と同じ `ai/pilot.js` が
 探知を通して決める。**ベンチと実際の遊びで同じ判断経路を通る。**
 
+### ミサイルの素の性能 — `tools/kinematics.js`
+
+```js
+await fetch('/tools/bench.js').then(r => r.text()).then(eval)
+await fetch('/tools/kinematics.js').then(r => r.text()).then(eval)
+await AT.kin.run({ ranges: [2,4,8,12,16,20], aspects: [0,90,180] })
+AT.kin.report()
+await AT.kin.threshold({ weapon: 'AAM-M', key: 'turnRate' })
+```
+
+**対抗手段をすべて外して、回避軌道だけで振り切れるかを測る**（§33）。
+デコイ・ノッチ・クラッター・照射切れ・シーカーの捕捉を一括で無効にし、
+残すのは速度・旋回率・エネルギー・警報の遅れだけ。
+
+> **命中率の議論が対抗手段の話に流れるのを防ぐための道具。**
+> 「チャフが強い／弱い」を動かす前に、
+> **チャフが1枚も無いときにその距離で当たってよいのか**を先に決める。
+
+結末は 撃墜 / 至近弾 / 回避 の3つに分ける。
+**至近弾（当たったが落ちない）を「外れ」と混ぜない** — 混ぜると原因を取り違える。
+
 ### 命中期待度の較正 — `tools/calib.js`
 
 ```js
