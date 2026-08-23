@@ -65,12 +65,33 @@ const OVERSHOOT_MARGIN = 150;
  * 低空へ降りるのは、この「紛れる先」を手に入れるため。
  * 代わりに機銃にも対空砲にも無防備になる。
  * **確率が低くても選ぶ価値がある**、という関係にしたい。
+ *
+ * **0.9 から下げた**（§46）。§35.2.1 で「3条件がそろうのは1発あたり約0.9秒」
+ * という測定を前提に置いた値だったが、§46 でチャフを
+ * 「効く機動に入ってから撒く」ようにした結果、**背景の条件が常時成立**して
+ * 窓が数秒に伸び、AAM-M の命中が 5% まで落ちた。
  */
-const DECEPTION_CHANCE_PER_SEC = 0.9;
+const DECEPTION_CHANCE_PER_SEC = 0.35;
+/**
+ * ビーム欺瞞で、チャフが「紛れる背景」としてどれだけ地面の代わりになるか（§46）。
+ *
+ * **地面には及ばない。** 低空へ降りるのは無防備になる代償を払って
+ * 満額の背景を手に入れる行為で（§35.1）、撒くだけで同じものが手に入るなら
+ * 高度を捨てる意味が消える。
+ */
+const CHAFF_AS_BACKGROUND = 0.4;
 /** これだけ見下ろしていれば満額（tan）。0.3 ≒ 17度 */
 const LOOKDOWN_FULL = 0.12;
 /** 背を向けて逃げていると言える角度（§35.2）。これを超えると雲が視線から外れる */
 const SCREEN_TOLERANCE = 35 * (Math.PI / 180);
+/**
+ * **チャフの雲1つが誘導を切る確率**（§46）。真後ろに逃げているときの値で、
+ * 角度がずれるほど下がる。**雲1つにつき1回しか判定しない。**
+ *
+ * 以前は毎秒 0.9 の抽選で、雲の寿命6秒のあいだに 98% になっていた。
+ * 枚数を増やして1枚あたりを下げる、という設計意図（§35.2.2）と逆を向いていた。
+ */
+const SCREEN_CHANCE_PER_CLOUD = 0.10;
 /** チャフの雲が「背景」として働く半径(m)（§35.2） */
 const CHAFF_COVER_RADIUS = 700;
 /** 目標の対地高度がこれを超えると、地面には紛れられない(m) */
@@ -633,7 +654,7 @@ export class Missile {
     // 3. 紛れる背景。地面か、チャフの雲か（§35.2）
     const ground = Math.max(0, world.terrain.heightAt(t.pos.x, t.pos.z));
     const byGround = clamp(1 - (t.pos.y - ground) / CLUTTER_MAX_AGL, 0, 1);
-    const cover = clamp(byGround + chaffCover(world, t), 0, 1);
+    const cover = clamp(byGround + CHAFF_AS_BACKGROUND * chaffCover(world, t), 0, 1);
     if (cover <= 0) return false;
 
     const rng = world.rng ? world.rng() : Math.random();
@@ -662,17 +683,31 @@ export class Missile {
     else src = this.active ? this : this.launcher;
     if (!src || src.alive === false || !src.pos) return false;
 
-    const cover = chaffCover(world, t);
-    if (cover <= 0) return false;
-
     // 照射源から見た視線と、目標の進む向きが揃っているか（＝背を向けて逃げている）
     const los = Math.atan2(t.pos.x - src.pos.x, -(t.pos.z - src.pos.z));
     const away = Math.abs(angleDiff(los, t.heading));
     if (away > SCREEN_TOLERANCE) return false;
     const align = 1 - away / SCREEN_TOLERANCE;
 
-    const rng = world.rng ? world.rng() : Math.random();
-    return rng < DECEPTION_CHANCE_PER_SEC * align * cover * dt;
+    // **雲1つにつき1回だけ判定する**（§46）。
+    //
+    // 以前は毎秒の抽選（0.9/秒）だった。雲は6秒生きるので、
+    // **1枚撒けば 98% で誘導が切れる**計算になり、
+    // 実測でも AAM-M の 24発中23発がこれで落ちていた。
+    // 設計意図は「4枚でミサイル1発ぶん」（§35.2.2）なので、桁が違う。
+    //
+    // 「電波を通さない雲を1つ通り抜ける」のは1回の出来事であって、
+    // 秒ごとに繰り返し起きるものではない。
+    if (!this._screenRolled) this._screenRolled = new Set();
+    for (const d of world.decoys) {
+      if (!d.alive || d.kind !== 'chaff' || d.side !== t.side) continue;
+      if (this._screenRolled.has(d.id)) continue;
+      if (d.pos.distanceTo(t.pos) > CHAFF_COVER_RADIUS) continue;
+      this._screenRolled.add(d.id);
+      const rng = world.rng ? world.rng() : Math.random();
+      if (rng < SCREEN_CHANCE_PER_CLOUD * align) return true;
+    }
+    return false;
   }
 
   _goStupid(reason = '?') {

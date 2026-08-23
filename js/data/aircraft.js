@@ -44,7 +44,10 @@ export const AIRCRAFT_TYPES = {
     },
     // 対抗手段はミサイル搭載量に対して多すぎたので半減（A-3のみ据え置き）
     flares: 4,
-    chaff: 4,
+    // **チャフは束で撒くもの**（§46）。実機は数十発を積む。
+    // 1枚あたりの効きは下げてある（`SCREEN_CHANCE_PER_CLOUD`）ので、
+    // 枚数を増やしても「1機あたりミサイル1発ぶん」という総量は変えていない。
+    chaff: 14,
     // 見た目
     color: 0x8fa4bb,
     shape: { length: 1.0, span: 0.62, sweep: 0.30, fatness: 0.85, twinTail: true },
@@ -78,7 +81,10 @@ export const AIRCRAFT_TYPES = {
     },
     // 対抗手段はミサイル搭載量に対して多すぎたので半減（A-3のみ据え置き）
     flares: 4,
-    chaff: 4,
+    // **チャフは束で撒くもの**（§46）。実機は数十発を積む。
+    // 1枚あたりの効きは下げてある（`SCREEN_CHANCE_PER_CLOUD`）ので、
+    // 枚数を増やしても「1機あたりミサイル1発ぶん」という総量は変えていない。
+    chaff: 14,
     color: 0x93a08c,
     shape: { length: 0.96, span: 0.70, sweep: 0.22, fatness: 1.0, twinTail: false },
   },
@@ -119,7 +125,7 @@ export const AIRCRAFT_TYPES = {
       airDmg: [1.2, 2.6], groundDmg: [1.2, 2.6],
     },
     flares: 10,
-    chaff: 10,
+    chaff: 28,
     color: 0x7d7b63,
     shape: { length: 0.92, span: 0.86, sweep: 0.06, fatness: 1.25, twinTail: true },
   },
@@ -146,7 +152,7 @@ export const SUPPORT_TYPES = {
     radarFovH: 180, radarFovV: 60,
     visualRange: 8000,
     fuelSeconds: 3600,
-    gunRounds: 0, flares: 12, chaff: 12,
+    gunRounds: 0, flares: 12, chaff: 30,
     color: 0xb9bec4,
     shape: { length: 1.5, span: 1.45, sweep: 0.06, fatness: 1.7, twinTail: false },
   },

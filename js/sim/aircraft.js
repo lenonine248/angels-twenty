@@ -123,7 +123,7 @@ const BREAK_TTI = 2.5;
  * **時間そのものが武器になる**。あわせてチャフを撒ける回数も増え、
  * `Missile._screened`（チャフの壁・§35.2）の条件にも入る。
  */
-const RUN_TTI = 12;
+const RUN_TTI = 20;
 /**
  * 逃げからビームへ移る残り秒数（§37.3）。
  *
@@ -1183,6 +1183,15 @@ export class Aircraft extends Unit {
     if (!this.autoDecoy || !world.combat) return;
     if (tti >= this._decoyStartTti() || this._decoyTimer > 0) return;
     const kind = m.guidance === 'ir' ? 'flare' : 'chaff';
+    // **チャフは効く機動に入ってから撒く**（§46）。
+    //
+    // 以前は残り時間だけで撒いていたので、**回避に入ろうとしている間に
+    // 撒き切って**いた。チャフが働くのは「背を向けて逃げている（壁になる）」か
+    // 「真横を向いている（紛れる背景になる）」ときだけなので、
+    // その前に投げた枚数はただ捨てているのと同じ。
+    //
+    // フレアは引き付ける囮なので、機動と関係なくいつでも効く。
+    if (kind === 'chaff' && !this.running && !this.beaming) return;
     if (world.combat.deployDecoy(this, kind)) this._decoyTimer = DECOY_INTERVAL;
   }
 
