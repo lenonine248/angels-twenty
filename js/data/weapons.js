@@ -18,7 +18,8 @@ export const WEAPONS = {
     cost: 0,
     range: 7000,
     speed: 850,               // m/s
-    turnRate: 55,             // deg/s シーカーの追従機動
+    turnRate: 55,             // deg/s （表示・見積り用の目安。操舵は maxG から決まる）
+    maxG: 83,                 // 最大G（§33.6）。設計速度で 55°/s になる値
     fireAndForget: true,
     decoyResist: 0.25,        // 0=騙されやすい 1=騙されない
     damage: 200,
@@ -35,7 +36,8 @@ export const WEAPONS = {
     cost: 2,
     range: 20000,
     speed: 1100,
-    turnRate: 28,
+    turnRate: 28,             // 表示・見積り用の目安
+    maxG: 55,                 // 最大G（§33.6）。設計速度で 28°/s になる値
     fireAndForget: false,     // ここが AAM-A との決定的な差
     decoyResist: 0.35,
     damage: 200,
@@ -52,7 +54,8 @@ export const WEAPONS = {
     cost: 6,
     range: 20000,
     speed: 1100,
-    turnRate: 34,
+    turnRate: 34,             // 表示・見積り用の目安
+    maxG: 66,                 // 最大G（§33.6）。設計速度で 34°/s になる値
     fireAndForget: true,
     decoyResist: 0.85,        // デコイに騙されにくい
     damage: 200,
@@ -161,6 +164,7 @@ WEAPONS['SAM-M'] = {
   range: 19000,
   speed: 1250,                // 強力なブースター
   turnRate: 24,
+  maxG: 53,                   // 最大G（§33.6）。設計速度で 24°/s になる値
   fireAndForget: false,
   decoyResist: 0.55,
   damage: 220,

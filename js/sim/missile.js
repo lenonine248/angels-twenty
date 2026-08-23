@@ -9,7 +9,7 @@
 
 import * as THREE from 'three';
 import { clamp } from '../core/rng.js';
-import { missileDragFactor } from '../core/atmosphere.js';
+import { missileDragFactor, turnFactor } from '../core/atmosphere.js';
 import { angleDiff } from './unit.js';
 
 /**
@@ -32,7 +32,7 @@ const PROXIMITY = 90;
  * 減速量はこれを使って設計速度から決める。固定値にすると、
  * 低速な対地ミサイル(320m/s)が数秒で失速して射程の半分も飛べなくなる。
  */
-const COAST_TIME = 50;
+const COAST_TIME = 35;
 /**
  * 誘導を失ってから自爆するまで(秒)。
  *
@@ -102,6 +102,24 @@ const NOTCH_CHANCE_PER_SEC = 0.10;
 export const NOTCH_TOLERANCE = 20 * (Math.PI / 180);
 /** この速度を下回ると失推 */
 const MIN_SPEED_RATIO = 0.35;
+
+/**
+ * ミサイルのコーナー速度（設計速度に対する割合）（§33.6）。
+ *
+ * 機体と同じ考え方（§29.2）。これを下回ると**動圧が足りず、
+ * 定格のGを引けなくなる**。機体では巡航の6割あたりに置いているが、
+ * ミサイルは翼が小さく速度に頼っているので、もっと高いところに置く。
+ */
+const CORNER_FRACTION = 0.8;
+
+/**
+ * 旋回による減速（§33.6）。定格Gいっぱいで曲がっているときに、
+ * 1秒あたり設計速度の何割を失うか。
+ *
+ * 機体には既に誘導抗力がある（`TURN_DRAG`）のに、ミサイルには無かった。
+ * **曲げられた弾ほど遅くなる**ようにすると、回避機動そのものが報われる。
+ */
+const TURN_DRAG = 0.03;
 /** 誘導に必要な視線を確認する間隔(秒) */
 const LOS_INTERVAL = 0.25;
 /** ARM が電波を失ったときの慣性誘導の誤差（残距離に対する割合） */
@@ -157,6 +175,7 @@ export class Missile {
     this._decoyTries = 0;         // この弾に対して撒かれたデコイの数（§28.13）
     this._searchSince = null;     // 終末シーカーが探し始めた時刻（§28.13）
     this._coastFor = 0;           // 照射が切れていた合計秒数（§28.13）
+    this._turnLoad = 0;           // 直近フレームで引いたGの割合（§33.6）
 
     // アクティブレーダー弾の終末誘導（§28.2）。
     // 中途は発射機の索敵レーダーから位置をもらい、**相手に警報は出ない**。
@@ -210,6 +229,16 @@ export class Missile {
       // ロケットモーターは空気を必要としないので推力は高度で落ちないが、
       // 慣性飛行中の減速は空気密度に比例する。高空ほど遠くまで届く。
       this.speed = Math.max(0, this.speed - this.drag * missileDragFactor(this.pos.y) * dt);
+    }
+
+    // 旋回による減速（§33.6）。**曲げられた弾ほど遅くなる。**
+    // 機体には既に誘導抗力があるのに、ミサイルには無かった。
+    // これがあると、早くから機動させた弾は終末に着く頃には曲がれなくなる
+    // — 回避機動そのものが報われる。推進中は推力が打ち消すので効かせない。
+    if (this.age >= this.boostTime && this._turnLoad > 0) {
+      this.speed = Math.max(0,
+        this.speed - this.weapon.speed * TURN_DRAG * this._turnLoad
+          * missileDragFactor(this.pos.y) * dt);
     }
 
     // 失推・寿命切れ。
@@ -557,23 +586,57 @@ export class Missile {
     return aim;
   }
 
+  /**
+   * その速度・高度で引ける角速度(rad/s)（§33.6）。
+   *
+   * **機体と同じ形にしてある**（§29.2 の `effectiveTurnRate`）。
+   * 以前は `turnRate`(deg/s) を固定値として持ち、速度比と
+   * 「終末は2.4倍」という補正を掛けていた。測ると、
+   * **20km 飛んで最も消耗した弾でも終末で 40.9°/s** 出ていて、
+   * これは設計値 28°/s より速かった（§33.3）。
+   * 結果、振り切れる境目が**発射距離にまったく依存しなかった**。
+   *
+   * 2本の限界の小さいほうを取る。
+   *
+   * | 限界 | 何で決まるか | 形 |
+   * |---|---|---|
+   * | 構造 | 機体強度＝**最大G** | ω = nG / V（速いほど角速度は小さい） |
+   * | 空力 | 動圧＝ρV²。使えるGがこれに比例 | ω ∝ ρ^0.5 · V（遅いと引けない） |
+   *
+   * 2本はコーナー速度で交わる。ここが最も曲がれる点で、
+   * **そこを下回ると急速に鈍る** — 長く飛んで速度を失った弾は曲がれない。
+   */
+  turnRateAt(speed) {
+    const g = 9.81;
+    const w = this.weapon;
+    const vd = Math.max(1, w.speed);
+    const v = Math.max(60, speed);
+    const vc = vd * (w.cornerFraction ?? CORNER_FRACTION);
+    // `maxG` を持たない兵装（対地弾）は、設計速度での `turnRate` から逆算する。
+    // 動かない目標を撃つので、ここが効く場面はそもそも無い
+    const maxG = w.maxG ?? (w.turnRate * (Math.PI / 180) * vd) / g;
+    const base = (maxG * g) / vd;                    // 設計速度での角速度(rad/s)
+    const structural = base * (vd / v);
+    const aero = base * (vd / (vc * vc)) * turnFactor(this.pos.y) * v;
+    return Math.min(structural, aero);
+  }
+
   /** 旋回率の上限内で目標方向へ向きを寄せる */
   _steerTowards(aim, dt) {
     const desired = _v4.copy(aim).sub(this.pos).normalize();
     const angle = this.dir.angleTo(desired);
     if (angle < 1e-4) return;
 
-    // 速度が落ちるほど曲がれなくなる（エネルギーを失うと振り切られる）
-    const energy = clamp(this.speed / this.weapon.speed, 0.2, 1);
-    // 終末では舵が効く（近距離ほど大きな修正が可能）
-    const terminal = this._targetDist < 2500 ? 2.4 : 1;
-    const maxTurn = this.weapon.turnRate * (Math.PI / 180) * energy * terminal * dt;
+    const omega = this.turnRateAt(this.speed);
+    const maxTurn = omega * dt;
 
     if (angle <= maxTurn) {
       this.dir.copy(desired);
+      this._turnLoad = angle / Math.max(1e-6, maxTurn);
     } else {
       const axis = _v5.crossVectors(this.dir, desired).normalize();
       this.dir.applyAxisAngle(axis, maxTurn).normalize();
+      this._turnLoad = 1;                            // 目一杯引いている
     }
   }
 

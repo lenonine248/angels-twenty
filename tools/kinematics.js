@@ -236,6 +236,47 @@
     return r;
   }
 
+  /**
+   * 速度の推移を出す（§33）。ブーストと滑空の釣り合いを見るため。
+   *
+   * ロケットモーターは短時間で燃え尽き、以後は慣性で飛ぶ。
+   * **どこまでが推進で、そこから先どれだけ保つのか**が射程と旋回能力の両方を決める。
+   */
+  async function profile(weaponId, km = 20, alt = 6000) {
+    await patch();
+    const b = await fresh(11);
+    const w = b.world;
+    const { shooter, target } = clearField(b);
+    const spec = AT.kin.WEAPONS[weaponId];
+    // 目標は動かさず、真っ直ぐ逃げるだけにして速度の推移だけを見る
+    const r = [];
+    const mm = await import('/js/sim/missile.js');
+    const M = mm.Missile;
+    const origUp = M.prototype.update;
+    let t = 0;
+    M.prototype.update = function (dt, world) {
+      const before = this.age;
+      const ret = origUp.call(this, dt, world);
+      if (Math.floor(this.age) !== Math.floor(before)) {
+        r.push({ 秒: Math.floor(this.age), 速度: Math.round(this.speed),
+          飛距離: Math.round(this.pos.distanceTo(shooter.pos)),
+          推進中: this.age < this.boostTime });
+      }
+      return ret;
+    };
+    const out = shot(b, weaponId, km, 180, alt);   // 後方＝いちばん長く飛ぶ
+    M.prototype.update = origUp;
+    unpatch();
+    const boost = r.filter((x) => x.推進中);
+    const peak = Math.max(...r.map((x) => x.速度));
+    const lines = r.map((x) => `${String(x.秒).padStart(2)}s ${String(x.速度).padStart(4)}m/s`
+      + ` ${String(x.飛距離).padStart(6)}m ${x.推進中 ? '推進' : '滑空'}`);
+    console.log({ 兵装: weaponId, 設計速度: spec.speed, 到達最高: peak,
+      推進時間: boost.length, 結末: out.結末, 推移: lines });
+    return { 兵装: weaponId, 設計速度: spec.speed, 到達最高: peak,
+      推進秒: boost.length, 結末: out.結末, 推移: lines };
+  }
+
   function reset() { rows.length = 0; }
 
   const median = (a) => {
@@ -301,7 +342,7 @@
     return out;
   }
 
-  AT.kin = { run, one, threshold, report, reset, rows, WEAPONS: null };
+  AT.kin = { run, one, threshold, profile, report, reset, rows, WEAPONS: null };
   return import('/js/data/weapons.js').then((m) => {
     AT.kin.WEAPONS = m.WEAPONS;
     return 'kinematics ready';
