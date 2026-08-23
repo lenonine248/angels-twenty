@@ -12,7 +12,11 @@ export const AIRCRAFT_TYPES = {
     cruiseSpeed: 220,
     minSpeed: 120,
     accel: 14,            // m/s^2
-    turnRate: 14,         // deg/s（巡航速度時）
+    // 旋回率は**巡航速度での値**。ここから実効Gが決まる（G = ω·V/g）。
+    // §34.2 でミサイルを実機のGに合わせたので、機体も実機寄りに上げた
+    // （F-1 で 5.5G → 8.0G）。**速度は変えていない**ので、
+    // 進出距離や到達時間といったステージの寸法には影響しない。
+    turnRate: 20,         // deg/s（巡航速度時）＝ 7.8G
     climbRate: 180,       // m/s
     ceiling: 13500,
     hp: 90,
@@ -54,7 +58,7 @@ export const AIRCRAFT_TYPES = {
     cruiseSpeed: 200,
     minSpeed: 110,
     accel: 11,
-    turnRate: 11,
+    turnRate: 18,         // ＝ 7.3G
     climbRate: 140,
     ceiling: 12500,
     hp: 110,
@@ -87,7 +91,7 @@ export const AIRCRAFT_TYPES = {
     cruiseSpeed: 180,
     minSpeed: 95,
     accel: 8,
-    turnRate: 8,
+    turnRate: 16,         // ＝ 5.7G
     climbRate: 90,
     ceiling: 10000,
     hp: 160,
@@ -140,7 +144,7 @@ export const SUPPORT_TYPES = {
 export const ENEMY_TYPES = {
   'J-7': {
     ...AIRCRAFT_TYPES['F-1'],
-    id: 'J-7', name: 'J-7 迎撃機', turnRate: 12, maxSpeed: 300,
+    id: 'J-7', name: 'J-7 迎撃機', turnRate: 17, maxSpeed: 300,
     color: 0xa87a5a,
     shape: { length: 0.94, span: 0.58, sweep: 0.34, fatness: 0.9, twinTail: false },
   },

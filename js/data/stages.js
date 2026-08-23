@@ -37,10 +37,14 @@ export const STAGES = [
       //
       // 本当の原因は命中期待度が**セミアクティブの誘導保持を見ていなかった**こと
       // （§28.8）。AI が AAM-M を遠距離で撃ち続け、30発撃って命中ゼロだった。
+      // **§34 で搭載を組み直した。** 赤外線が正面では 4km までしか掴めなくなり
+      // （§34.1）、正面での迎撃であるこのミッションでは赤外線2本では足りない。
+      // レーダー弾を2本に増やして 1/18 → 10/18 に戻した。
+      // 撃ちっぱなしの AAM-A なら 16/18 まで戻るが、6P は最初のミッションには高い。
       aircraft: [
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
       ],
     },
     enemy: {
@@ -68,8 +72,10 @@ export const STAGES = [
     },
     // 評価基準（§18）。[◎の上限, ○の上限]
     // 迅速: 爆撃機は約4分で基地へ到達する。2分半で決着なら◎
-    // 節約: 既定搭載は6P。AAM-Mを盛るほど落ちる
-    rating: { time: [150, 240], points: [8, 14], losses: [0, 1] },
+    // 節約: **既定搭載は12P**（§34 で組み直した）。基準もそれに合わせる。
+    // 8P のままだと、ステージが渡してくる搭載で出撃した時点で ◎ が取れない
+    // — §32.6 で IRON UMBRELLA に見つけたのと同じ欠陥になる
+    rating: { time: [150, 240], points: [14, 20], losses: [0, 1] },
     objectives: [
       { id: 'kill', type: 'destroyAll', tag: 'raid', label: '来襲した敵編隊を全機撃墜する' },
       { id: 'base', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
