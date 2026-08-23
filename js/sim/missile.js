@@ -226,7 +226,9 @@ export class Missile {
     // 高空では抵抗が減って慣性飛行が伸びるため、寿命は余裕をもって取る
     this.lifetime = (weapon.range / Math.max(1, weapon.speed)) * 4 + 30;
     this.accel = (weapon.speed - this.speed) / Math.max(0.5, this.boostTime * 0.6);
-    this.drag = weapon.speed / COAST_TIME;
+    // 慣性飛行の減速。**兵装ごとに変えられる**（§44）。
+    // 大型で低速な対地弾は、断面積のわりに重いので慣性が長い。
+    this.drag = weapon.speed / (weapon.coastTime ?? COAST_TIME);
 
     this._losTimer = 0;
     this._losOk = true;

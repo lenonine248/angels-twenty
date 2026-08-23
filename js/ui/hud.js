@@ -580,9 +580,12 @@ export class Hud {
     // 終わるのを見張って押しに戻る手間だけを省く。**発進すると解除される**ので、
     // 次に帰ってきたときに勝手に飛び出すことはない。
     const auto = ground && pend && !pend.waiting
-      ? `<button data-cmd="autolaunch" class="wide${u.autoLaunch ? '' : ' off'}"
+      // **入/切が色で分かるようにする。** `off` はこのボタンに効くスタイルが無く、
+      // 文言が1文字変わるだけで押せたかどうか分からなかった。
+      // 高度ボタンと同じ `active`（琥珀）を使う。
+      ? `<button data-cmd="autolaunch" class="wide${u.autoLaunch ? ' active' : ''}"
           title="整備が終わった時点で自動で発進する。一度きりで、発進すると解除される">
-          ${u.autoLaunch ? '整備後に発進する' : '整備後に発進'}</button>`
+          整備後に発進 ${u.autoLaunch ? 'ON' : 'OFF'}</button>`
       : '';
     const actions = ground
       ? `<button data-cmd="launch" class="wide go${pend ? ' warn' : ''}">発進</button>${auto}${warn}`
