@@ -201,6 +201,46 @@ export function decoyNotchFactor(m, unit) {
   return DECOY_IN_NOTCH + (1 - DECOY_IN_NOTCH) * t;
 }
 
+/**
+ * 赤外線シーカーがロックできる距離（§34）。**アスペクトで大きく変わる。**
+ *
+ * 後方からは**排気**が見えるので遠くから掴める。
+ * 側方や正面では排気が見えず、機体そのものの空力加熱しか手掛かりが無い。
+ * 背景との温度差が排気ほど無いので、掴める距離は一気に落ちる。
+ *
+ * **旋回性能はアスペクトで変えない。** 変わるのは「掴めるかどうか」だけ。
+ * 正面撃ちが当てにくいのは、飛翔時間が短くて相手に振られたときの誤差が
+ * 大きくなるからで、そちらは §28.8 の飛翔時間の項に既に入っている。
+ *
+ * @param {number} aspect 0=正面から撃つ / 1=真後ろから撃つ
+ */
+/**
+ * 排気が見え始めるアスペクトと、満額になるまでの幅（§34）。
+ *
+ * 実機の値をそのまま入れると**正面会敵のミッションが崩れる**
+ * （正面3km・立ち上がり0.5幅0.35で SCRAMBLE が 15/18 → 3/18）。
+ * 交戦の86%が正面（§22.3.6.1）なうえ、この地図は実際の戦域より縮尺が小さいので、
+ * 立ち上がりを早めにして釣り合いを取る。
+ */
+const IR_ASPECT_START = 0.3;
+const IR_ASPECT_WIDTH = 0.45;
+
+export function irLockRange(weapon, aspect) {
+  const tail = weapon.range;
+  const head = weapon.irHeadRange;
+  if (head == null) return tail;
+  // 排気が見え始める角度から伸びる。
+  // `IR_ASPECT_START` までは機体の熱だけ、そこから満額まで滑らかに上がる。
+  const f = clamp((aspect - IR_ASPECT_START) / IR_ASPECT_WIDTH, 0, 1);
+  return head + (tail - head) * f;
+}
+
+/** 撃つ側から見た目標のアスペクト。0=正面から / 1=真後ろから */
+export function aspectOf(shooter, target) {
+  const dx = target.pos.x - shooter.pos.x, dz = target.pos.z - shooter.pos.z;
+  return Math.abs(angleDiff(headingOf(-dx, -dz), target.heading)) / Math.PI;
+}
+
 /** ミサイルの最小射程（近すぎると誘導が間に合わない） */
 const MIN_RANGE = { 'AAM-S': 400, default: 1500 };
 
@@ -325,6 +365,10 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
     const dx = target.pos.x - shooter.pos.x, dz = target.pos.z - shooter.pos.z;
     const aspect = Math.abs(angleDiff(headingOf(-dx, -dz), target.heading)) / Math.PI;
     p *= weapon.guidance === 'ir' ? (0.7 + 0.3 * aspect) : (1 - 0.4 * aspect);
+
+    // 赤外線は掴めない距離なら 0（§34）。ここを入れないと、
+    // **撃てない相手に「中」と表示される**
+    if (weapon.guidance === 'ir' && dist > irLockRange(weapon, aspect)) return 0;
 
     // デコイを**§28.4 の曲線から直接引く**。
     //
@@ -706,10 +750,15 @@ export class CombatSystem {
     if (dist < minR || dist > effRange * 0.85) return false;
 
     switch (w.guidance) {
-      case 'ir':
+      case 'ir': {
         // 赤外線シーカーはある程度の首振りができる
         if (offBoresight(shooter, dx, dz, dy) > 50 * DEG) return false;
+        // **掴める距離はアスペクトで変わる**（§34）。
+        // 排気が見えない正面・側方からは、ずっと近づかないと掴めない
+        if (target.kind === 'aircraft'
+            && dist > irLockRange(w, aspectOf(shooter, target))) return false;
         return los();
+      }
 
       case 'sarh':
       case 'arh':

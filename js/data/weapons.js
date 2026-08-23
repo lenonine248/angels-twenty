@@ -16,7 +16,9 @@ export const WEAPONS = {
     guidance: 'ir',           // 赤外線 → フレアに弱い
     slots: 1,
     cost: 0,
-    range: 7000,
+    // **射程はアスペクトで変わる**（§34）。ここは後方（排気が見える）の値
+    range: 8000,
+    irHeadRange: 4000,        // 正面〜側方（機体の熱しか見えない）のロック距離
     speed: 850,               // m/s
     turnRate: 55,             // deg/s （表示・見積り用の目安。操舵は maxG から決まる）
     maxG: 83,                 // 最大G（§33.6）。設計速度で 55°/s になる値
@@ -24,7 +26,7 @@ export const WEAPONS = {
     decoyResist: 0.25,        // 0=騙されやすい 1=騙されない
     damage: 200,
     rearmSeconds: 20,
-    desc: '高機動・撃ちっぱなし。フレアに弱い',
+    desc: '高機動・撃ちっぱなし。後方から8km／正面は3km。フレアに弱い',
   },
 
   'AAM-M': {
