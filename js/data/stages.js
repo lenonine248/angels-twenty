@@ -85,10 +85,21 @@ export const STAGES = [
       base: { x: 10000, z: 38000 },
       startAirborne: true,
       startAlt: 4500,
+      // **輸送機の進路上、約8km 前方から始める**（§40）。
+      //
+      // 輸送機は (12000,36000) から (44000,12000) へ向かう。その進路に沿って
+      // 前に出しておくと、脅威を**輸送機から遠いところで**迎えられる。
+      //
+      // 距離には最適点がある（実測・同じ種18）:
+      // 併走(0km) 14/18 ／ **前方8km 16/18** ／ 前方12km **9/18**。
+      // 出過ぎると輸送機が丸裸になり、近すぎると交戦が輸送機の上で起きる。
       aircraft: [
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 1', x: 17200, z: 30300,
+          loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', x: 18400, z: 31200,
+          loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-2', name: 'HAMMER 1', x: 19600, z: 32100,
+          loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
       ],
       support: [
         { type: 'E-8', name: 'CARGO', x: 12000, z: 36000, agl: 4200, tags: ['transport'],

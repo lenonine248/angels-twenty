@@ -644,8 +644,11 @@ function spawnStage(world, stage, loadouts, terrain) {
   f.aircraft.forEach((a, i) => {
     const loadout = (loadouts && loadouts[i]) || a.loadout;
     if (f.startAirborne) {
-      const x = base.pos.x + 1500 + i * 1200;
-      const z = base.pos.z - 1500 - i * 900;
+      // **出撃位置を指定できる**（§40）。敵側は最初から x/z を持っていたが、
+      // 自軍は飛行場の近くに並べるだけだった。護衛のように
+      // 「被護衛機より前に出た状態で始める」構図が作れない。
+      const x = a.x ?? (base.pos.x + 1500 + i * 1200);
+      const z = a.z ?? (base.pos.z - 1500 - i * 900);
       const ac = world.spawn(new Aircraft({
         type: a.type, name: a.name, side: SIDE.BLUE, loadout,
         x, z, alt: Math.max(0, terrain.heightAt(x, z)) + (f.startAlt || 4000),
