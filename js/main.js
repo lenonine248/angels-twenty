@@ -538,9 +538,14 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     audio.gunHit(target.pos);
   };
   world.onBulletGround = (bullet) => world.effects.impact(bullet.pos, true);
-  world.onGunFire = (shooter) => {
+  // 機体の機銃と、地上の弾幕（§51.6）の両方がここへ来る。
+  // 初速を渡して口径感を分ける（A-3 は 700m/s なので重く鳴る）。
+  world.onGunFire = (shooter, target, n, muzzle) => {
     world.effects.muzzle(shooter.pos);
-    audio.gunBurst(shooter.pos, shooter.id);
+    audio.gunBurst(shooter.pos, shooter.id, muzzle
+      || shooter.spec?.gunSpec?.muzzleSpeed
+      || shooter.spec?.weapon?.muzzle
+      || 1000);
   };
 
   const contacts = new ContactRenderer(scene.world, world.detection, SIDE.BLUE);

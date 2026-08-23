@@ -272,6 +272,9 @@ export class GroundUnit extends Unit {
       }));
     }
     this.firing = true;
+    // 発砲を外へ知らせる（銃口の火花と音）。機体の機銃と同じ口を使う。
+    // **実体弾にした時点でここが要る** — 弾は見えるのに無音だった。
+    world.onGunFire?.(this, target, n, w.muzzle);
   }
 
   /** 地表に接地させる（配置時に呼ぶ） */

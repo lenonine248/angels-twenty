@@ -227,41 +227,125 @@ export class AudioManager {
 
   // ------------------------------------------------------------ 効果音
 
-  /** 爆発。size は演出の爆発半径(m)と同じ尺度。 */
-  explosion(pos, size = 260) {
+  /**
+   * 爆発・撃墜。`size` は演出の爆発半径(m)と同じ尺度。
+   *
+   * **4層で作る**（§52）。以前は「帯域を落としていくノイズ＋正弦波の低音」の
+   * 2層だった。立ち上がりが 12ms と鈍く、頭に破裂が無いまま中域から始まるので、
+   * 爆発というより**フィルタを閉じたノイズ**に聞こえていた。
+   * 低音も純粋な正弦波で、シンセのサブベースそのものだった。
+   *
+   * | 層 | 何を出すか |
+   * |---|---|
+   * | リップ | **1.2ms** で立ち上がる高域。起爆の裂ける瞬間 |
+   * | ボディ | 帯域を落としていくノイズ。爆風の本体 |
+   * | 突き上げ | 三角波の低音。倍音があるぶん正弦波より体に来る |
+   * | 破片 | 不規則に揺れる中低域の尾。1秒前後くすぶる |
+   *
+   * @param {string} [kind] 'air' なら空中撃墜。金属の裂ける成分を足し、
+   *   全体を短く明るくする。'ground' は低音寄りで尾が長い（地面に伝わる）。
+   *   **`world.effects.onExplosion` は前から渡していたのに、受け側が捨てていた。**
+   */
+  explosion(pos, size = 260, kind = 'ground') {
     if (!this.ready) return;
     const p = this._place(pos);
     if (!p) return;
     const big = clamp(size / 420, 0.5, 1.6);
-    const dur = 0.9 + big * 0.9;
+    const air = kind === 'air';
+    const dur = (air ? 0.75 : 1.05) + big * (air ? 0.7 : 1.0);
     if (!this._take(dur + p.delay)) return;
 
     const ctx = this.ctx;
     const t0 = ctx.currentTime + p.delay;
     const amp = p.g * (0.4 + big * 0.28);
 
-    // 本体（帯域を落としていくノイズ）
     const ch = this._chain(p, t0);
     const { lp, g } = ch;
+
+    // --- 1. リップ（起爆の裂ける音）
+    // ここが無いと「破裂した」と聞こえない。**1.2ms で立ち上げる**。
+    // 遠いところは共通の低域通過で落ちるので、近いときだけ効く。
+    const rip = this._noise(t0, 0.16);
+    const rhp = ctx.createBiquadFilter();
+    rhp.type = 'highpass';
+    rhp.frequency.setValueAtTime(air ? 1900 : 1300, t0);
+    rhp.frequency.exponentialRampToValueAtTime(320, t0 + 0.1);
+    const rg = ctx.createGain();
+    rg.gain.value = 0;
+    rg.gain.setValueAtTime(0, t0);
+    rg.gain.linearRampToValueAtTime(amp * 1.3, t0 + 0.0012);
+    rg.gain.exponentialRampToValueAtTime(0.0006, t0 + (air ? 0.1 : 0.15));
+    // **`lp` には繋がない。** `_chain` の `lp` の先には共通のゲイン `g` があり、
+    // そこにはボディの包絡が載っている。通すとリップまで一緒に鈍らされ、
+    // せっかくの 1.2ms が 4ms に伸びる（実測で頭の破裂が消えていた）。
+    // 距離による高域落ちだけ自前で掛けて `pan` へ直接出す。
+    const rdl = ctx.createBiquadFilter();
+    rdl.type = 'lowpass';
+    rdl.frequency.value = p.lp;
+    rip.connect(rhp); rhp.connect(rdl); rdl.connect(rg); rg.connect(ch.pan);
+
+    // --- 2. ボディ（帯域を落としていくノイズ）
     const src = this._noise(t0, dur);
     src.connect(lp);
-    lp.frequency.setValueAtTime(Math.min(p.lp, 2600 * big), t0);
+    lp.frequency.setValueAtTime(Math.min(p.lp, (air ? 3200 : 2600) * big), t0);
     lp.frequency.exponentialRampToValueAtTime(Math.max(80, 110 / big), t0 + dur);
     g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(amp, t0 + 0.012);
+    g.gain.linearRampToValueAtTime(amp, t0 + 0.004);
     g.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
 
-    // 低音の突き上げ
+    // --- 3. 突き上げ。**三角波にする** — 純粋な正弦波は電子音に聞こえる
     const o = ctx.createOscillator();
-    o.type = 'sine';
+    o.type = 'triangle';
     const og = ctx.createGain();
-    o.frequency.setValueAtTime(150 * big, t0);
-    o.frequency.exponentialRampToValueAtTime(28, t0 + 0.5 * big);
+    og.gain.value = 0;
+    o.frequency.setValueAtTime((air ? 165 : 190) * big, t0);
+    o.frequency.exponentialRampToValueAtTime(air ? 34 : 26, t0 + 0.42 * big);
     og.gain.setValueAtTime(0, t0);
-    og.gain.linearRampToValueAtTime(amp * 1.1, t0 + 0.02);
-    og.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.55 * big);
+    og.gain.linearRampToValueAtTime(amp * 1.15, t0 + 0.008);
+    og.gain.exponentialRampToValueAtTime(0.0008, t0 + (air ? 0.45 : 0.62) * big);
     o.connect(og); og.connect(ch.pan);
-    o.start(t0); o.stop(t0 + 0.6 * big + 0.05);
+    o.start(t0); o.stop(t0 + 0.7 * big + 0.05);
+
+    // --- 4. 破片の尾。**不規則に揺らす**のが要点。
+    // なめらかに減衰させると、どこまでも作り物に聞こえる。
+    const debStart = 0.05;
+    const deb = this._noise(t0 + debStart, dur - debStart);
+    const dbp = ctx.createBiquadFilter();
+    dbp.type = 'bandpass';
+    dbp.frequency.value = air ? 760 : 480;
+    dbp.Q.value = 0.7;
+    const dg = ctx.createGain();
+    dg.gain.value = 0;
+    dg.gain.setValueAtTime(0.0008, t0 + debStart);
+    for (let t = debStart; t < dur - 0.05; t += 0.055) {
+      const fade = 1 - t / dur;
+      dg.gain.setValueAtTime(
+        Math.max(0.0008, amp * 0.3 * (0.2 + Math.random() * 0.8) * fade * fade),
+        t0 + t,
+      );
+    }
+    dg.gain.exponentialRampToValueAtTime(0.0006, t0 + dur);
+    deb.connect(dbp); dbp.connect(dg); dg.connect(ch.pan);
+
+    // --- 5. 空中撃墜のときだけ: 金属の裂ける成分
+    // 「爆発した」ではなく「機体が壊れた」と聞こえるようにするため。
+    if (air) {
+      const tear = this._noise(t0 + 0.02, 0.4);
+      const tbp = ctx.createBiquadFilter();
+      tbp.type = 'bandpass';
+      tbp.frequency.setValueAtTime(2400 + Math.random() * 800, t0 + 0.02);
+      tbp.frequency.exponentialRampToValueAtTime(600, t0 + 0.34);
+      tbp.Q.value = 2.6;
+      const tg = ctx.createGain();
+      tg.gain.value = 0;
+      tg.gain.setValueAtTime(0, t0 + 0.02);
+      tg.gain.linearRampToValueAtTime(amp * 0.5, t0 + 0.035);
+      tg.gain.exponentialRampToValueAtTime(0.0006, t0 + 0.38);
+      const tdl = ctx.createBiquadFilter();
+      tdl.type = 'lowpass';
+      tdl.frequency.value = p.lp;
+      tear.connect(tbp); tbp.connect(tdl); tdl.connect(tg); tg.connect(ch.pan);
+    }
   }
 
   /** ミサイル発射（噴射音） */
@@ -292,8 +376,30 @@ export class AudioManager {
     g.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
   }
 
-  /** 機銃の連射。key で発射機ごとに間引く。 */
-  gunBurst(pos, key) {
+  /**
+   * 機銃・弾幕の連射。key で発射源ごとに間引く。
+   *
+   * **1発を3層で作る**（§52）。以前は帯域を絞ったノイズ1本を 40ms 周期で
+   * 開け閉めするだけだった。どの発も同じ音・同じ長さ・同じ間隔なので、
+   * 耳には**25Hz で断続する1つの音**として届く ── 電子音に聞こえる原因はここ。
+   *
+   * | 層 | 何を出すか |
+   * |---|---|
+   * | クラック | 1.5ms で立ち上がる高域。銃口の破裂そのもの |
+   * | ボディ | 中低域。**発の間隔(40ms)より短く切る** — 溶けると粒が消える |
+   * | サンプ | 120→42Hz の短い低音。腹に来る成分 |
+   *
+   * その下に**持続する唸り**を別の層として敷く。粒だけだと間が無音になり、
+   * 尾を伸ばして埋めると今度は粒が溶ける（実測で変調の深さ 0.17）。
+   * **粒と唸りは別々に作る** ── これが実録音の構造。
+   *
+   * 距離は共通の低域通過（`p.lp`）が面倒を見る。遠いとクラックが落ちて
+   * ボディとサンプだけが残り、**遠雷のような鳴り方**に自然に変わる。
+   * だから遠いときはクラックの枝を作らない（音にも出ないし、ノードも無駄）。
+   *
+   * @param {number} [muzzle] 初速(m/s)。遅い砲ほど重い音にする（A-3 は 700）
+   */
+  gunBurst(pos, key, muzzle = 1000) {
     if (!this.ready) return;
     if (!this._throttle('g' + key, 0.26)) return;
     const p = this._place(pos);
@@ -303,25 +409,94 @@ export class AudioManager {
 
     const ctx = this.ctx;
     const t0 = ctx.currentTime + p.delay;
-    const { lp, g } = this._chain(p, t0);
-    const src = this._noise(t0, dur);
-    const bp = ctx.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.frequency.value = 1400;
-    bp.Q.value = 0.8;
-    src.connect(bp); bp.connect(lp);
+    const { lp, g, pan } = this._chain(p, t0);
+    // 音量は発ごとのゲインで作るので、共通のゲインは開けたままにする
+    g.gain.setValueAtTime(1, t0);
 
-    // 個々の弾の粒立ちを作る（毎秒 25 発相当）
-    const amp = p.g * 0.3;
-    g.gain.setValueAtTime(0, t0);
-    for (let t = 0; t < dur; t += 0.04) {
-      g.gain.setValueAtTime(amp * (0.55 + Math.random() * 0.45), t0 + t);
-      g.gain.exponentialRampToValueAtTime(0.004, t0 + t + 0.032);
+    // 口径感。弾速の遅い砲ほど大きく重く鳴らす
+    const heavy = clamp(1000 / muzzle, 1, 1.5);
+    const near = p.g > 0.3;
+
+    // ノイズは1本を共有して、層ごとにフィルタで枝分かれさせる。
+    // 同じ破裂の別の帯域を聞いている、という形になるので位相も噛み合う。
+    const src = this._noise(t0, dur + 0.12);
+    const body = ctx.createBiquadFilter();
+    body.type = 'lowpass';
+    body.frequency.value = 900 / heavy;
+    body.Q.value = 0.9;
+    src.connect(body);
+    let hp = null;
+    if (near) {
+      hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 2600 / heavy;
+      src.connect(hp);
     }
-    g.gain.setValueAtTime(0.0001, t0 + dur);
+
+    // **持続音を別に敷く。** 発ごとの粒だけだと、間が完全に無音になって
+    // 「点が並んでいる」音になる。実録音は鋭い粒の下に低い唸りが途切れず鳴っている。
+    // ここを1発ずつの減衰で作ろうとして尾を伸ばすと、粒が溶けて roar だけになる
+    // （実測: 変調の深さが 0.17 まで落ちた）ので、**層を分ける**。
+    const roar = ctx.createGain();
+    roar.gain.value = 0;
+    const rlp = ctx.createBiquadFilter();
+    rlp.type = 'lowpass';
+    rlp.frequency.value = 520 / heavy;
+    body.connect(rlp); rlp.connect(roar); roar.connect(lp);
+    roar.gain.setValueAtTime(0, t0);
+    roar.gain.linearRampToValueAtTime(p.g * 0.3 * 0.5, t0 + 0.03);
+    roar.gain.setValueAtTime(p.g * 0.3 * 0.5, t0 + dur - 0.02);
+    roar.gain.exponentialRampToValueAtTime(0.0005, t0 + dur + 0.09);
+
+    const amp = p.g * 0.3;
+    for (let t = 0; t < dur; t += 0.04) {          // 毎秒 25 発
+      // 揺らぎは小さく。機関砲は機械的に規則正しいので、
+      // 大きく散らすと「連射」ではなく「複数が乱射している」音になる。
+      const ts = t0 + t + (Math.random() - 0.5) * 0.003;
+      const v = 0.7 + Math.random() * 0.6;
+
+      if (near) {
+        // **初期値を 0 にしてから予約する。** GainNode の既定は 1 なので、
+        // `setValueAtTime(0, ts)` だけだと **ts までは開きっぱなし**になる。
+        // 発ごとにノードを作るこの作りでは、全部の枝が最初から鳴り続けて
+        // 粒が完全に潰れる（実測で変調の深さ 0.19）。
+        const cg = ctx.createGain();
+        cg.gain.value = 0;
+        cg.gain.setValueAtTime(0, ts);
+        cg.gain.linearRampToValueAtTime(amp * 0.9 * v, ts + 0.0015);
+        cg.gain.exponentialRampToValueAtTime(0.0005, ts + 0.016 * heavy);
+        hp.connect(cg); cg.connect(lp);
+      }
+
+      const bg = ctx.createGain();
+      bg.gain.value = 0;
+      bg.gain.setValueAtTime(0, ts);
+      bg.gain.linearRampToValueAtTime(amp * 1.15 * v, ts + 0.004);
+      bg.gain.exponentialRampToValueAtTime(0.0004, ts + 0.024 * heavy);
+      body.connect(bg); bg.connect(lp);
+
+      const o = ctx.createOscillator();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime((120 + Math.random() * 25) / heavy, ts);
+      o.frequency.exponentialRampToValueAtTime(42 / heavy, ts + 0.05);
+      const og = ctx.createGain();
+      og.gain.value = 0;
+      og.gain.setValueAtTime(0, ts);
+      og.gain.linearRampToValueAtTime(amp * 0.55 * v, ts + 0.003);
+      og.gain.exponentialRampToValueAtTime(0.0004, ts + 0.035 * heavy);
+      o.connect(og); og.connect(pan);
+      o.start(ts); o.stop(ts + 0.05 * heavy);
+    }
   }
 
-  /** 機銃の被弾（金属音） */
+  /**
+   * 機銃の被弾（金属音）。
+   *
+   * 矩形波を 1800→700Hz へ落とすだけだった。**音程のある減衰音**なので、
+   * 金属が鳴るというより電子音の「ピュン」に聞こえていた。
+   * 高いところに共振を置いたノイズを短く切る形に変える —
+   * 金属の打撃音は倍音が噛み合っておらず、音程として聞こえないのが本来。
+   */
   gunHit(pos) {
     if (!this.ready) return;
     if (!this._throttle('hit', 0.09)) return;
@@ -332,15 +507,20 @@ export class AudioManager {
     const ctx = this.ctx;
     const t0 = ctx.currentTime + p.delay;
     const { lp, g } = this._chain(p, t0);
-    const o = ctx.createOscillator();
-    o.type = 'square';
-    o.frequency.setValueAtTime(1800 + Math.random() * 900, t0);
-    o.frequency.exponentialRampToValueAtTime(700, t0 + 0.09);
-    o.connect(lp);
-    const amp = p.g * 0.16;
-    g.gain.setValueAtTime(amp, t0);
-    g.gain.exponentialRampToValueAtTime(0.0006, t0 + 0.14);
-    o.start(t0); o.stop(t0 + 0.16);
+    const src = this._noise(t0, 0.14);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(3400 + Math.random() * 1400, t0);
+    bp.frequency.exponentialRampToValueAtTime(1200, t0 + 0.07);
+    bp.Q.value = 2.2;
+    src.connect(bp); bp.connect(lp);
+
+    // **帯域を絞るとノイズの実効量が大きく落ちる。** 矩形波1本だった頃と
+    // 同じ 0.16 のままにしたら、機銃の 1/14 の音量になっていた（実測）。
+    const amp = p.g * 1.1;
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(amp, t0 + 0.001);
+    g.gain.exponentialRampToValueAtTime(0.0006, t0 + 0.11);
   }
 
   /** フレア／チャフ投射 */
