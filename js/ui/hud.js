@@ -183,7 +183,7 @@ export class Hud {
         for (const u of sel) {
           if (u.onGround) continue;
           const ab = u.nearestBase(this.world);
-          if (ab) u.setOrder({ type: 'rtb', airbase: ab, player: true });
+          if (ab) u.setPlayerOrder({ type: 'rtb', airbase: ab });
         }
         notify('order:rtb', {});
         break;
@@ -391,11 +391,13 @@ export class Hud {
       + `<span class="pf ${u.abActive ? 'good' : ''}">${u.abActive ? 'AB 点火' : 'AB 待機'}</span>`
       // 機体の温度（§35.3）。赤外線に掴まれやすさとフレアの効きを決める
       + `<span class="pf ${u.heat > 0.75 ? 'mid' : u.heat < 0.3 ? 'good' : ''}">熱 ${Math.round((u.heat ?? 0.45) * 100)}%</span>`
-      // エアブレーキ（§32.1）。出ている間だけ出す。自動なので操作の対象ではない
-      + (u.airbrake > 0.3 ? '<span class="pf mid">ブレーキ</span>' : '')
       + `<span class="pf ${cls(p.thrust)}">推力 ${Math.round(p.thrust * 100)}%</span>`
       + `<span class="pf ${cls(p.turn)}">旋回 ${Math.round(p.turn * 100)}%</span>`
-      + `<span class="pf ${p.missileRange >= 1.3 ? 'good' : 'mid'}">射程 ×${p.missileRange.toFixed(2)}</span>`;
+      + `<span class="pf ${p.missileRange >= 1.3 ? 'good' : 'mid'}">射程 ×${p.missileRange.toFixed(2)}</span>`
+      // エアブレーキ（§32.1）。出ている間だけ出す。自動なので操作の対象ではない。
+      // **最後に置く** — 2列に並べているので、途中で出入りすると
+      // 他の項目が列をまたいで動いて読みにくい。
+      + (u.airbrake > 0.3 ? '<span class="pf mid">ブレーキ</span>' : '');
 
     if (d.svc && u.airbase) {
       const pr = u.airbase.serviceProgress(u);

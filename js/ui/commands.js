@@ -263,8 +263,8 @@ export class CommandController {
           u.fireTasks.push({ weapon: u.selectedWeapon, target });
           this.world.log?.(`${u.name} ${u.selectedWeapon} → ${target.name} 射撃指示`);
         } else {
-          // player:true の指示はAIが上書きしない（回避と燃料切れを除く）
-          u.setOrder({ type: 'attack', target, player: true }, append);
+          // プレイヤーの指示はAIが上書きしない（回避と燃料切れを除く）
+          u.setPlayerOrder({ type: 'attack', target }, append);
         }
       }
       notify('order:attack', { target });
@@ -274,7 +274,7 @@ export class CommandController {
       let slot = 1;
       for (const u of this.selection) {
         if (u === target) continue;
-        u.setOrder({ type: 'follow', target, slot: slot++, player: true }, append);
+        u.setPlayerOrder({ type: 'follow', target, slot: slot++ }, append);
       }
       notify('order:follow', { target });
       return;
@@ -287,13 +287,9 @@ export class CommandController {
     const formation = this._selectedFormation();
     if (formation && !append) {
       const leader = formation.leader;
-      // player:true を忘れない。落とすと `_playerLocked` を通らず、
-      // **パイロットAIが次のtickで即座に上書きする**（連携モードだと顕著）。
-      // 個別指示の側には最初から付いていたので、
-      // 「1機ずつなら効くのに編隊だと効かない」という形で出ていた。
       formation.issue({
         type: 'move', x: p.x, z: p.z,
-        alt: leader.order?.alt ?? leader.desiredAlt, player: true,
+        alt: leader.order?.alt ?? leader.desiredAlt,
       });
       for (const u of formation.members) {
         u.patrolArea = { x: p.x, z: p.z, alt: leader.desiredAlt, radius: 4500 };
@@ -310,7 +306,7 @@ export class CommandController {
       i++;
       const tx = clamp(p.x + Math.cos(ang) * spread, 0, this.world.mapSize);
       const tz = clamp(p.z + Math.sin(ang) * spread, 0, this.world.mapSize);
-      u.setOrder({ type: 'move', x: tx, z: tz, alt: u.order?.alt ?? u.desiredAlt, player: true }, append);
+      u.setPlayerOrder({ type: 'move', x: tx, z: tz, alt: u.order?.alt ?? u.desiredAlt }, append);
       // 到達後の待機・哨戒もそこで行う
       u.patrolArea = { x: tx, z: tz, alt: u.order?.alt ?? u.desiredAlt, radius: 4500 };
     }
@@ -385,7 +381,10 @@ export class CommandController {
     for (const u of this.selection) {
       if (u.onGround || !u.nearestBase) continue;
       const ab = u.nearestBase(this.world);
-      if (ab) { u.setOrder({ type: 'rtb', airbase: ab }); ordered = true; }
+      // **`setPlayerOrder` を使うこと。** 素の `setOrder` だと `player` が付かず、
+      // 対地攻撃モードの機体は次の tick で `_strike()` に攻撃指示へ戻される
+      // — 実測で「Bキーの帰投だけ効かない」という形で出ていた。
+      if (ab) { u.setPlayerOrder({ type: 'rtb', airbase: ab }); ordered = true; }
     }
     if (ordered) notify('order:rtb', {});
   }

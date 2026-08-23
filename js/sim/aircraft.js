@@ -328,6 +328,24 @@ export class Aircraft extends Unit {
     }
   }
 
+  /**
+   * **プレイヤーが直接出した指示。UI からの指示は必ずこれを通すこと。**
+   *
+   * `player: true` が付いていない指示は `PilotAI._playerLocked` を通らないので、
+   * **次の tick で AI に上書きされる**。付け忘れは3回踏んでいる。
+   *
+   * | いつ | どこ | 症状 |
+   * |---|---|---|
+   * | Beta 2.22 | 編隊の追従指示 | 1機ずつなら効くのに編隊だと効かない |
+   * | Beta 2.32 | Bキーの帰投 | 対地攻撃モードだけ帰投できない（パネルのボタンは効く） |
+   *
+   * どちらも「指示は入っているのに次の瞬間に消える」という同じ形で出る。
+   * `setOrder` を UI から直接呼ぶと必ずまた踏むので、経路をここ1本にした。
+   */
+  setPlayerOrder(order, append = false) {
+    this.setOrder({ ...order, player: true }, append);
+  }
+
   clearOrders() {
     this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, radius: 2500 };
     this.queue.length = 0;

@@ -104,23 +104,23 @@ export class Formation {
   }
 
   /**
-   * 編隊全体に指示を出す。
+   * **編隊全体にプレイヤーの指示を出す。**
    * リーダーが指示を受け、僚機はリーダーに追従する。
    * 攻撃指示だけは全機が同じ目標へ向かう（数で押すため）。
+   *
+   * 呼び出し側に `player` を付けさせない — 付け忘れると僚機だけ
+   * 「指示なし」扱いになって AI が即座に上書きし、
+   * **編隊指示を出したのに崩れる**（Beta 2.22 で実際に踏んだ）。
+   * `Aircraft.setPlayerOrder` の注記も参照。
    */
   issue(order) {
     const leader = this.leader;
     if (!leader) return;
-    leader.setOrder(order);
+    leader.setPlayerOrder(order);
     for (const m of this.members) {
       if (m === leader || !m.alive) continue;
-      if (order.type === 'attack') { m.setOrder({ ...order }); continue; }
-      // 追従指示にも player フラグを引き継ぐ。
-      // 落とすと僚機だけ「指示なし」扱いになり、AI が即座に上書きして
-      // 近くの敵へ勝手に向かう（編隊指示を出したのに崩れる原因だった）。
-      m.setOrder({
-        type: 'follow', target: leader, slot: m.formationSlot, player: order.player,
-      });
+      if (order.type === 'attack') { m.setPlayerOrder({ ...order }); continue; }
+      m.setPlayerOrder({ type: 'follow', target: leader, slot: m.formationSlot });
     }
   }
 
