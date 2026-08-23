@@ -169,37 +169,19 @@ export function decoyRepeatFactor(tries) {
 }
 
 /**
- * ノッチと重ねたときのレーダー用デコイの効き（§28.13）。
+ * **§28.13 の `decoyNotchFactor` は撤去した**（§35.2）。
  *
- * **チャフとノッチは同じ動作なので、二重には効かない。**
- * どちらも「照射源に対して真横を向く」ことで成立する。真横を向いた機体は
- * 接近速度が消えるのでクラッターに紛れる（ノッチ、10%/秒）。
- * チャフが効くのも同じ理屈 — 撒いた瞬間にほぼ静止する雲を、
- * シーカーが接近速度の差で分離できなくなるから。
+ * 「チャフとノッチは同じ機動なので二重には効かない」として、
+ * ノッチ中はチャフを弱くしていた。釣り合いの理屈としては通っていたが、
+ * **物理としては逆だった。**
  *
- * 実測では、1回の機動に対して防御が二重に乗っていた。
- * その結果 **AAM-S の射程（7km）まで詰めても AAM-M が当たらない**
- * （実測で 29発中6命中、14がデコイ）。詰めた見返りが無いのは行き過ぎ。
+ * チャフは電波を通さない雲＝壁で、レーダーが追いかける偽の目標ではない。
+ * そして真横を向いた機体が紛れる先は「動かない背景」なので、
+ * **チャフが効くのはむしろノッチのときだけ**（と、背を向けて逃げるとき）。
  *
- * ノッチに入っている間、チャフは効きを落とす。防御はノッチ側が担う。
- * 真横を向いていない機体 — 自分の攻撃を続けている機体 — にとっては
- * チャフが唯一の手段なので、そこでは今までどおり効く。**選択になる。**
- *
- * 赤外線には関係ない（フレアはドップラで分離するものではない）。
+ * いまは `Missile._deceived` / `_screened` がその役を持つ。
+ * 二重計上の心配は、確率を1つにまとめたことで消えている。
  */
-const DECOY_IN_NOTCH = 0.25;
-
-export function decoyNotchFactor(m, unit) {
-  if (m.guidance !== 'sarh' && m.guidance !== 'arh') return 1;
-  const src = m.guidance === 'arh' && m.active ? m : m.launcher;
-  if (!src || src.alive === false || !src.pos) return 1;
-  const off = Math.abs(Math.abs(angleDiff(
-    headingOf(unit.pos.x - src.pos.x, unit.pos.z - src.pos.z), unit.heading,
-  )) - Math.PI / 2);
-  // 段差にしない。ノッチの許容角の2倍で完全に戻る
-  const t = clamp(off / (NOTCH_TOLERANCE * 2), 0, 1);
-  return DECOY_IN_NOTCH + (1 - DECOY_IN_NOTCH) * t;
-}
 
 /**
  * 赤外線シーカーがロックできる距離（§34）。**アスペクトで大きく変わる。**
@@ -934,18 +916,27 @@ export class CombatSystem {
     this.world.decoys.push(decoy);
     this.world.onDecoy?.(unit, kind);
 
-    // 飛来中のミサイルを引き付ける
-    for (const m of this.world.missiles) {
-      if (!m.alive || m.target !== unit || m.lost) continue;
-      if (!decoyMatches(m.guidance, kind)) continue;
-      const chance = (1 - m.weapon.decoyResist)
-        * decoyFactor(m.pos.distanceTo(unit.pos))
-        * decoyNotchFactor(m, unit)
-        * decoyRepeatFactor(m._decoyTries);
-      m._decoyTries++;
-      if (this.world.rng() < chance) {
-        m.seekTarget = decoy;
-        this.world.onDecoyed?.(m, decoy);
+    // 飛来中のミサイルを引き付ける。
+    //
+    // **これはフレアだけの仕組み**（§35.2）。赤外線シーカーは
+    // 「より明るいもの」を追うので、囮に乗り換えるという形になる。
+    //
+    // チャフは引き付けない。**電波を通さない雲＝壁**であって、
+    // レーダーが追いかける偽の目標ではない。
+    // その働きは `Missile._deceived`（真横を向いた機体が紛れる背景）と
+    // `Missile._screened`（背を向けて逃げる機体と追う側の間に立つ壁）にある。
+    if (kind === 'flare') {
+      for (const m of this.world.missiles) {
+        if (!m.alive || m.target !== unit || m.lost) continue;
+        if (!decoyMatches(m.guidance, kind)) continue;
+        const chance = (1 - m.weapon.decoyResist)
+          * decoyFactor(m.pos.distanceTo(unit.pos))
+          * decoyRepeatFactor(m._decoyTries);
+        m._decoyTries++;
+        if (this.world.rng() < chance) {
+          m.seekTarget = decoy;
+          this.world.onDecoyed?.(m, decoy);
+        }
       }
     }
     return true;

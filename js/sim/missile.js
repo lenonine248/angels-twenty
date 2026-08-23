@@ -56,36 +56,28 @@ const OVERSHOOT_SEC = 0.5;
 const OVERSHOOT_MARGIN = 150;
 
 /**
- * 地面に紛れて見失う（§28.6）。
+ * ドップラー欺瞞（§35.1）。**ビーム機動・地面クラッター・チャフを一つにまとめた。**
  *
- * 地表近くで真横を向いている目標は、**地面の反射に紛れる**ので
- * レーダーのシーカーが分離しにくい。見下ろしているときだけ起きる。
+ * 真横を向くと接近速度が消え、レーダーは地面と同じ「動いていないもの」として
+ * 捨てる。だから**紛れる先が要る** — 地面か、チャフの雲か。
+ * 見上げる形でビームを取っても、背景は空で紛れる先が無い。
  *
- * 確率は毎秒 8%。デコイ（1発で最大55%）よりはっきり低くする。
- * そのぶん代償が大きい — 地面すれすれで真横を向くということは、
- * 機銃にも対空砲にも無防備になるということ。
+ * 低空へ降りるのは、この「紛れる先」を手に入れるため。
+ * 代わりに機銃にも対空砲にも無防備になる。
  * **確率が低くても選ぶ価値がある**、という関係にしたい。
  */
-const CLUTTER_CHANCE_PER_SEC = 0.08;
+const DECEPTION_CHANCE_PER_SEC = 0.9;
+/** これだけ見下ろしていれば満額（tan）。0.3 ≒ 17度 */
+const LOOKDOWN_FULL = 0.12;
+/** 背を向けて逃げていると言える角度（§35.2）。これを超えると雲が視線から外れる */
+const SCREEN_TOLERANCE = 35 * (Math.PI / 180);
+/** チャフの雲が「背景」として働く半径(m)（§35.2） */
+const CHAFF_COVER_RADIUS = 700;
+/** 目標の対地高度がこれを超えると、地面には紛れられない(m) */
 const CLUTTER_MAX_AGL = 300;
-const CLUTTER_BEAM_TOLERANCE = 20 * (Math.PI / 180);
-/** 見下ろしていると言える高度差(m) */
-const CLUTTER_LOOKDOWN = 250;
+/** ビームと言える角度。真横からこれだけ外れると効かない */
+export const NOTCH_TOLERANCE = 20 * (Math.PI / 180);
 
-/**
- * ドップラー・ノッチ（§28.5）。
- *
- * **照射しているものに対して真横を向くと、近づきも遠ざかりもしない。**
- * レーダーは地面と同じ「動いていないもの」として捨てるので、追尾が切れる。
- *
- * ビームを「照射源に対して」取るようにしただけでは、何の得にもならない
- * （実際、変えた直後は AAM-M の命中率がむしろ上がった）。
- * **効き目を与えるのがこの仕組み**で、ここまでで初めてノッチが成立する。
- *
- * 毎秒 10%。§28.6 の地面クラッターと重なると、低空のビームは
- * 毎秒 18% になる。代償は大きい — 真横を向くということは、
- * 敵に背を向けも正対もしないまま、低空で速度を失うということ。
- */
 /**
  * アクティブレーダー弾のシーカーが目標を探し続ける時間(秒)（§28.13）。
  * これを過ぎても視界に何も入らなければ諦める。
@@ -97,9 +89,6 @@ const SEEKER_SEARCH_SEC = 6;
  * この間は最後に分かっていた場所へ飛ぶ。照射が戻れば誘導を続ける。
  */
 const SARH_COAST_SEC = 2;
-
-const NOTCH_CHANCE_PER_SEC = 0.10;
-export const NOTCH_TOLERANCE = 20 * (Math.PI / 180);
 /** この速度を下回ると失推 */
 const MIN_SPEED_RATIO = 0.35;
 
@@ -378,8 +367,8 @@ export class Missile {
     }
 
     // ノッチ（§28.5）と地面クラッター（§28.6）。どちらも真横を向くのが条件。
-    if (this._notchLost(dt, world, t)) { this._goStupid('ノッチ'); return; }
-    if (this._clutterLost(dt, world, t)) { this._goStupid('クラッター'); return; }
+    if (this._deceived(dt, world, t)) { this._goStupid('ビーム欺瞞'); return; }
+    if (this._screened(dt, world, t)) { this._goStupid('チャフ遮蔽'); return; }
 
     // シーカーの視線（地形に遮られたら見失う）
     this._losTimer -= dt;
@@ -501,49 +490,90 @@ export class Missile {
   }
 
   /**
-   * 照射源から見て真横を向かれ、追尾が切れるか（§28.5）。
+   * ドップラー欺瞞（§35.1）。**ノッチと地面クラッターを一つの理屈にまとめた。**
+   *
+   * 照射源に対して真横を向くと接近速度が消え、レーダーは「動いていないもの」
+   * として捨てる。**ただしそれは、背景に「動いていないもの」がある場合だけ。**
+   * 見上げる形でビームを取っても、背景は空で紛れる先が無い。
+   *
+   * 3つが同時に要る。
+   *
+   * | | 何を見るか |
+   * |---|---|
+   * | ビーム | 照射源に対して真横を向いているか |
+   * | 見下ろし | 照射源が目標を**見下ろしている**か。見上げていれば成立しない |
+   * | 背景 | 地面が近いか、チャフの雲があるか |
+   *
+   * 以前は「ノッチ（10%/秒・無条件）」と「地面クラッター（8%/秒・低空限定）」に
+   * 分かれていて、**高高度で見上げながらのビームでも追尾が切れていた**。
+   * 低空へ降りる意味も、クラッター側だけの話になっていた。
    *
    * 見るのは**照射しているもの**。セミアクティブなら発射機、
    * アクティブの終末なら弾自身。赤外線には効かない。
    */
-  _notchLost(dt, world, t) {
+  _deceived(dt, world, t) {
+    if (this.guidance !== 'sarh' && this.guidance !== 'arh'
+        && this.guidance !== 'command') return false;
     if (!t.heading && t.heading !== 0) return false;
-    let src = null;
-    if (this.guidance === 'sarh') src = this.launcher;
-    else if (this.guidance === 'arh') src = this.active ? this : this.launcher;
-    else return false;
-    if (!src || src.alive === false) return false;
 
+    let src = null;
+    if (this.guidance === 'sarh' || this.guidance === 'command') src = this.launcher;
+    else src = this.active ? this : this.launcher;
+    if (!src || src.alive === false || !src.pos) return false;
+
+    // 1. ビーム。真横ほど強い
     const dx = t.pos.x - src.pos.x, dz = t.pos.z - src.pos.z;
+    const flat = Math.hypot(dx, dz);
     const los = Math.atan2(dx, -dz);
     const off = Math.abs(Math.abs(angleDiff(los, t.heading)) - Math.PI / 2);
     if (off > NOTCH_TOLERANCE) return false;
+    const beam = 1 - off / NOTCH_TOLERANCE;
+
+    // 2. 見下ろし。**見上げている間は成立しない**
+    const depression = (src.pos.y - t.pos.y) / Math.max(1, flat);
+    if (depression <= 0) return false;
+    const look = clamp(depression / LOOKDOWN_FULL, 0, 1);
+
+    // 3. 紛れる背景。地面か、チャフの雲か（§35.2）
+    const ground = Math.max(0, world.terrain.heightAt(t.pos.x, t.pos.z));
+    const byGround = clamp(1 - (t.pos.y - ground) / CLUTTER_MAX_AGL, 0, 1);
+    const cover = clamp(byGround + chaffCover(world, t), 0, 1);
+    if (cover <= 0) return false;
 
     const rng = world.rng ? world.rng() : Math.random();
-    return rng < NOTCH_CHANCE_PER_SEC * dt;
+    return rng < DECEPTION_CHANCE_PER_SEC * beam * look * cover * dt;
   }
 
   /**
-   * 地表のクラッターに紛れて見失うか（§28.6）。
+   * チャフの壁で見失うか（§35.2）。
    *
-   * 条件はすべて満たしたときだけ。低空にいるだけでは起きない —
-   * **真横を向いていること**が要る。
+   * **背を向けて逃げるとき、撒いたチャフは追う側との間に残る。**
+   * 電波を通さない雲が視線上に立つので、レーダーは目標を掴めなくなる。
+   * こちらはビームでも見下ろし角でもなく、**遮蔽**そのもの。
+   *
+   * 逃げる向きが視線と揃っているほど強い。真横に逃げれば雲は視線から外れる
+   * （そちらは上の `_deceived` のドップラー欺瞞が引き受ける）。
    */
-  _clutterLost(dt, world, t) {
-    if (this.guidance !== 'sarh' && this.guidance !== 'arh' && this.guidance !== 'command') return false;
-    if (!t.beaming) return false;                                  // 真横を向いていない
-    const ground = Math.max(0, world.terrain.heightAt(t.pos.x, t.pos.z));
-    if (t.pos.y - ground > CLUTTER_MAX_AGL) return false;           // 低くない
-    if (this.pos.y - t.pos.y < CLUTTER_LOOKDOWN) return false;      // 見下ろしていない
+  _screened(dt, world, t) {
+    if (this.guidance !== 'sarh' && this.guidance !== 'arh'
+        && this.guidance !== 'command') return false;
+    if (!t.heading && t.heading !== 0) return false;
+    let src = null;
+    if (this.guidance === 'sarh' || this.guidance === 'command') src = this.launcher;
+    else src = this.active ? this : this.launcher;
+    if (!src || src.alive === false || !src.pos) return false;
 
-    // 弾から見て真横か
-    const dx = t.pos.x - this.pos.x, dz = t.pos.z - this.pos.z;
-    const los = Math.atan2(dx, -dz);
-    const off = Math.abs(Math.abs(angleDiff(los, t.heading)) - Math.PI / 2);
-    if (off > CLUTTER_BEAM_TOLERANCE) return false;
+    const cover = chaffCover(world, t);
+    if (cover <= 0) return false;
+
+    // 照射源から見た視線と、目標の進む向きが揃っているか（＝背を向けて逃げている）
+    const los = Math.atan2(t.pos.x - src.pos.x, -(t.pos.z - src.pos.z));
+    const away = Math.abs(angleDiff(los, t.heading));
+    if (away > SCREEN_TOLERANCE) return false;
+    const align = 1 - away / SCREEN_TOLERANCE;
 
     const rng = world.rng ? world.rng() : Math.random();
-    return rng < CLUTTER_CHANCE_PER_SEC * dt;
+    return rng < DECEPTION_CHANCE_PER_SEC * align * cover * dt;
   }
 
   _goStupid(reason = '?') {
@@ -878,6 +908,25 @@ function illuminates(launcher, target, world, lock = false) {
 }
 
 // ---------------------------------------------------------------- デコイ
+
+/**
+ * 目標の周りにあるチャフの濃さ（0〜1）（§35.2）。
+ *
+ * チャフは**電波を通さない雲**。ミサイルから見て目標と重なる位置にあれば、
+ * 地面と同じ「動かない背景」になり、真横を向いた機体はそこへ紛れる。
+ * 高空には地面が無いので、**チャフが唯一の紛れる先**になる。
+ */
+function chaffCover(world, t) {
+  const list = world.decoys;
+  if (!list || !list.length) return 0;
+  let n = 0;
+  for (const d of list) {
+    if (!d.alive || d.kind !== 'chaff' || d.side !== t.side) continue;
+    if (d.pos.distanceTo(t.pos) <= CHAFF_COVER_RADIUS) n++;
+  }
+  // 1発でほぼ満額。数は「どれだけ長く覆えるか」で効く
+  return n ? clamp(0.7 + 0.15 * (n - 1), 0, 1) : 0;
+}
 
 let decoyId = 1;
 
