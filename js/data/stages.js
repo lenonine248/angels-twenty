@@ -37,14 +37,17 @@ export const STAGES = [
     hint: '中距離AAMはこちらにしかない。先に撃てる間合いを活かせ。'
       + '短距離AAMは後方からなら8km、正面からは4kmまでしか掴めない。',
     terrain: { seed: 40404, mountainAmount: 0.5, coast: 'none', valleyDepth: 0.6, rivers: 1, baseAltitude: 300 },
-    weaponPoints: 14,
+    // **上限は広く取る**（§41.2）。点を気にしないなら厚く積んでクリアできる余地。
+    weaponPoints: 24,
     friendly: {
       base: { x: 10000, z: 40000 },
       startAirborne: true,
       startAlt: 4500,
+      // **プリセットは○評価の帯**（§41.2。◎≤6 / ○≤10 に対して 8P）。
+      // ステージが渡してくる搭載でそのまま ◎ が付くと、節約という軸が消える。
       aircraft: [
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
       ],
     },
     enemy: {
@@ -54,16 +57,27 @@ export const STAGES = [
       // — 兵装の序列がそのまま最初の教材になる。
       // 同じ搭載にすると 0/18（こちらが3本積むぶん搭載重量で負ける）、
       // 双方2本に揃えると 7/18 で決着まで中央524秒の長い機銃戦になった。
+      //
+      // **間合いは §41.2 の帯（序盤は8〜9割）に合わせて置いた。**
+      // §38 で中距離弾が 17.8km の兵装になったので、詰まっていると
+      // その利点を使う前に交戦が始まってしまう（13/18 = 72%）。
+      // 4.5km 遠ざけると 11/12 = 92%・損失0.42 になり、
+      // 「先に撃てる間合いを活かせ」という教材として成立する。
+      //
+      // 距離には帯がある（同じ種12・§41.4）:
+      // 現行 8/12 ／ +3km 8/12 ／ **+4.5km 11/12** ／ +6km 12/12（緩すぎ）。
       aircraft: [
-        { type: 'J-7', name: 'BANDIT 1', x: 30000, z: 24000, agl: 4500, aiMode: 'PATROL', tags: ['cap'],
+        { type: 'J-7', name: 'BANDIT 1', x: 33600, z: 26700, agl: 4500, aiMode: 'PATROL', tags: ['cap'],
           loadout: ['AAM-S', 'AAM-S'] },
-        { type: 'J-7', name: 'BANDIT 2', x: 32000, z: 26000, agl: 4500, aiMode: 'PATROL', tags: ['cap'],
+        { type: 'J-7', name: 'BANDIT 2', x: 35600, z: 28700, agl: 4500, aiMode: 'PATROL', tags: ['cap'],
           loadout: ['AAM-S', 'AAM-S'] },
       ],
       ground: [],
     },
-    // 評価基準（§18）。既定搭載は 4P（2機×2P）。実測の中央は87秒
-    rating: { time: [120, 240], points: [6, 10], losses: [0, 1] },
+    // 評価基準（§18）。既定搭載は 4P（2機×2P）。
+    // **間合いを広げたぶん決着が遅くなる**（実測の中央 87秒 → 162秒）ので、
+    // 迅速の基準もずらす。ベンチは下限なので、人が指揮すればもっと速い。
+    rating: { time: [150, 270], points: [6, 10], losses: [0, 1] },
     objectives: [
       { id: 'kill', type: 'destroyAll', tag: 'cap', label: '敵の哨戒機を全機撃墜する' },
     ],
@@ -80,25 +94,31 @@ export const STAGES = [
     terrain: { seed: 20202, mountainAmount: 1.1, coast: 'none', valleyDepth: 1.1, rivers: 3, baseAltitude: 450 },
     // 護衛は「守りながら戦う」ぶん、同数では足りない。
     // 3機目を足して敵と同数にし、ここでは護衛モードの使い方を覚えてもらう。
-    weaponPoints: 34,
+    weaponPoints: 48,
     friendly: {
       base: { x: 10000, z: 38000 },
       startAirborne: true,
       startAlt: 4500,
-      // **輸送機の進路上、約8km 前方から始める**（§40）。
+      // **輸送機の進路上、約4km 前方から始める**（§40・§41.4）。
       //
       // 輸送機は (12000,36000) から (44000,12000) へ向かう。その進路に沿って
       // 前に出しておくと、脅威を**輸送機から遠いところで**迎えられる。
       //
-      // 距離には最適点がある（実測・同じ種18）:
-      // 併走(0km) 14/18 ／ **前方8km 16/18** ／ 前方12km **9/18**。
+      // 距離には最適点がある（実測・同じ種18・敵3機のとき）:
+      // 併走(0km) 14/18 ／ 前方8km 18/18 ／ 前方12km 9/18。
       // 出過ぎると輸送機が丸裸になり、近すぎると交戦が輸送機の上で起きる。
+      //
+      // **8km だと 100% で緩すぎたので 4km に戻し、敵を4機にした**（§41）。
+      // 前方4km＋敵4機で 12/18 = 67%。
+      // **プリセットは○評価の帯**（§41.2。◎≤12 / ○≤22 に対して 16P）。
+      // 撃ちっぱなしの AAM-A を1本入れてある — 護衛は照射に縛られると
+      // 被護衛機から離れられなくなるので、この任務でこそ値打ちが出る。
       aircraft: [
-        { type: 'F-1', name: 'VIPER 1', x: 17200, z: 30300,
+        { type: 'F-1', name: 'VIPER 1', x: 14000, z: 32700,
+          loadout: ['AAM-A', 'AAM-M', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', x: 15200, z: 33600,
           loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 2', x: 18400, z: 31200,
-          loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-2', name: 'HAMMER 1', x: 19600, z: 32100,
+        { type: 'F-2', name: 'HAMMER 1', x: 16400, z: 34500,
           loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
       ],
       support: [
@@ -111,13 +131,17 @@ export const STAGES = [
         { type: 'J-7', name: 'BANDIT 1', x: 34000, z: 18000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
         { type: 'J-7', name: 'BANDIT 2', x: 36000, z: 20000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
         { type: 'J-7', name: 'BANDIT 3', x: 40000, z: 14000, agl: 6000, aiMode: 'PURSUIT', tags: ['cap'] },
+        // **4機目**（§41.4）。護衛を前に出すと守りが強くなりすぎたので、
+        // 数で釣り合いを戻す。3機のままだと 89%、4機で 67%。
+        { type: 'J-7', name: 'BANDIT 4', x: 36000, z: 20500, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
       ],
       ground: [],
     },
     // 評価基準（§18）。輸送機の飛行時間が約232秒なので、これより速くは終わらない。
     // 急かす評価にはせず「積み替えで往復して間延びしなかったか」を見る。
     // 節約の基準は実プレイの記録から（AAM-M中心なら10〜12P、AAM-A中心だと30P超）
-    rating: { time: [240, 300], points: [12, 22], losses: [0, 1] },
+    // 敵が4機になって決着が遅くなった（実測の中央 235秒 → 259秒）。
+    rating: { time: [260, 330], points: [12, 22], losses: [0, 1] },
     objectives: [
       { id: 'arrive', type: 'reach', tag: 'transport', x: 44000, z: 12000, radius: 3000,
         label: '輸送機を北東の離脱地点まで護衛する' },
@@ -134,7 +158,7 @@ export const STAGES = [
       + '敵は爆撃機を伴っている。護衛の迎撃機を排除してから爆撃機を落とせ。',
     hint: 'まずは編隊（Gキー）を組み、連携モードでレーダーの扇を広く張ると早く見つけられる。',
     terrain: { seed: 10101, mountainAmount: 0.8, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 380 },
-    weaponPoints: 20,
+    weaponPoints: 34,
     friendly: {
       base: { x: 12000, z: 40000 },
       startAirborne: true,
@@ -151,9 +175,14 @@ export const STAGES = [
       // （§34.1）、正面での迎撃であるこのミッションでは赤外線2本では足りない。
       // レーダー弾を2本に増やして 1/18 → 10/18 に戻した。
       // 撃ちっぱなしの AAM-A なら 16/18 まで戻るが、6P は最初のミッションには高い。
+      // **プリセットは○評価の帯**（§41.2。◎≤14 / ○≤20 に対して 16P）。
+      //
+      // **中距離弾で厚く積む。** AAM-A を1本入れる形も同じ 16P だが、
+      // 2スロット食うぶん弾数が減り、護衛3機を相手に 4/18 まで落ちた。
+      // 正面での迎撃では**弾数がそのまま効く**（§28.13 と同じ）。
       aircraft: [
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-M', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-M', 'AAM-S'] },
         { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
       ],
     },
@@ -162,8 +191,9 @@ export const STAGES = [
       // 消極的になって戦闘が長引き、その間に爆撃機が抜けてかえって難しくなる。
       aircraft: [
         // 進発位置は自軍飛行場から約37km。爆撃機の到達まで約4分。
-        // これ以上遠ざけると迎撃が遠方になり、護衛と戦っている間に
-        // 爆撃機だけが抜けてくるため、かえって守りにくくなる。
+        // **距離は難易度の軸として使えない**（§41.4 で実測）。
+        // 遠ざけると迎撃が遠方になって護衛と戦う間に爆撃機が抜け、
+        // 近づけると時間が足りなくなる ─ どちらへ動かしても難しくなる。
         // **搭載は2発**（既定の敵機は AAM-M+AAM-S+AAM-S の3発）。
         //
         // §28.13 で兵装の作りを直したら、このミッションだけ 16/18 → 10/18 まで落ちた。
@@ -171,9 +201,20 @@ export const STAGES = [
         // 決定的になり、時間制限つきの目的を持つこちらが不利になる**。
         // 弾種を落とす（AAM-S×3）と逆に難しくなった（6/18）ので、効くのは弾数のほう。
         // J-7 は低速・低旋回の迎撃機なので、こちらより積めないのは筋も通る。
+        //
+        // **護衛は3機**（§41.4）。§38 で迎撃機が 17.8km から撃てるように
+        // なった結果 18/18（100%）まで緩んだので、3番目のミッションとして
+        // 6〜7割（§41）へ戻すために足した。**12/18 = 67%。**
+        //
+        // 距離では戻せなかった。8km 手前 89% ／ 12km 手前 100% ／
+        // 16km 手前 100% と単調でなく、**遠ざけても近づけても効かない**
+        // （遠いと護衛と戦う間に爆撃機が抜け、近いと単純に時間が足りない）。
+        // 自軍を2機に減らすのは 78% だが中央313秒と間延びしたので採らなかった。
         { type: 'J-7', name: 'BANDIT 1', x: 38000, z: 14000, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'],
           loadout: ['AAM-M', 'AAM-S'] },
         { type: 'J-7', name: 'BANDIT 2', x: 39500, z: 15200, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'],
+          loadout: ['AAM-M', 'AAM-S'] },
+        { type: 'J-7', name: 'BANDIT 3', x: 36500, z: 15200, agl: 5000, aiMode: 'PURSUIT', tags: ['raid'],
           loadout: ['AAM-M', 'AAM-S'] },
         { type: 'B-9', name: 'RAIDER 1', x: 41000, z: 16500, agl: 5600, aiMode: 'STRIKE', tags: ['raid', 'bomber'],
           strikeTargetTag: 'home' },
@@ -185,7 +226,8 @@ export const STAGES = [
     // 節約: **既定搭載は12P**（§34 で組み直した）。基準もそれに合わせる。
     // 8P のままだと、ステージが渡してくる搭載で出撃した時点で ◎ が取れない
     // — §32.6 で IRON UMBRELLA に見つけたのと同じ欠陥になる
-    rating: { time: [150, 240], points: [14, 20], losses: [0, 1] },
+    // **護衛が1機増えたぶん決着が遅くなる**（実測の中央 115秒 → 285秒）。
+    rating: { time: [240, 350], points: [14, 20], losses: [0, 1] },
     objectives: [
       { id: 'kill', type: 'destroyAll', tag: 'raid', label: '来襲した敵編隊を全機撃墜する' },
       { id: 'base', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
