@@ -13,7 +13,7 @@
 // 見に行くべき相手なのかが区別できない。
 
 import * as THREE from 'three';
-import { LEVEL, lostLifetimeOf, RWR_POS_ERROR } from '../sim/detection.js';
+import { LEVEL, LOST_ERROR, RWR_POS_ERROR } from '../sim/detection.js';
 import { makeLabelSprite } from './models.js';
 import { CATEGORY_LABEL } from '../data/ground.js';
 import { categoryOf } from '../data/aircraft.js';
@@ -146,8 +146,10 @@ function syncMarker(g, c, camera, terrain, size, time) {
   // 状態ごとの不透明度
   let opacity = 1;
   if (state === 'lost') {
-    // 点滅しながら薄くなり、10秒で消える
-    const age = Math.min(1, (time - c.lastSeen) / lostLifetimeOf(c.unit));
+    // 点滅しながら薄くなる。**薄さは経過時間ではなく不確かさで決まる**（§54）。
+    // 消える条件が `err > LOST_ERROR` なので、そちらに揃えないと
+    // 「まだ濃いのに突然消える」「薄いのにいつまでも残る」がどちらも起きる。
+    const age = Math.min(1, (Number.isFinite(c.err) ? c.err : 0) / LOST_ERROR);
     opacity = (0.25 + 0.75 * (0.5 + 0.5 * Math.sin(time * 7))) * (1 - age * 0.65);
   } else if (state === 'memory') {
     opacity = c.unconfirmed ? 0.35 + 0.25 * (0.5 + 0.5 * Math.sin(time * 2.2)) : 0.5;
@@ -245,7 +247,11 @@ function labelFor(c) {
     if (c.level >= LEVEL.DETAILED && c.detected) base += ` ${Math.round(c.speed)}m/s`;
   }
 
-  if (c.approx) base += ` [逆探知 ±${Math.round(c.err)}m]`;
+  // 誤差の出どころで言い方を変える。逆探知は「いま拾っている」、
+  // 見失っているものは「推定」。同じ ± でも意味が違う（§54）。
+  if (c.approx && Number.isFinite(c.err)) {
+    base += c.detected ? ` [逆探知 ±${Math.round(c.err)}m]` : ` [推定 ±${Math.round(c.err)}m]`;
+  }
   if (c.unconfirmed) base += ' ?';
   else if (c.state === 'memory') base += ' [記憶]';
   return base;

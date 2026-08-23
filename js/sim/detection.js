@@ -19,12 +19,59 @@ const SCAN_INTERVAL = 0.2;
  * 探知が切れた目標が消えるまでの時間(秒)。
  * 速い目標ほど推測位置がすぐ当てにならなくなるので、種類で変える。
  */
-export const LOST_LIFETIME = 10;          // 航空機
-export const LOST_LIFETIME_GROUND = 20;   // 地上・水上（低速なので推測が長持ちする）
+/**
+ * 見失った目標を**いつ忘れるか**（§54）。
+ *
+ * **時間では切らない。** 以前は空中10秒・移動する地上20秒という固定値だった。
+ * 実測で、10秒経った時点の「推定位置と真の位置のずれ」は
+ * **32m から 3,682m まで散らばっていた**（中央 997m・30件）。
+ * 相手が直進していたか曲がったかで決まるので、
+ * **同じ時間だけ覚えても、推定の質はまったく揃わない。**
+ *
+ * 代わりに**不確かさそのもの**（`Contact.err`）を育てて、
+ * 使い物にならなくなったら忘れる。
+ *
+ *     err += max(最後に見た速度, MIN_DRIFT) × WANDER × dt
+ *     err > LOST_ERROR で忘れる
+ *
+ * 速い相手ほど早く忘れ、遅い相手は長く覚える。**分類ではなく物理から出る。**
+ * 空か地上かで分ける必要も無くなった —
+ * 直進する爆撃機のほうが機動する戦闘機より長持ちするのが正しい
+ * （以前は逆で、爆撃機のほうが先に忘れられていた）。
+ *
+ * `err` は逆探知のために既にあり、地図の誤差の円もこれを見ている（§25.2）。
+ * **育てるだけで、不確かさが画面に出る。**
+ */
+export const LOST_ERROR = 3000;
 
-export function lostLifetimeOf(unit) {
-  return unit.kind === 'aircraft' ? LOST_LIFETIME : LOST_LIFETIME_GROUND;
-}
+/**
+ * 見失ってからの1秒で、**推測した点からどれだけ離れうるか**（最後に見た速度に対する割合）。
+ *
+ * 幾何で考えると、相手は最後に見た点を中心に半径 v·t の円のどこかにいる。
+ * こちらの印は真っ直ぐ延ばした点なので、**印から見たずれは最大 2·v·t**。
+ *
+ * 最初 0.5 に置いたが、**実測では主張の約2倍ずれていた**
+ * （主張 1,501m に対し実ずれ 2,623 / 3,053 / 3,640m）。
+ * 過小に言うと「±」の数字が嘘になり、不確かさを見せる意味が無くなる。
+ * 1.0 にして実測の中央に合わせた。
+ *
+ * **忘れる時機は変わらない。** 閾値も倍にしてあるので
+ * `LOST_ERROR / (v × WANDER)` は同じ —— 300m/s の戦闘機でちょうど10秒。
+ * 変わったのは**画面に出る数字と円の大きさ**だけ。
+ */
+const WANDER = 1.0;
+
+/** ほぼ止まっている目標でも、最低これだけは不確かになる(m/s) */
+const MIN_DRIFT = 6;
+
+/**
+ * 何があってもこれ以上は覚えていない(秒)。
+ *
+ * 誤差だけで切ると、遅い目標（車両12m/s・艦船9m/s）が
+ * 5分以上残る。理屈の上では推定は生きているが、
+ * **一度見ただけで終盤まで印が残る**のは情報の駆け引きとして緩い。
+ */
+export const LOST_HARD_CAP = 150;
 /** 電波逆探知の距離(m) */
 /**
  * 逆探知の誤差を距離で割るときの基準(m)（§25.3）。
@@ -150,11 +197,19 @@ export class Contact {
     );
   }
 
-  /** ロスト中の推測進路（デッドレコニング） */
+  /**
+   * ロスト中の推測進路（デッドレコニング）と、**不確かさの成長**（§54）。
+   *
+   * 位置は最後に見た針路へ延ばすだけ。曲がられたぶんが誤差になるので、
+   * その誤差を `err` として育てる。忘れる判断はこの値で行う。
+   */
   extrapolate(dt) {
     if (this.detected || this.unit.static) return;
     this.pos.x += Math.sin(this.heading) * this.speed * dt;
     this.pos.z += -Math.cos(this.heading) * this.speed * dt;
+    const drift = Math.max(this.speed || 0, MIN_DRIFT) * WANDER;
+    this.err = (Number.isFinite(this.err) ? this.err : 0) + drift * dt;
+    this.approx = true;
   }
 }
 
@@ -281,7 +336,9 @@ export class DetectionSystem {
         if (c.detected) continue;
         if (c.state === 'memory') continue;                 // 静止目標は消えない
         c.extrapolate(dt);
-        if (this.time - c.lastSeen > lostLifetimeOf(c.unit)) map.delete(id);
+        // **推定が使い物にならなくなったら忘れる**（§54）。
+        // 上限は保険。遅い目標が終盤まで残らないようにするためだけのもの。
+        if (c.err > LOST_ERROR || this.time - c.lastSeen > LOST_HARD_CAP) map.delete(id);
       }
     }
   }
