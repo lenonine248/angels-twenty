@@ -6,7 +6,7 @@
 //   ・判明している敵の配置（known:true のユニットのみ）
 //   ・出撃編成と兵装（兵装ポイントの範囲内で自由に組める）
 
-import { STAGES, isUnlocked } from '../data/stages.js';
+import { STAGES, isUnlocked, stageList } from '../data/stages.js';
 import { TUTORIALS, getTutorial } from '../data/tutorials.js';
 import { VERSION, VERSION_DATE } from '../core/version.js';
 import { showChangelog } from './changelog.js';
@@ -113,13 +113,15 @@ export class ScreenManager {
   showStageSelect() {
     const cleared = this.progress.cleared;
     const ratings = this.progress.ratings || {};
-    const cards = STAGES.map((s, i) => {
+    // デバッグモードのときだけ検証用ステージが末尾に並ぶ（§51）
+    const list = stageList();
+    const cards = list.map((s, i) => {
       const unlocked = isUnlocked(s, cleared);
       const done = cleared.includes(s.id);
       const rank = ratings[s.id];
-      return `<div class="stage-card${unlocked ? '' : ' locked'}${done ? ' cleared' : ''}"
+      return `<div class="stage-card${unlocked ? '' : ' locked'}${done ? ' cleared' : ''}${s.debug ? ' dbg' : ''}"
                    ${unlocked ? `data-stage="${s.id}"` : ''}>
-        <div class="sc-no">MISSION ${String(i + 1).padStart(2, '0')}</div>
+        <div class="sc-no">${s.debug ? 'DEBUG' : `MISSION ${String(i + 1).padStart(2, '0')}`}</div>
         ${rank ? `<div class="sc-rank rank-${rank}">${rank}</div>` : ''}
         <div class="sc-name">${s.name}</div>
         <div class="sc-title">${s.title}</div>
@@ -428,7 +430,7 @@ export class ScreenManager {
 
   _onClick(e) {
     const card = e.target.closest('[data-stage]');
-    if (card) { this.showBriefing(STAGES.find((s) => s.id === card.dataset.stage)); return; }
+    if (card) { this.showBriefing(stageList().find((s) => s.id === card.dataset.stage)); return; }
 
     const tut = e.target.closest('[data-tutorial]');
     if (tut) { this.showTutorialBriefing(getTutorial(tut.dataset.tutorial)); return; }

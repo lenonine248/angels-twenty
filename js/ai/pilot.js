@@ -55,6 +55,17 @@ const RETARGET_COOLDOWN = 5;      // 乗り換えを許す最短間隔(秒)
 /** SAM圏を警戒して低空へ降りる距離(m) */
 const SAM_AVOID_RANGE = 26000;
 
+/**
+ * 対空砲（弾幕）の圏に入る前に上を取るための余裕(m)。
+ *
+ * 弾幕は**避けられない**。実測（§51・検証用ステージ d1）:
+ * 圏内に入れば F-1 は 11.5〜13.9 秒で全損し、射高を 1m 超えていれば完全に無傷。
+ * 距離も高度も二値なので、「どれだけ食らうか」ではなく
+ * **入るか入らないか**しか判断の余地が無い。
+ */
+const GUN_CLEAR_MARGIN = 300;      // 射高にこれだけ足した高さを保つ
+const GUN_APPROACH_PAD = 1800;     // 射程にこれだけ足した距離から上がり始める
+
 /** ARM を撃つときに取る高度(m)。高いほど射程が伸びる。 */
 const ARM_STANDOFF_ALT = 8500;
 
@@ -109,7 +120,13 @@ export class PilotAI {
 
     // プレイヤーが直接出した指示は守る。
     // 割り込むのはミサイル回避（機体側）と燃料切れの帰投だけ。
-    if (this._playerLocked(u)) { u.headingBias = 0; return; }
+    //
+    // **弾幕の上を取るのはここでも掛ける**（§51）。
+    // 「あの目標を攻撃しろ」という指示は「600mで砲の上を通れ」という意味ではない。
+    // 実測では、プレイヤーが対地目標に攻撃を指示しただけで
+    // 12秒後に確実に落ちていた（`_playerLocked` が先に return するため、
+    // モードごとの判断が一度も走らない）。
+    if (this._playerLocked(u)) { u.headingBias = 0; this._clearGuns(u); return; }
 
     const mode = u.aiMode || 'PATROL';
     switch (mode) {
@@ -125,6 +142,10 @@ export class PilotAI {
       case 'PATROL':
       default:           this._patrol(u, attackers); break;
     }
+
+    // **最後に置く。** SAM を避けるための降下（`_strike`）より後でないと、
+    // せっかく上げた高度をそのまま 600m へ戻されてしまう。
+    this._clearGuns(u);
   }
 
   // -------------------------------------------------------------- 各モード
@@ -254,6 +275,57 @@ export class PilotAI {
       } else {
         u.order.alt = Math.max(0, this.world.terrain.heightAt(u.pos.x, u.pos.z)) + 600;
       }
+    }
+  }
+
+  /**
+   * 探知している対空砲（対空砲・飛行場・艦船の近接防空）の圏に入りそうなら、
+   * その射高より上へ指示高度を上げる。
+   *
+   * **SAM とは逆向きの手当て。** SAM はレーダーで捉えるので低く降りれば隠れるが、
+   * 弾幕は**降りるほど当たる**。同じ「地上の脅威」でも取るべき高度が逆になる。
+   *
+   * 圏に入る前に上げ切りたいので、射程に余裕を足した距離で判断する。
+   * 上げるのは弾幕を避けるためだけなので、**必要な高さより上げない** —
+   * 高く飛べばそのぶん地上レーダーに映る（§30.2 の低空減衰）。
+   *
+   * 見えていない砲は避けられない。対空砲はレーダーを持たないので目視でしか
+   * 見つからず（§8）、**知らずに踏むことがある**。それはそういう設計で、
+   * ここで全部避けられるようにはしない。
+   */
+  _clearGuns(u) {
+    const prev = u._gunFloor || 0;
+    u._gunFloor = 0;
+    if (!u.order || u.order.type === 'rtb') return;
+
+    // **プレイヤーが高度を指定していたら従う。**
+    // 低く入るのが分かっていて選んだ場合まで上げ直すと、指揮が効かなくなる。
+    if (u.commandedAlt != null) {
+      if (prev > 0 && u.order.alt === prev) u.order.alt = null;
+      return;
+    }
+
+    const contacts = this.world.detection.contactsFor(u.side);
+    let floor = 0;
+    for (const [, c] of contacts) {
+      const g = c.unit;
+      if (!g.alive || g.side === u.side) continue;
+      const w = g.spec && g.spec.weapon;
+      if (!w || w.kind !== 'aaa') continue;
+      const flat = Math.hypot(u.pos.x - c.pos.x, u.pos.z - c.pos.z);
+      if (flat > w.range + GUN_APPROACH_PAD) continue;
+      const need = Math.max(0, this.world.terrain.heightAt(c.pos.x, c.pos.z))
+        + w.maxAlt + GUN_CLEAR_MARGIN;
+      if (need > floor) floor = need;
+    }
+
+    u._gunFloor = floor;
+    if (floor > 0) {
+      u.order.alt = Math.max(u.order.alt || 0, floor);
+    } else if (prev > 0 && u.order.alt === prev) {
+      // **自分が上げたぶんだけ戻す。** 圏を出たあとも高いままだと、
+      // 地上レーダーに映り続けて低空侵入の意味が消える（§30.2）。
+      u.order.alt = null;
     }
   }
 

@@ -43,7 +43,7 @@ import { markTutorialDone } from './core/save.js';
 import { isChangelogOpen, hideChangelog } from './ui/changelog.js';
 import { ReviewScreen } from './ui/review.js';
 import { ReplayPlayer } from './ui/replay.js';
-import { STAGES } from './data/stages.js';
+import { STAGES, stageList } from './data/stages.js';
 import { getType, defaultEnemyLoadout } from './data/aircraft.js';
 
 const el = (id) => document.getElementById(id);
@@ -205,7 +205,7 @@ ${err.message}`);
     get hud() { return hud; },
     get minimap() { return minimap; },
     get tutorial() { return tutorial; },
-    scene, loop, screens, progress, audio, stages: STAGES, tutorials: TUTORIALS, telemetry,
+    scene, loop, screens, progress, audio, stages: STAGES, stageList, tutorials: TUTORIALS, telemetry,
     // ステージの調整パネル（§47）。コンソールからも戻せるようにしておく
     tuning,
     /**
@@ -224,9 +224,12 @@ ${err.message}`);
      * 検証用: ステージを直接開始する（ブリーフィング既定の兵装で出撃）。
      * seed を渡すと同じ乱数で始められる（§24.3）。
      */
+    // **検証用ステージも番号で呼べるようにする**（§51）。
+    // デバッグモードのときだけ末尾に並ぶので、切っていれば従来どおり 0〜6。
     startStage(i, seed) {
-      screens.showBriefing(STAGES[i]);
-      startBattle(STAGES[i], screens.loadouts.map((l) => l.slice()), false, seed);
+      const list = stageList();
+      screens.showBriefing(list[i]);
+      startBattle(list[i], screens.loadouts.map((l) => l.slice()), false, seed);
     },
   };
 }

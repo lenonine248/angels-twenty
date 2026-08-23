@@ -14,6 +14,8 @@
 //
 // 敵機に moveTo:{x,z,agl} を付けると、その地点へ向かって飛ぶ（哨戒しない）。
 
+import { isDebug } from '../core/debug.js';
+
 export const STAGES = [
   // ------------------------------------------------------------------ 1
   //
@@ -430,12 +432,78 @@ export const STAGES = [
   },
 ];
 
+// ==================================================================
+// 検証用ステージ（SPEC §51）
+//
+// **デバッグモードでだけ出る**（§47.2）。一般のプレイヤーには存在しない。
+//
+// 本編のステージでは対空砲のふるまいが測れない。実測（同じ種3〜6）:
+// 司令官AIは対空砲の射程3kmに**一度も入らない** — 最接近は
+// IRON UMBRELLA で 3,563m、DAWN BLADE で 4,055m。手前で全滅するか未達で終わる。
+// 発砲そのものが起きないので、AI に回避を入れても効きが判定できない。
+//
+// **撃たれる側だけを切り出す。** こちらは武装を持たず、機銃も切ってある。
+// 攻撃が絡まないぶん実戦とはずれるが、「近づいたらどうなるか」は素直に出る。
+// ==================================================================
+
+export const DEBUG_STAGES = [
+  {
+    id: 'd1',
+    debug: true,
+    name: 'AAA TEST',
+    title: '対空砲の検証',
+    brief: '検証用。対空砲・飛行場の近接防空・艦船の近接防空を1基ずつ、'
+      + '十分に離して並べてある。\n'
+      + 'こちらは武装を持たない（機銃も切ってある）ので、'
+      + '近づいて撃たれる挙動だけを見られる。',
+    hint: '西から順に 対空砲（射程3km・射高1,500m）／飛行場（3.5km・1,800m）／'
+      + '艦船（4.5km・2,500m）。高度を変えながら通過して、どこから当たるかを見る。',
+    // **平地寄りにする。** 地形が視線を切ると、対空砲が撃たない理由が
+    // 「射高の外」なのか「尾根の陰」なのか分からなくなる。
+    terrain: { seed: 77001, mountainAmount: 0.2, coast: 'e', valleyDepth: 0.3, rivers: 0, baseAltitude: 300 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 6000, z: 26000 },
+      startAirborne: true,
+      startAlt: 3000,
+      // 武装なし・機銃も切る。**こちらから撃たない**のがこのステージの前提。
+      aircraft: [
+        { type: 'F-1', name: 'PROBE 1', loadout: [], autoWeapons: { GUN: false } },
+        { type: 'A-3', name: 'PROBE 2', loadout: [], autoWeapons: { GUN: false } },
+      ],
+    },
+    enemy: {
+      // **1基ずつ、12km 離す。** 近いと圏が重なって、どれに撃たれたのか読めない。
+      // すべて `known: true` にして、最初から地図に出す（探すのが目的ではない）。
+      aircraft: [],
+      ground: [
+        { type: 'AAA', name: '対空砲', x: 20000, z: 26000, tags: ['gun'], known: true },
+        { type: 'SHIP', name: '艦船', x: 44000, z: 26000, tags: ['gun'], known: true },
+      ],
+      // 飛行場は `enemy.base` からしか置けない（main.js の placeAirbase）。
+      // 増援は付けない — 戦闘機が湧くと対空砲の観察にならない。
+      base: { x: 32000, z: 26000, tags: ['gun'], known: true },
+    },
+    rating: { time: [9999, 9999], points: [0, 0], losses: [0, 99] },
+    objectives: [
+      { id: 'watch', type: 'survive', seconds: 900, label: '15分間、対空砲のふるまいを観察する' },
+    ],
+  },
+];
+
+/** いま選べるステージ（デバッグモードなら検証用も並ぶ） */
+export function stageList() {
+  return isDebug() ? STAGES.concat(DEBUG_STAGES) : STAGES;
+}
+
 export function getStage(id) {
-  return STAGES.find((s) => s.id === id) || null;
+  return STAGES.find((s) => s.id === id) || DEBUG_STAGES.find((s) => s.id === id) || null;
 }
 
 /** クリア済みリストから、そのステージが解禁されているかを返す（前ステージのクリアが条件） */
 export function isUnlocked(stage, cleared) {
+  if (stage && stage.debug) return true;           // 検証用は常に開いている
   const i = STAGES.indexOf(stage);
   if (i <= 0) return true;
   return cleared.includes(STAGES[i - 1].id);

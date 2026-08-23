@@ -662,6 +662,10 @@ button.go.warn:hover + .dt-warn { display: block; }
 .stage-card.tut .sc-title { font-size: 11px; color: var(--text-dim); }
 .stage-card.tut .sc-rank { top: 7px; right: 9px; font-size: 15px; }
 .stage-card.tut .sc-no, .stage-card.tut .sc-name { padding-right: 22px; }
+/* 検証用ステージ（§51）。デバッグモードでだけ並ぶので、本編と見間違えないようにする */
+.stage-card.dbg { border-color: var(--amber); opacity: 0.9; }
+.stage-card.dbg .sc-no { color: var(--amber); letter-spacing: 0.2em; }
+
 .tg-sub { color: var(--text-dim); letter-spacing: 0.06em; margin-left: 12px; }
 .tg-count { float: right; color: var(--text-dim); letter-spacing: 0.1em; }
 
