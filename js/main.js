@@ -703,6 +703,10 @@ function spawnStage(world, stage, loadouts, terrain) {
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
     u.aiMode = a.aiMode || 'PATROL';
+    // **敵側にも効かせる**（§49）。チュートリアルの「無害な的」は
+    // 機銃まで切らないと無害にならない — 機銃は搭載リストに載らない
+    // 固定装備なので、`loadout: []` では黙ってくれない。
+    applyAutoWeapons(u, a);
     // 敵もプレイヤーと同じ規則で電波管制を行う（§30.4）。
     //
     // §26.6 では保留にしていた。当時は自軍飛行場のレーダーが 60km あって
@@ -759,6 +763,8 @@ function spawnStage(world, stage, loadouts, terrain) {
  * 兵装チュートリアルで要る。「攻撃を指示 → 兵装を指定 → 撃つ」という手順は、
  * AI が指定より先に撃ち尽くすと**兵装の欄からその兵装が消えて手順が進まなくなる**。
  * 射程22kmのARMは攻撃指示を出した時点でもう撃てるので、必ずそうなっていた。
+ *
+ * **敵側にも同じものを掛ける。** `GUN` を切れる口はここしかない。
  */
 function applyAutoWeapons(ac, def) {
   if (!def.autoWeapons) return;

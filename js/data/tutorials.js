@@ -22,7 +22,7 @@
 //   mem は手順ごとの覚え書き（次の手順へ進むと空になる）
 
 import { LEVEL } from '../sim/detection.js';
-import { estimateHitChance } from '../sim/combat.js';
+import { estimateHitChance, FIRE_THRESHOLD } from '../sim/combat.js';
 import { WEAPONS } from './weapons.js';
 
 // ---------------------------------------------------------------- 小道具
@@ -56,13 +56,36 @@ function cameraMoved(ctx) {
 /** その兵装を積んでいるか */
 const carrying = (ctx, id) => mine(ctx).some((u) => u.loadout.includes(id));
 
-/** 兵装ごとのチュートリアルで使う、無害な的（撃ち返してこない敵機） */
+/**
+ * 兵装ごとのチュートリアルで使う、無害な的（撃ち返してこない敵機）。
+ *
+ * **機銃も切る。** 機銃は搭載リストに載らない固定装備なので、
+ * `loadout: []` にしただけでは無害にならない — 実測では、こちらが
+ * 手を止めているあいだに的のほうが接敵して撃墜してきた（w3 で 128秒）。
+ * ブリーフィングに「敵機は武装していません」と書いてある以上、
+ * 本当に武装していない状態にする。
+ */
 function dummyFighter(name, x, z, agl2, extra = {}) {
   return {
     type: 'J-7', name, x, z, agl: agl2,
-    aiMode: 'PATROL', loadout: [], tags: ['target'], ...extra,
+    aiMode: 'PATROL', loadout: [], autoWeapons: { GUN: false },
+    tags: ['target'], ...extra,
   };
 }
+
+/**
+ * 教えている兵装を撃ち切ったか（自機は残っている）。
+ *
+ * 「撃墜する」「破壊する」は**指示すれば必ず起こせること**ではない（§19.4）。
+ * 外し続けて弾が尽きるとそこで手詰まりになるので、最後の手順にも逃げ道を置く。
+ * 実測: w4 は3回に1回、AAM-A 2発とも外して目標無傷のまま弾が尽きた。
+ */
+const spentAll = (id) => (ctx) => mine(ctx).length > 0
+  && mine(ctx).every((u) => !u.loadout.includes(id))
+  // **飛んでいる弾を待つ。** 撃った瞬間に搭載から消えるので、
+  // これを見ないと「当たるのを見届ける」手順が発射と同時に終わってしまう。
+  && !ctx.world.missiles.some((m) => m.alive
+    && m.side === ctx.world.playerSide && m.weapon.id === id);
 
 // ---------------------------------------------------------------- 定義
 
@@ -165,7 +188,7 @@ export const TUTORIALS = [
     title: '見えているもの・見えていないもの',
     brief: '画面に出ているのは「真の配置」ではなく「こちらが把握できている情報」です。\n'
       + '機体のレーダーは機首前方の扇しか見ていません。\n'
-      + '味方飛行場のレーダーは全方位60kmですが、低い目標ほど遠くからは見えません。\n'
+      + '味方飛行場のレーダーは全方位30kmですが、低い目標ほど遠くからは見えません。\n'
       + '敵がどこにいて、それが何なのかを掴むのは指揮官の仕事です。',
     hint: '敵機は武装していません。落とす必要はありません。',
     terrain: { seed: 90003, mountainAmount: 1.0, coast: 'none', valleyDepth: 1.0, rivers: 2, baseAltitude: 420 },
@@ -182,12 +205,13 @@ export const TUTORIALS = [
     enemy: {
       skill: 0.2,
       aircraft: [
-        // **低空・遠方**に置いてある。自軍飛行場のレーダーは全方位60kmだが、
-        // 低い目標ほど探知距離が落ちる（対地3,000mで満額、400mでは約4割＝25km）。
-        // 38km 先にいるこの機体は、開始時点では飛行場からも見えていない。
+        // **低空・遠方**に置いてある。自軍飛行場のレーダーは全方位30km
+        // （`GROUND_TYPES.AIRBASE.radar.range`。§30.2 で 60km から下げた）だが、
+        // 低い目標ほど探知距離が落ちる（対地3,000mで満額、400mでは約42%＝12.6km）。
+        // 37km 先にいるこの機体は、開始時点では飛行場からも見えていない。
         // 自軍飛行場へ向かって飛んでくるので、放っておけばいずれ飛行場が捉える。
         { type: 'J-7', name: 'BANDIT 1', x: 38000, z: 12000, agl: 400,
-          aiMode: 'TRANSIT', loadout: [], tags: ['target'],
+          aiMode: 'TRANSIT', loadout: [], autoWeapons: { GUN: false }, tags: ['target'],
           moveTo: { x: 11000, z: 38000, agl: 400 } },
       ],
       ground: [],
@@ -206,7 +230,7 @@ export const TUTORIALS = [
         note: '捉えた直後は UNKNOWN です。追い続けるか、探知距離の半分まで詰めると識別できます。'
           + '扇から外すと探知は切れ、最後の位置と針路からの推測表示に変わります',
         check: (ctx) => { const c = contactOf(ctx, unit(ctx, 'BANDIT 1')); return !!c && c.level >= LEVEL.IDENTIFIED; } },
-      { text: '目視の距離（7km 以内）まで近づく',
+      { text: '目視の距離（8km 以内）まで近づく',
         note: '目視まで詰めると速度まで読めます。目視は機首の向きに縛られませんが、届くのは 8km までです',
         check: (ctx) => { const c = contactOf(ctx, unit(ctx, 'BANDIT 1')); return !!c && c.level >= LEVEL.DETAILED; } },
     ],
@@ -229,8 +253,16 @@ export const TUTORIALS = [
       base: { x: 12000, z: 38000 },
       startAirborne: true,
       startAlt: 5500,
+      // **自動発射を切る**（§49）。ここで教えるのは「指揮官が撃つ距離を選ぶ」ことで、
+      // 自動発射のしきい値は t5 が扱う。
+      //
+      // §38 で AI の発射距離が 7.7km → 17.8km に伸びた結果、敵を 22km に置いた
+      // この面では**プレイヤーが手順3に着く前に AI が2発とも撃ち尽くしていた**
+      // （実測: 攻撃指示の10秒後・18.3km で1発目）。
+      // 手順「AAM-M を発射する」には逃げ道が無いので、そこで行き止まりになる。
       aircraft: [
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'],
+          autoWeapons: { 'AAM-M': false, 'AAM-S': false, GUN: false } },
       ],
     },
     enemy: {
@@ -249,10 +281,11 @@ export const TUTORIALS = [
         note: 'カーソルを敵に重ねると距離と命中期待度が出ます',
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AAM-M を指定する',
-        note: '指定すると「その兵装で撃て」という射撃指示になり、攻撃目標は変わりません',
+        note: 'このチュートリアルでは自動発射を切ってあります。'
+          + '指定してから敵を右クリックすると、その兵装での射撃指示になります',
         done: 'weapon', when: (d) => d.weapon === 'AAM-M',
         pause: true, highlight: '[data-pick="AAM-M"]',
-        // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
+        // 指定する前に撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
         check: (ctx) => mine(ctx).length > 0
           && mine(ctx).every((u) => !u.loadout.includes('AAM-M')) },
       { text: '「誘導中も回避／誘導を優先」を切り替えてみる',
@@ -261,10 +294,19 @@ export const TUTORIALS = [
       { text: 'AAM-M を発射する',
         note: '敵を右クリックすると、指定した兵装での射撃指示になります。'
           + 'AAM-M は撃った側が誘導を続ける必要があり、逃げると誘導が切れます',
-        done: 'fire', when: (d) => d.weapon === 'AAM-M' },
+        done: 'fire', when: (d) => d.weapon === 'AAM-M',
+        // 撃ち尽くした状態で来たら次へ送る（発射の通知はもう起こせない）
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-M')) },
       { text: '敵機を撃墜する',
-        note: '外れたら距離を詰めて撃ち直せます。短距離の AAM-S は近距離で強力です',
-        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+        note: '外れたら距離を詰めて撃ち直せます。短距離の AAM-S に持ち替えるときも、'
+          + '同じように指定してから右クリックします。'
+          + 'ただし**近すぎても当たりません** — 弾が曲がり切れる距離が要ります',
+        check: (ctx) => {
+          const u = unit(ctx, 'BANDIT 1');
+          if (u && !u.alive) return true;
+          return spentAll('AAM-M')(ctx) && spentAll('AAM-S')(ctx);   // 撃ち切ったら次へ
+        } },
     ],
   },
 
@@ -294,7 +336,7 @@ export const TUTORIALS = [
       skill: 0.2,
       aircraft: [
         { type: 'J-7', name: 'BANDIT 1', x: 32000, z: 22000, agl: 5500,
-          aiMode: 'PATROL', loadout: [], tags: ['target'] },
+          aiMode: 'PATROL', loadout: [], autoWeapons: { GUN: false }, tags: ['target'] },
       ],
       ground: [],
     },
@@ -405,8 +447,10 @@ export const TUTORIALS = [
       // 「後ろに付いて撃つ」を教えるには、まっすぐ飛ぶ的のほうが素直でもある。
       // 高度も低めに置く。掃射のあと 4,500m まで登り直すと、それだけで燃料を使う。
       aircraft: [
+        // 機銃も切る（`loadout: []` だけでは無害にならない。dummyFighter の注記を参照）。
+        // **ここは機銃のチュートリアルなので、撃ち返されると練習にならない。**
         { type: 'J-7', name: 'BANDIT 1', x: 21000, z: 30000, agl: 2000,
-          aiMode: 'TRANSIT', loadout: [], tags: ['target'],
+          aiMode: 'TRANSIT', loadout: [], autoWeapons: { GUN: false }, tags: ['target'],
           moveTo: { x: 36000, z: 18000, agl: 2000 } },
       ],
       ground: [
@@ -456,7 +500,7 @@ export const TUTORIALS = [
     title: '安い・速い・近い',
     brief: '赤外線で排気を追うミサイルです。コストは0で、いくらでも積めます。\n'
       + '撃ちっぱなしなので、発射したらすぐ次の行動に移れます。\n'
-      + '射程は7kmと短く、フレアに弱いのが弱点です。',
+      + '後方から8km・正面からは4kmまでしか掴めず、フレアに弱いのが弱点です。',
     hint: '敵機は武装していません。',
     terrain: { seed: 90012, mountainAmount: 0.7, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 400 },
     weaponPoints: 0,
@@ -465,7 +509,10 @@ export const TUTORIALS = [
       base: { x: 12000, z: 38000 },
       startAirborne: true,
       startAlt: 5000,
-      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-S', 'AAM-S', 'AAM-S'] }],
+      // 自動発射を切る（§49）。入れたままだと、プレイヤーが兵装を指定する前に
+      // AI が撃って的を落としてしまい、以降の手順が起こせなくなる。
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-S', 'AAM-S', 'AAM-S'],
+        autoWeapons: { 'AAM-S': false, GUN: false } }],
     },
     enemy: {
       skill: 0.2,
@@ -478,30 +525,41 @@ export const TUTORIALS = [
           + '機体はその場から動きません',
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AAM-S を指定する',
-        note: 'コスト0。スロット1つ。積めるだけ積んでも兵装ポイントは減りません',
+        note: 'コスト0。スロット1つ。積めるだけ積んでも兵装ポイントは減りません。'
+          + 'このチュートリアルでは自動発射を切ってあります',
         done: 'weapon', when: (d) => d.weapon === 'AAM-S',
         pause: true, highlight: '[data-pick="AAM-S"]',
-        // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
+        // 指定する前に撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
         check: (ctx) => mine(ctx).length > 0
           && mine(ctx).every((u) => !u.loadout.includes('AAM-S')) },
       // 正面から出会う配置なので「後方に回り込め」とは言えない。
       // 後ろから撃つほど当たる、という**性質のほうは別に伝える**。
+      // **敷居は定数から引く。** ここに数字を直接書くと、`hitLabel` を動かしたときに
+      // 手順の文（「中」以上）と食い違う。実際 Beta 2.4 当時の 0.32 が
+      // §38 で「中」が 0.20 に下がったあとも残っていた。
       { text: '命中期待度が「中」以上になるまで近づく',
         note: 'カーソルを敵に重ねると期待度が読めます。'
           + '赤外線シーカーは排気を追うので、本当は**後ろから撃つほどよく当たります**。'
           + '正面から入るこの状況では、そのぶん近づいて補う必要があります',
         check: (ctx) => {
           const e = unit(ctx, 'BANDIT 1');
-          return !!e && mine(ctx).some((u) => estimateHitChance(u, e, WEAPONS['AAM-S']) >= 0.32);
+          return !!e && mine(ctx).some(
+            (u) => estimateHitChance(u, e, WEAPONS['AAM-S']) >= FIRE_THRESHOLD.mid);
         } },
       { text: 'AAM-S を発射する',
-        note: '射程に入れば自動で撃ちます。急ぐなら、兵装を指定した状態で'
-          + '敵を右クリックすると射撃指示になります。'
+        note: '兵装を指定した状態で敵を右クリックすると射撃指示になります。'
           + '撃ちっぱなしなので、撃った瞬間に離脱しても当たります',
-        done: 'fire', when: (d) => d.weapon === 'AAM-S' },
+        done: 'fire', when: (d) => d.weapon === 'AAM-S',
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-S')) },
       { text: '敵機を撃墜する',
-        note: '外れても構いません。安いので何発でも撃てます',
-        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+        note: '外れても構いません。安いので何発でも撃てます。'
+          + 'ただし**近すぎると当たりません** — 弾が曲がり切れるだけの飛翔時間が要るので、'
+          + '2km を切ると急に当たらなくなります',
+        check: (ctx) => {
+          const u = unit(ctx, 'BANDIT 1');
+          return (!!u && !u.alive) || spentAll('AAM-S')(ctx);
+        } },
     ],
   },
 
@@ -522,7 +580,10 @@ export const TUTORIALS = [
       base: { x: 11000, z: 40000 },
       startAirborne: true,
       startAlt: 6000,
-      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-M'] }],
+      // 自動発射を切る（§49）。§38 以降 AI は 19km から撃つので、
+      // 入れたままだと指定の手順に着く前に3発とも無くなる（実測 18.7km で1発目）。
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-M'],
+        autoWeapons: { 'AAM-M': false, GUN: false } }],
     },
     enemy: {
       skill: 0.2,
@@ -534,12 +595,18 @@ export const TUTORIALS = [
         note: '**攻撃指示が先**。兵装の指定はそのあとで行います',
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AAM-M を指定する',
-        note: '射程20km。高度が高いほど実効射程は伸びます',
-        done: 'weapon', when: (d) => d.weapon === 'AAM-M' },
+        note: '射程20km。高度が高いほど実効射程は伸びます。'
+          + 'このチュートリアルでは自動発射を切ってあります',
+        done: 'weapon', when: (d) => d.weapon === 'AAM-M',
+        pause: true, highlight: '[data-pick="AAM-M"]',
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-M')) },
       { text: 'AAM-M を発射する',
-        note: '射程(20km)に入れば自動で撃ちます。急ぐなら、兵装を指定した状態で'
-          + '敵を右クリックすると射撃指示になります',
-        done: 'fire', when: (d) => d.weapon === 'AAM-M' },
+        note: '兵装を指定した状態で敵を右クリックすると射撃指示になります。'
+          + '射程(20km)の内側に入っていないと撃ちません',
+        done: 'fire', when: (d) => d.weapon === 'AAM-M',
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-M')) },
       { text: '誘導が続いているあいだ、機体の動きを見る',
         note: '目標をレーダーの扇に入れたまま斜めに飛ぶ「クランク」をします。'
           + '照射を切らさずに接近速度を落とす動きです。'
@@ -552,7 +619,10 @@ export const TUTORIALS = [
           + '中距離AAMを使うということは、この判断を毎回することになります',
         done: 'guard', pause: true, highlight: '[data-guard]' },
       { text: '敵機を撃墜する',
-        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && !u.alive; } },
+        check: (ctx) => {
+          const u = unit(ctx, 'BANDIT 1');
+          return (!!u && !u.alive) || spentAll('AAM-M')(ctx);
+        } },
     ],
   },
   // ================================================================ 兵装4
@@ -562,7 +632,7 @@ export const TUTORIALS = [
     name: 'AAM-A アクティブAAM',
     title: '撃って、すぐ帰る',
     brief: '自分でレーダーを持つミサイルです。撃った瞬間に離脱できます。\n'
-      + 'デコイにも騙されにくく、当てたいときの一発として信頼できます。\n'
+      + '照射しないので、相手に警報が出るのは終末になってから。\n'
       + 'ただしコスト6・スロット2。中距離AAM 3発ぶんの値段です。',
     hint: '敵機は武装していません。',
     terrain: { seed: 90014, mountainAmount: 0.6, coast: 'none', valleyDepth: 0.7, rivers: 2, baseAltitude: 400 },
@@ -572,7 +642,10 @@ export const TUTORIALS = [
       base: { x: 11000, z: 40000 },
       startAirborne: true,
       startAlt: 6000,
-      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-A', 'AAM-A'] }],
+      // 自動発射を切る（§49）。2発しか積めないので、AI に先に撃たれると
+      // 手順「AAM-A を発射する」が二度と起こせない（実測で行き止まりを確認）。
+      aircraft: [{ type: 'F-1', name: 'VIPER 1', loadout: ['AAM-A', 'AAM-A'],
+        autoWeapons: { 'AAM-A': false, GUN: false } }],
     },
     enemy: {
       skill: 0.2,
@@ -591,8 +664,11 @@ export const TUTORIALS = [
         check: (ctx) => mine(ctx).length > 0
           && mine(ctx).every((u) => !u.loadout.includes('AAM-A')) },
       { text: 'AAM-A を発射する',
-        note: '射程は中距離AAMと同じ20km。撃ち方も同じです',
-        done: 'fire', when: (d) => d.weapon === 'AAM-A' },
+        note: '射程は中距離AAMと同じ20km。撃ち方も同じです。'
+          + 'このチュートリアルでは自動発射を切ってあります',
+        done: 'fire', when: (d) => d.weapon === 'AAM-A',
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AAM-A')) },
       { text: '発射したら、目標から離れる向きへ移動を指示する',
         note: 'ここが中距離AAMとの決定的な差。誘導が要らないので、'
           + '撃った瞬間に背を向けて構いません。ミサイルは自分で当たりに行きます',
@@ -602,8 +678,13 @@ export const TUTORIALS = [
       // ここで見せたいのは**背を向けても誘導が続いていること**なので、命中で足りる。
       { text: '離れたまま、ミサイルが当たるのを見届ける',
         note: '中距離AAMなら、ここで背を向けた時点で外れています。'
+          + '**チャフやビーム機動には中距離AAMと同じように騙されます** — '
+          + 'この兵装の値打ちは、避けにくさではなく「撃ったら自由に動ける」ことです。'
           + '外れたらもう1発撃ってください',
-        check: (ctx) => { const u = unit(ctx, 'BANDIT 1'); return !!u && (!u.alive || u.hp < u.maxHp); } },
+        check: (ctx) => {
+          const u = unit(ctx, 'BANDIT 1');
+          return (!!u && (!u.alive || u.hp < u.maxHp)) || spentAll('AAM-A')(ctx);
+        } },
     ],
   },
 
@@ -624,7 +705,10 @@ export const TUTORIALS = [
       base: { x: 11000, z: 40000 },
       startAirborne: true,
       startAlt: 4000,
-      aircraft: [{ type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AGM'] }],
+      // 自動発射を切る（§49）。入れたままだと、指定の手順に着く前に
+      // AI が2発とも撃ってしまい、手順「AGM を発射する」が起こせなくなる。
+      aircraft: [{ type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AGM'],
+        autoWeapons: { AGM: false, GUN: false } }],
     },
     enemy: {
       aircraft: [],
@@ -646,14 +730,20 @@ export const TUTORIALS = [
         check: (ctx) => mine(ctx).length > 0
           && mine(ctx).every((u) => !u.loadout.includes('AGM')) },
       { text: 'AGM を発射する',
-        note: '射程(14km)に入れば自動で撃ちます。目標の対空砲（射程3km）の'
-          + '外から撃てます。急ぐなら、兵装を指定した状態で目標を右クリックすると'
-          + '射撃指示になります',
-        done: 'fire', when: (d) => d.weapon === 'AGM' },
+        note: '兵装を指定した状態で目標を右クリックすると射撃指示になります。'
+          + '目標の対空砲（射程3km）の外から撃てます。'
+          + 'ただし**低いところから遠射すると途中で失速して届きません** — '
+          + '低空なら7〜8km、中高度なら9km あたりが実際に届く距離です',
+        done: 'fire', when: (d) => d.weapon === 'AGM',
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('AGM')) },
       { text: '目標を破壊する',
         note: '撃ちっぱなしなので、撃ったあとは離脱して構いません。'
           + '至近弾でも効きます（爆風60m）',
-        check: (ctx) => { const u = unit(ctx, 'レーダーサイト'); return !!u && !u.alive; } },
+        check: (ctx) => {
+          const u = unit(ctx, 'レーダーサイト');
+          return (!!u && !u.alive) || spentAll('AGM')(ctx);
+        } },
     ],
   },
 
@@ -677,7 +767,7 @@ export const TUTORIALS = [
       startAirborne: true,
       startAlt: 3000,
       aircraft: [{ type: 'F-2', name: 'HAMMER 1', loadout: ['ARM', 'ARM'],
-        autoWeapons: { ARM: false } }],
+        autoWeapons: { ARM: false, GUN: false } }],
     },
     enemy: {
       aircraft: [],
@@ -702,11 +792,16 @@ export const TUTORIALS = [
         note: '兵装を指定した状態で目標を右クリックすると射撃指示になります。'
           + '電波を出している目標にしか誘導しません。'
           + '電波を出していない対空砲などには使えません',
-        done: 'fire', when: (d) => d.weapon === 'ARM' },
+        done: 'fire', when: (d) => d.weapon === 'ARM',
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('ARM')) },
       { text: '目標を破壊する',
         note: '相手が電波を止めると誘導が切れます。'
           + 'その場合は最後の座標へ飛ぶので、当たるとしても至近弾になります',
-        check: (ctx) => { const u = unit(ctx, 'レーダーサイト'); return !!u && !u.alive; } },
+        check: (ctx) => {
+          const u = unit(ctx, 'レーダーサイト');
+          return (!!u && !u.alive) || spentAll('ARM')(ctx);
+        } },
     ],
   },
 
@@ -727,7 +822,10 @@ export const TUTORIALS = [
       base: { x: 11000, z: 40000 },
       startAirborne: true,
       startAlt: 3000,
-      aircraft: [{ type: 'A-3', name: 'ANVIL 1', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB'] }],
+      // 自動発射を切る（§49）。爆弾は目標の真上まで行かないと落ちないぶん
+      // 猶予はあるが、放っておけば AI が4発とも落としてしまう。
+      aircraft: [{ type: 'A-3', name: 'ANVIL 1', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB'],
+        autoWeapons: { BOMB: false, GUN: false } }],
     },
     enemy: {
       aircraft: [],
@@ -749,13 +847,19 @@ export const TUTORIALS = [
         check: (ctx) => mine(ctx).length > 0
           && mine(ctx).every((u) => !u.loadout.includes('BOMB')) },
       { text: '爆弾を投下する',
-        note: '投下点は弾道から自動で決まります。'
+        note: '兵装を指定した状態で目標を右クリックすると投下指示になります。'
+          + '投下点は弾道から自動で決まります。'
           + '機首を向けるだけでは落ちません。目標の手前で自然に離れます',
-        done: 'fire', when: (d) => d.weapon === 'BOMB' },
+        done: 'fire', when: (d) => d.weapon === 'BOMB',
+        check: (ctx) => mine(ctx).length > 0
+          && mine(ctx).every((u) => !u.loadout.includes('BOMB')) },
       { text: '目標を破壊する',
         note: '外れたら旋回してもう一度入り直します。'
           + '高い所から落とすほど散らばるので、当てたければ低く入ることです',
-        check: (ctx) => { const u = unit(ctx, 'レーダーサイト'); return !!u && !u.alive; } },
+        check: (ctx) => {
+          const u = unit(ctx, 'レーダーサイト');
+          return (!!u && !u.alive) || spentAll('BOMB')(ctx);
+        } },
     ],
   },
 

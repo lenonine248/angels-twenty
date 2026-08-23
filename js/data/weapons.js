@@ -26,7 +26,7 @@ export const WEAPONS = {
     decoyResist: 0.25,        // 0=騙されやすい 1=騙されない
     damage: 200,
     rearmSeconds: 20,
-    desc: '高機動・撃ちっぱなし。後方から8km／正面は3km。フレアに弱い',
+    desc: '高機動・撃ちっぱなし。後方から8km／正面は4km。フレアに弱い',
   },
 
   'AAM-M': {
@@ -59,7 +59,11 @@ export const WEAPONS = {
     turnRate: 34,             // 表示・見積り用の目安
     maxG: 25,                 // 最大G（§34.2）
     fireAndForget: true,
-    decoyResist: 0.85,        // デコイに騙されにくい
+    // **いま何もしていない**（SPEC §38.3）。`decoyResist` を読むのは
+    // フレア（`deployDecoy` の `kind === 'flare'`）と、命中期待度の
+    // 赤外線の枝だけ。レーダー弾はチャフの壁とビーム欺瞞で外れる仕組みで、
+    // そちらは耐性を見ない。**AAM-A は AAM-M と同じだけ騙される。**
+    decoyResist: 0.85,
     damage: 200,
     rearmSeconds: 30,
     // 終末誘導（§28.2）。ここまでは発射機の索敵レーダーから位置をもらう。
