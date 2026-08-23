@@ -107,6 +107,11 @@ const MIN_SPEED_RATIO = 0.35;
  * 「何を狙っているか」で切る。**
  */
 const MIN_SPEED_RATIO_GROUND = 0.15;
+/**
+ * 地上目標に対して**シーカーの視線を要求し始める距離(m)**（§43）。
+ * ここより遠いあいだは、座標へ向かって飛んでいるだけとみなす。
+ */
+const GROUND_LOS_RANGE = 2500;
 
 /**
  * ミサイルのコーナー速度（設計速度に対する割合）（§33.6）。
@@ -266,7 +271,14 @@ export class Missile {
     // 機体には既に誘導抗力があるのに、ミサイルには無かった。
     // これがあると、早くから機動させた弾は終末に着く頃には曲がれなくなる
     // — 回避機動そのものが報われる。推進中は推力が打ち消すので効かせない。
-    if (this.age >= this.boostTime && this._turnLoad > 0) {
+    //
+    // **動かない目標には効かせない**（§43）。この項の目的は「回避機動を報いる」
+    // ことなので、逃げない陣地を撃つときには意味が無い。
+    // 実測では、8,500m から 22km 先の陣地へ降りていく ARM が
+    // **旋回負荷 0.5〜1.0 のまま30秒**飛び、抵抗が倍になって
+    // 8km 手前で失速していた（本来の飛翔距離は 27km）。
+    // 一定の降下角で降りているだけなのに、毎フレーム舵を使い切っている扱いになる。
+    if (this.age >= this.boostTime && this._turnLoad > 0 && !this._vsGround()) {
       this.speed = Math.max(0,
         this.speed - this.weapon.speed * TURN_DRAG * this._turnLoad
           * missileDragFactor(this.pos.y) * dt);
@@ -277,12 +289,21 @@ export class Missile {
     //
     // **失推の下限は「何を狙っているか」で変わる**（§42.3）。
     // 回避する相手には速度が要るが、動かない陣地には遅い弾でも届く。
-    const floor = isGroundTarget(this.seekTarget || this.target)
-      ? MIN_SPEED_RATIO_GROUND : MIN_SPEED_RATIO;
+    const floor = this._vsGround() ? MIN_SPEED_RATIO_GROUND : MIN_SPEED_RATIO;
     const spent = this.age > this.boostTime
       && this.speed < this.weapon.speed * floor;
     const lostTooLong = this.lost && this.age - this.lostAt > LOST_SELF_DESTRUCT;
     if (spent || lostTooLong || this.age > this.lifetime || this._overshot(dt)) {
+      // **力尽きた対地弾は落ちて起爆する**（§43）。
+      //
+      // 空対空弾は速度を失えば当たらないので消してよいが、対地弾は違う
+      // — 弾頭を積んだまま落ちるので、近ければ効く。
+      // 実測で **53m 手前で力尽きた AGM が何も起こさずに消えて**いた
+      // （爆風は60m あるので、落ちていれば当たっている距離）。
+      //
+      // 落下の弾道までは追わず、力尽きた地点で起爆させる近似にしてある。
+      // 遠くで力尽きた弾は、そこに何も無いので結果的に無害になる。
+      if (spent && this.weapon.kind === 'agm') this._blast(world);
       this.destroy(world, 'spent');
       return;
     }
@@ -405,13 +426,39 @@ export class Missile {
     if (this._deceived(dt, world, t)) { this._goStupid('ビーム欺瞞'); return; }
     if (this._screened(dt, world, t)) { this._goStupid('チャフ遮蔽'); return; }
 
-    // シーカーの視線（地形に遮られたら見失う）
-    this._losTimer -= dt;
-    if (this._losTimer <= 0) {
-      this._losTimer = LOS_INTERVAL;
-      this._losOk = world.terrain.hasLineOfSight(this.pos, this._losPoint(t), 6, 200);
+    // シーカーの視線（地形に遮られたら見失う）。
+    //
+    // **動かない目標に対しては終末だけ見る**（§43）。
+    // 座標へ飛ぶ撃ちっぱなしの弾は、途中に丘があっても失探しない
+    // — 見えている必要があるのは、シーカーが掴みにいく最後の数kmだけ。
+    // 終始要求していたため、**AGM は低空から撃つと発射直後に視線が切れて
+    // 1.4km 先で自爆**していた（実測で 12発中12発）。
+    //
+    // 途中の地形を無視しても山を抜けられるわけではない。
+    // 高度が地表を割れば `_checkImpact` が地形との衝突として処理する。
+    if (!this._vsGround() || this.pos.distanceTo(t.pos) < GROUND_LOS_RANGE) {
+      this._losTimer -= dt;
+      if (this._losTimer <= 0) {
+        this._losTimer = LOS_INTERVAL;
+        this._losOk = world.terrain.hasLineOfSight(this.pos, this._losPoint(t), 6, 200);
+      }
+      if (!this._losOk) this._goStupid('地形遮蔽');
+    } else {
+      this._losOk = true;
     }
-    if (!this._losOk) this._goStupid('地形遮蔽');
+  }
+
+  /**
+   * **動かない目標を撃っているか**（§43）。
+   *
+   * 判定は `seekTarget` ではなく**本当の目標**で行う。
+   * `isPoint`（最後に分かっていた座標）は
+   * **照射切れ中のセミアクティブ弾が航空機に対しても作る**ので、
+   * そちらで見ると対地用の緩和が空対空へ漏れる
+   * — 実際に漏らして、護衛の損失が 1.61 → 1.94 に動いた。
+   */
+  _vsGround() {
+    return isGroundTarget(this.target || this.seekTarget);
   }
 
   /**
