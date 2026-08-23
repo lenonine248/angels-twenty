@@ -16,6 +16,105 @@
 
 export const STAGES = [
   // ------------------------------------------------------------------ 1
+  //
+  // **空戦だけの初ミッション**（§36）。
+  //
+  // それまで先頭だった SCRAMBLE は「正面での迎撃・時間制限つき・爆撃機を落とす」
+  // という構造で、**殺傷力のどんな変化にも過敏に反応する**。
+  // 実際 §28.13・§34.1・§34.4・§34.5・§35.2 と5回続けて、
+  // 物理を実機に寄せる変更のたびにこのミッションだけが壊れた。
+  // 毎回「守りが強くなる → 双方が落ちない → 爆撃機が抜ける」という同じ形。
+  //
+  // 最初のミッションは**守るものを持たせない**。落とすだけなら、
+  // 兵装や回避の釣り合いが動いても結果が素直に動く。
+  // 釣り合いを測るときの物差しとしても、こちらのほうが読める。
+  {
+    id: 's0',
+    name: 'CLEAN SWEEP',
+    title: '初陣',
+    brief: '国境付近で敵の哨戒機を捉えた。空域から追い払え。\n'
+      + '守るものは無い。落とすことだけを考えればよい。',
+    hint: '中距離AAMはこちらにしかない。先に撃てる間合いを活かせ。'
+      + '短距離AAMは後方からなら8km、正面からは4kmまでしか掴めない。',
+    terrain: { seed: 40404, mountainAmount: 0.5, coast: 'none', valleyDepth: 0.6, rivers: 1, baseAltitude: 300 },
+    weaponPoints: 14,
+    friendly: {
+      base: { x: 10000, z: 40000 },
+      startAirborne: true,
+      startAlt: 4500,
+      aircraft: [
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
+      ],
+    },
+    enemy: {
+      // 哨戒しているだけで、こちらの基地を狙わない。**時間の圧力が無い**。
+      //
+      // **搭載は赤外線だけ。** こちらだけが中距離弾を持つので先に撃てる
+      // — 兵装の序列がそのまま最初の教材になる。
+      // 同じ搭載にすると 0/18（こちらが3本積むぶん搭載重量で負ける）、
+      // 双方2本に揃えると 7/18 で決着まで中央524秒の長い機銃戦になった。
+      aircraft: [
+        { type: 'J-7', name: 'BANDIT 1', x: 30000, z: 24000, agl: 4500, aiMode: 'PATROL', tags: ['cap'],
+          loadout: ['AAM-S', 'AAM-S'] },
+        { type: 'J-7', name: 'BANDIT 2', x: 32000, z: 26000, agl: 4500, aiMode: 'PATROL', tags: ['cap'],
+          loadout: ['AAM-S', 'AAM-S'] },
+      ],
+      ground: [],
+    },
+    // 評価基準（§18）。既定搭載は 4P（2機×2P）。実測の中央は87秒
+    rating: { time: [120, 240], points: [6, 10], losses: [0, 1] },
+    objectives: [
+      { id: 'kill', type: 'destroyAll', tag: 'cap', label: '敵の哨戒機を全機撃墜する' },
+    ],
+  },
+
+  // ------------------------------------------------------------------ 2
+  {
+    id: 's2',
+    name: 'ESCORT',
+    title: '輸送機護衛',
+    brief: '前線への補給物資を積んだ輸送機を、離脱地点まで護衛せよ。\n'
+      + '敵は輸送機を狙って迎撃機を上げてくる。輸送機は自衛できない。',
+    hint: '護衛モードにしておくと、輸送機に近づく敵だけを迎撃して戻ってくる。',
+    terrain: { seed: 20202, mountainAmount: 1.1, coast: 'none', valleyDepth: 1.1, rivers: 3, baseAltitude: 450 },
+    // 護衛は「守りながら戦う」ぶん、同数では足りない。
+    // 3機目を足して敵と同数にし、ここでは護衛モードの使い方を覚えてもらう。
+    weaponPoints: 34,
+    friendly: {
+      base: { x: 10000, z: 38000 },
+      startAirborne: true,
+      startAlt: 4500,
+      aircraft: [
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+      ],
+      support: [
+        { type: 'E-8', name: 'CARGO', x: 12000, z: 36000, agl: 4200, tags: ['transport'],
+          aiMode: 'TRANSIT', moveTo: { x: 44000, z: 12000, alt: 4200 } },
+      ],
+    },
+    enemy: {
+      aircraft: [
+        { type: 'J-7', name: 'BANDIT 1', x: 34000, z: 18000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
+        { type: 'J-7', name: 'BANDIT 2', x: 36000, z: 20000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
+        { type: 'J-7', name: 'BANDIT 3', x: 40000, z: 14000, agl: 6000, aiMode: 'PURSUIT', tags: ['cap'] },
+      ],
+      ground: [],
+    },
+    // 評価基準（§18）。輸送機の飛行時間が約232秒なので、これより速くは終わらない。
+    // 急かす評価にはせず「積み替えで往復して間延びしなかったか」を見る。
+    // 節約の基準は実プレイの記録から（AAM-M中心なら10〜12P、AAM-A中心だと30P超）
+    rating: { time: [240, 300], points: [12, 22], losses: [0, 1] },
+    objectives: [
+      { id: 'arrive', type: 'reach', tag: 'transport', x: 44000, z: 12000, radius: 3000,
+        label: '輸送機を北東の離脱地点まで護衛する' },
+      { id: 'cargo', type: 'protect', tag: 'transport', label: '輸送機を失わない', fail: true },
+    ],
+  },
+
+  // ------------------------------------------------------------------ 3
   {
     id: 's1',
     name: 'SCRAMBLE',
@@ -82,52 +181,7 @@ export const STAGES = [
     ],
   },
 
-  // ------------------------------------------------------------------ 2
-  {
-    id: 's2',
-    name: 'ESCORT',
-    title: '輸送機護衛',
-    brief: '前線への補給物資を積んだ輸送機を、離脱地点まで護衛せよ。\n'
-      + '敵は輸送機を狙って迎撃機を上げてくる。輸送機は自衛できない。',
-    hint: '護衛モードにしておくと、輸送機に近づく敵だけを迎撃して戻ってくる。',
-    terrain: { seed: 20202, mountainAmount: 1.1, coast: 'none', valleyDepth: 1.1, rivers: 3, baseAltitude: 450 },
-    // 護衛は「守りながら戦う」ぶん、同数では足りない。
-    // 3機目を足して敵と同数にし、ここでは護衛モードの使い方を覚えてもらう。
-    weaponPoints: 34,
-    friendly: {
-      base: { x: 10000, z: 38000 },
-      startAirborne: true,
-      startAlt: 4500,
-      aircraft: [
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
-        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
-      ],
-      support: [
-        { type: 'E-8', name: 'CARGO', x: 12000, z: 36000, agl: 4200, tags: ['transport'],
-          aiMode: 'TRANSIT', moveTo: { x: 44000, z: 12000, alt: 4200 } },
-      ],
-    },
-    enemy: {
-      aircraft: [
-        { type: 'J-7', name: 'BANDIT 1', x: 34000, z: 18000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
-        { type: 'J-7', name: 'BANDIT 2', x: 36000, z: 20000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
-        { type: 'J-7', name: 'BANDIT 3', x: 40000, z: 14000, agl: 6000, aiMode: 'PURSUIT', tags: ['cap'] },
-      ],
-      ground: [],
-    },
-    // 評価基準（§18）。輸送機の飛行時間が約232秒なので、これより速くは終わらない。
-    // 急かす評価にはせず「積み替えで往復して間延びしなかったか」を見る。
-    // 節約の基準は実プレイの記録から（AAM-M中心なら10〜12P、AAM-A中心だと30P超）
-    rating: { time: [240, 300], points: [12, 22], losses: [0, 1] },
-    objectives: [
-      { id: 'arrive', type: 'reach', tag: 'transport', x: 44000, z: 12000, radius: 3000,
-        label: '輸送機を北東の離脱地点まで護衛する' },
-      { id: 'cargo', type: 'protect', tag: 'transport', label: '輸送機を失わない', fail: true },
-    ],
-  },
-
-  // ------------------------------------------------------------------ 3
+  // ------------------------------------------------------------------ 4
   {
     id: 's3',
     name: 'IRON UMBRELLA',
@@ -170,7 +224,7 @@ export const STAGES = [
     ],
   },
 
-  // ------------------------------------------------------------------ 4
+  // ------------------------------------------------------------------ 5
   {
     id: 's4',
     name: 'DAWN BLADE',
@@ -209,7 +263,7 @@ export const STAGES = [
     ],
   },
 
-  // ------------------------------------------------------------------ 5
+  // ------------------------------------------------------------------ 6
   {
     id: 's5',
     name: 'COASTAL WALL',
@@ -253,7 +307,7 @@ export const STAGES = [
     ],
   },
 
-  // ------------------------------------------------------------------ 6
+  // ------------------------------------------------------------------ 7
   {
     id: 's6',
     name: 'TOTAL WAR',
