@@ -254,25 +254,35 @@ html, body {
   color: var(--text);
 }
 .chip.empty { color: var(--text-dim); border-style: dashed; }
-/* 高度性能インジケータ
-   項目が7個あり、1行の横並びでは収まらない。素の inline で流すと
-   「エネルギー 9,000m」のようなチップ自体が行の境目で割れるので、
-   **2列のグリッドに置いてチップは折り返さない**。 */
-.dt-perf { margin-top: 6px; font-size: 10px; }
-.dt-perf > label { display: block; color: var(--text-dim); margin-bottom: 3px; }
+/* 高度性能インジケータ（§41）
+   項目が7個あり、1行では収まらない。素の inline で流すと
+   「エネルギー 9,000m」のようなチップ自体が行の境目で割れる。
+   **2列のグリッドに置いて折り返さない** — 目的は見切れ防止だけなので、
+   列は内容の幅に詰め、ラベルも横に置いて**縦を伸ばさない**。
+   選択パネルが縦に膨らむと背景のゲームが見えなくなる。 */
+.dt-perf {
+  margin-top: 5px;
+  font-size: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.dt-perf > label { color: var(--text-dim); flex: none; line-height: 15px; }
 #dv-perf {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px 6px;
-  /* 枠付きのチップが列幅いっぱいに伸びると帯に見えるので、文字幅に合わせる */
-  justify-items: start;
+  /* **横に2段**。パネルは横に余裕があるので、縦に積むより収まりが良い。
+     列送りにしてあるので、条件付きで出る「ブレーキ」が増えても
+     既にある項目の位置は動かない。 */
+  grid-template-rows: repeat(2, auto);
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  column-gap: 10px;
 }
 .pf {
-  padding: 1px 6px;
+  padding: 0 5px;
   border: 1px solid transparent;
+  line-height: 15px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .pf.good { color: #7ec87e; border-color: rgba(126, 200, 126, 0.35); }
 .pf.mid  { color: var(--amber); border-color: rgba(255, 182, 72, 0.35); }
@@ -334,7 +344,8 @@ button.chip.load {
 }
 button.chip.load i { font-style: normal; opacity: 0.6; margin-left: 4px; }
 button.chip.load:hover { background: rgba(255, 91, 68, 0.25); border-color: var(--hostile); }
-.dt-add { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 3px; }
+/* 行の間隔は詰める（§41）。選択パネルが縦に伸びるほど背景が見えなくなる */
+.dt-add { margin-top: 4px; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
 .dt-add .addw {
   background: rgba(111, 216, 232, 0.07);
   border: 1px solid var(--panel-line);

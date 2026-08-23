@@ -475,10 +475,9 @@ export class Hud {
       ['normal', '標準', '敵機と交戦するときに焚く。移動や対地では焚かない'],
       ['max', '全力', '効くなら焚く。燃料の減りは受け入れる（消費3倍）'],
     ];
-    // 積んでいない機種（攻撃機・早期警戒機）では選ばせない（§39）。
-    // ボタンを出したまま何も起きないほうが分かりにくい。
-    const abBtns = u.spec.noAfterburner
-      ? `<span class="svc-meta">AB</span><span class="svc-meta" title="この機種はアフターバーナーを積んでいない">非搭載</span>`
+    // 積んでいない機種（攻撃機・早期警戒機）では**行ごと出さない**（§39・§41）。
+    // 「非搭載」は高度性能の欄に既に出ているので、ここに書くと縦に伸びるだけ。
+    const abBtns = u.spec.noAfterburner ? ''
       : `<span class="svc-meta">AB</span>`
         + AB.map(([id, label, tip]) => `<button class="autow${(u.abMode || 'normal') === id ? '' : ' off'}"
           data-ab="${id}" title="${tip}">${label}</button>`).join('');
@@ -500,10 +499,9 @@ export class Hud {
         ${u.selectedWeapon ? `<span class="svc-meta pickinfo">${u.selectedWeapon} 指定中 — 敵を右クリックで射撃指示</span>` : ''}
       </div>
       ${taskRow}
-      <div class="dt-add">${autos}${guard}
-        <span class="dt-group"><span class="svc-meta">自動発射</span>${thBtns}</span></div>
-      <div class="dt-add">${radar}</div>
-      <div class="dt-add">${abBtns}</div>`;
+      <div class="dt-add">${autos}${guard}</div>
+      <div class="dt-add"><span class="dt-group"><span class="svc-meta">自動発射</span>${thBtns}</span>${radar}</div>
+      ${abBtns ? `<div class="dt-add">${abBtns}</div>` : ''}`;
   }
 
   _groundPanel(u) {
