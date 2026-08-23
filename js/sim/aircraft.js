@@ -325,6 +325,8 @@ export class Aircraft extends Unit {
     } else {
       this.order = order;
       this.queue.length = 0;
+      // 攻撃をやめたら狙点も捨てる。残しておくと経路の線だけが敵を指し続ける。
+      if (!order || order.type !== 'attack') this._aimPos = null;
     }
   }
 
@@ -360,8 +362,14 @@ export class Aircraft extends Unit {
       else if (o.type === 'rtb' && o.airbase) {
         pts.push({ x: o.airbase.pos.x, z: o.airbase.pos.z, alt: o.airbase.pos.y + 400 });
       }
-      else if ((o.type === 'follow' || o.type === 'attack') && o.target && o.target.alive) {
-        pts.push({ x: o.target.pos.x, z: o.target.pos.z, alt: o.target.pos.y, hostile: o.type === 'attack' });
+      else if (o.type === 'follow' && o.target && o.target.alive) {
+        pts.push({ x: o.target.pos.x, z: o.target.pos.z, alt: o.target.pos.y, hostile: false });
+      }
+      // **敵へ引く線も真の位置を指さない**（§53）。
+      // 経路の線が真の位置へ伸びていると、探知していない相手の居場所が
+      // 線を見るだけで分かってしまう。見失っていれば線そのものを引かない。
+      else if (o.type === 'attack' && o.target && o.target.alive && this._aimPos) {
+        pts.push({ x: this._aimPos.x, z: this._aimPos.z, alt: this._aimPos.y, hostile: true });
       }
     };
     push(this.order);
@@ -375,6 +383,46 @@ export class Aircraft extends Unit {
   get onGround() {
     return this.state === 'parked' || this.state === 'servicing' || this.state === 'ready'
       || this.state === 'takeoff' || (this.state === 'landing' && this.rolling);
+  }
+
+  /**
+   * その目標を**いまどこだと思っているか**。見失っていれば null（§53）。
+   *
+   * `world.believedPosOf` は「いま正確に見えている」ときにも null を返すので、
+   * それだけでは「見えている」と「完全に見失った」の区別が付かない。
+   * ここでは**コンタクトの有無を先に見る**。
+   *
+   * 地上目標では前からこうしていた（§25.4）が、**空中目標だけ真の位置を
+   * 直接見ていた**。攻撃を指示したあと相手が地形に隠れると、記憶が切れても
+   * 指示が残り、見えない相手の真の位置へ誘導され続けていた
+   * （実測: 探知が切れて60秒後も、機首が真の方位とずれ0度）。
+   */
+  believedPosOf(target, world) {
+    if (!world || !world.detection) return target.pos;   // 探知を持たない簡易世界
+    const c = world.detection.contactsFor(this.side).get(target.id);
+    if (!c) return null;
+    return (c.detected && !c.approx) ? target.pos : c.pos;
+  }
+
+  /**
+   * 目標を見失った（または撃破を確認した）ときに指示を解く。
+   *
+   * `_advanceOrder` は待ち行列と `move` しか面倒を見ないので、
+   * `attack` のまま呼んでも指示は残る。ここでその場の待機旋回まで戻す。
+   */
+  _releaseTarget(world, order, lost) {
+    if (this.queue.length > 0) this.order = this.queue.shift();
+    else this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, alt: this.desiredAlt, radius: 2500 };
+    this.acmMode = null;
+    /**
+     * 攻撃指示の狙点＝**こちらが目標をどこだと思っているか**（§53）。
+     * 経路の線もここを指す。見失っているあいだは null。
+     */
+    this._aimPos = null;
+    this.cranking = false;
+    this._aimPos = null;
+    // プレイヤーが出した指示を解くときは黙って消さない。
+    if (lost && order && order.player) world.log?.(`${this.name} 目標を見失った`);
   }
 
   update(dt, world) {
@@ -754,7 +802,7 @@ export class Aircraft extends Unit {
 
       case 'attack': {
         const t = o.target;
-        if (!t) { this._advanceOrder(); break; }
+        if (!t) { this._releaseTarget(world, o, false); break; }
         if (!t.alive) {
           // **静止目標に限り**、こちらがまだ健在だと思っているなら行って確かめる。
           // 即座に指示を解いていたので、**指示が消えた瞬間に「壊れている」と分かった**。
@@ -764,16 +812,35 @@ export class Aircraft extends Unit {
           // （実測でミッション1のクリアが 5/6 → 2/6 に落ちた）。
           const c = t.static && world.detection
             ? world.detection.contactsFor(this.side).get(t.id) : null;
-          if (!c) { this._advanceOrder(); break; }
+          if (!c) { this._releaseTarget(world, o, false); break; }
+          this._aimPos = c.pos;
           desiredHeading = headingOf(c.pos.x - this.pos.x, c.pos.z - this.pos.z);
           break;
         }
-        const dx = t.pos.x - this.pos.x, dz = t.pos.z - this.pos.z;
+
+        // **見えていない相手の真の位置は使わない**（§53）。
+        // 記憶も切れていれば、そこで指示を解く。
+        const aim = this.believedPosOf(t, world);
+        if (!aim) { this._releaseTarget(world, o, true); break; }
+        this._aimPos = aim;
+        const exact = aim === t.pos;
+
+        const dx = aim.x - this.pos.x, dz = aim.z - this.pos.z;
         desiredHeading = headingOf(dx, dz);
 
         // 空中目標は空戦機動へ委ねる（§22.3）。
         // 「どう飛んで狙うか」は幾何で決まるので、ここでは結果を受け取るだけ。
         if (t.kind === 'aircraft' && !t.onGround) {
+          // **正確に見えていないあいだは空戦機動をしない。**
+          // `attackManeuver` は相手の真の位置と速度から組み立てるので、
+          // 見えていない相手に掛けると、見えないはずの動きに合わせて曲がる。
+          // 覚えている位置へ素直に向かうだけにする。
+          if (!exact) {
+            this.acmMode = null;
+            this.cranking = false;
+            desiredAlt = aim.y;
+            break;
+          }
           const m = attackManeuver(this, t, world);
           this.acmMode = m.mode;
           if (m.mode !== 'extend') this._acmExtending = false;
@@ -810,7 +877,8 @@ export class Aircraft extends Unit {
         // 方位が反転して引き返し、目標の周りを回り続けることになる。
         // 地上目標は**そこに居ると思っている位置**へ向かう（§25.4）。
         // 逆探知だけで掴んでいる相手なら、そのぶんずれた場所へ入っていく。
-        const aim = (world.believedPosOf && world.believedPosOf(this.side, t)) || t.pos;
+        // （狙点は上の `believedPosOf` で決めてある。以前はここで
+        //  `|| t.pos` と書いていたので、**見失った瞬間に真の位置へ戻っていた**）
         const run = groundAttackRun(this, t, aim);
         desiredHeading = run.heading;
         this.attackRun = run.phase;
