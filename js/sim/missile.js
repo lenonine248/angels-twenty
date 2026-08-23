@@ -89,8 +89,24 @@ const SEEKER_SEARCH_SEC = 6;
  * この間は最後に分かっていた場所へ飛ぶ。照射が戻れば誘導を続ける。
  */
 const SARH_COAST_SEC = 2;
-/** この速度を下回ると失推 */
+/**
+ * この速度を下回ると失推（設計速度に対する割合）。
+ *
+ * **0.35 は「回避する目標に追いつけるか」の値**で、空対空弾のためのもの。
+ */
 const MIN_SPEED_RATIO = 0.35;
+/**
+ * **動かない目標を狙っているときの下限**（§42.3）。
+ *
+ * 陣地や施設は逃げないので、遅くなった弾でも届いて当たる。
+ * 0.35 のままだと **AGM は表記射程14kmに対して実際には7〜8kmしか届かず**、
+ * AI の発射上限（約12.6km）と逆転して「撃てるのに届かない」兵装になっていた
+ * — P9 で ARM と AGM が同じ状態になり、一度直したはずの不具合の再発。
+ *
+ * §42.1 とまったく同じ形の誤り。**「どの誘導方式か」ではなく
+ * 「何を狙っているか」で切る。**
+ */
+const MIN_SPEED_RATIO_GROUND = 0.15;
 
 /**
  * ミサイルのコーナー速度（設計速度に対する割合）（§33.6）。
@@ -258,8 +274,13 @@ export class Missile {
 
     // 失推・寿命切れ。
     // 発射時は母機の速度しか無いので、燃焼が終わるまでは失推判定をしない。
+    //
+    // **失推の下限は「何を狙っているか」で変わる**（§42.3）。
+    // 回避する相手には速度が要るが、動かない陣地には遅い弾でも届く。
+    const floor = isGroundTarget(this.seekTarget || this.target)
+      ? MIN_SPEED_RATIO_GROUND : MIN_SPEED_RATIO;
     const spent = this.age > this.boostTime
-      && this.speed < this.weapon.speed * MIN_SPEED_RATIO;
+      && this.speed < this.weapon.speed * floor;
     const lostTooLong = this.lost && this.age - this.lostAt > LOST_SELF_DESTRUCT;
     if (spent || lostTooLong || this.age > this.lifetime || this._overshot(dt)) {
       this.destroy(world, 'spent');
