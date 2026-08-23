@@ -188,6 +188,14 @@ export class Missile {
     // 中途は発射機の索敵レーダーから位置をもらい、**相手に警報は出ない**。
     // 予測位置まで詰めたところでシーカーを入れ、そこで初めて気づかれる。
     this.active = weapon.guidance !== 'arh';   // arh 以外は最初から「見えている」扱い
+    /**
+     * いま発射機に照らされているか（§37.2）。
+     *
+     * セミアクティブ誘導が成立している＝**追尾波が出続けている**ということ。
+     * 目標の逆探知はそれを聞くので、**距離に関係なく警報が出る**
+     * （`sim/combat.js` の `_assignThreats`）。照射が切れれば警報も消える。
+     */
+    this.painting = weapon.guidance === 'sarh';
     this._midcourseTimer = 0;
     this.lastKnown = target ? target.pos.clone() : this.pos.clone();
 
@@ -323,8 +331,9 @@ export class Missile {
     if (this.guidance === 'sarh') {
       // 発射機がレーダーで照射し続けている必要がある
       const l = this.launcher;
-      if (!l || !l.alive) { this._goStupid('発射機喪失'); return; }
+      if (!l || !l.alive) { this.painting = false; this._goStupid('発射機喪失'); return; }
       if (!illuminates(l, this.target, world, true)) {
+        this.painting = false;
         // **一瞬切れただけで諦めない**（§28.13）。
         //
         // 実測で AAM-M の失敗理由は照射切れが最も多く（21件中15件）、
@@ -344,6 +353,7 @@ export class Missile {
         this.seekTarget = { pos: this.lastKnown, alive: true, speed: 0, isPoint: true };
         return;
       }
+      this.painting = true;
       this.seekTarget = this.target;      // 慣性飛行から戻ったら掴み直す
     }
 

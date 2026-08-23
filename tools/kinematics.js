@@ -122,7 +122,7 @@
     target.speed = target.spec.cruiseSpeed * 1.2;
     target.onGround = false;
     target.state = 'flying';
-    target.autoDecoy = false;                   // 対抗手段は使わせない
+    target.autoDecoy = !!mods.live;             // 既定では対抗手段を使わせない（§33）
     target.loadout = [];                        // 撃ち返させない
     target.gun = 0;
     target.abMode = 'max';                      // 逃げに全力を出させる
@@ -208,7 +208,13 @@
     const aspects = opts.aspects || [0, 90, 180];
     const alt = opts.alt ?? 6000;
     const seeds = opts.seeds || [11, 22, 33];
-    await patch();
+    // **対抗手段を入れたまま測るモード**（§37.5）。
+    // 既定（live なし）は素の運動性能を測る道具のままで、こちらは
+    // 「デコイもビームも込みで、その距離から撃って何割当たるのか」を測る。
+    // 命中期待度の較正はこの数字と突き合わせる — ベンチの命中率は
+    // 「AI がその距離で撃つかどうか」に汚染されていて、較正には使えない。
+    const live = !!opts.live;
+    if (!live) await patch();
     const b = await fresh(seeds[0]);
     for (const wid of weapons) {
       const spec = AT.kin.WEAPONS[wid];
@@ -216,13 +222,13 @@
         if (km * 1000 > spec.range * 1.1) continue;      // 射程外は撃てない
         for (const a of aspects) {
           for (const seed of seeds) {
-            const r = shot(b, wid, km, a, alt);
-            if (r) { r.seed = seed; rows.push(r); }
+            const r = shot(b, wid, km, a, alt, { live });
+            if (r) { r.seed = seed; r.live = live; rows.push(r); }
           }
         }
       }
     }
-    unpatch();
+    if (!live) unpatch();
     return rows.length;
   }
 

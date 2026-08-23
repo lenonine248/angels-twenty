@@ -365,8 +365,11 @@ export class Hud {
     if (!d.spd) return;
     const agl = Math.max(0, u.pos.y - Math.max(0, this.world.terrain.heightAt(u.pos.x, u.pos.z)));
 
+    // 回避の中身も出す（§37.3）。「逃げている」と「ビームを取っている」は
+    // 見た目が全く違う機動なので、区別が付かないと何をしているか分からない
+    const evadeLabel = u.running ? '（離脱中）' : u.evading ? '（回避中）' : '';
     d.order.innerHTML = u.threats.length
-      ? `<span class="ur-warn">⚠ ミサイル警報 ×${u.threats.length}${u.evading ? '（回避中）' : ''}</span>`
+      ? `<span class="ur-warn">⚠ ミサイル警報 ×${u.threats.length}${evadeLabel}</span>`
       : orderLabel(u);
     d.spd.textContent = Math.round(u.speed);
     d.alt.textContent = Math.round(u.pos.y);

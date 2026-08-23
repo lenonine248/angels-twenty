@@ -64,7 +64,13 @@ const BOMB_COOLDOWN = 0.5;
  */
 const BOMB_LEAD = 1;
 
-/** ミサイル警報が出る距離。レーダー誘導は逆探知で早く分かるが、赤外線は目視まで気づけない。 */
+/**
+ * ミサイル警報が出る距離。レーダー誘導は逆探知で早く分かるが、赤外線は目視まで気づけない。
+ *
+ * **セミアクティブ（AAM-M / SAM-M）はこの距離を使わない**（§37.2）。
+ * 照らされている間はずっと警報が出る。ここに残るのは
+ * アクティブ弾の終末（`radar`）と赤外線（`ir`）。
+ */
 const WARN_RANGE = { radar: 14000, ir: 5000 };
 
 /**
@@ -536,9 +542,21 @@ export class CombatSystem {
       // 中途は母機の索敵レーダーで導かれているだけなので、
       // 「自分に向かって何かが飛んで来ている」という情報が相手に無い。
       if (m.active === false) continue;
-      const dist = m.pos.distanceTo(t.pos);
-      const warn = m.guidance === 'ir' ? WARN_RANGE.ir : WARN_RANGE.radar;
-      if (dist > warn) continue;
+      // セミアクティブは**発射機が照らし続けている**（§37.2）。
+      // 逆探知が聞いているのは弾ではなく、その追尾波。
+      // だから**距離に関係なく気づく**し、照射が切れれば警報も消える。
+      //
+      // これで AAM-M（コスト2）と AAM-A（コスト6）の差が説明できる。
+      // 安いほうは撃った瞬間に知られ、照らし続けねばならない。
+      // 高いほうは終末までシーカーを入れないので黙っていられる（§28.2）。
+      //
+      // 発射前のロックは警報に出さない — 出すと撃つ前に逃げられ、
+      // セミアクティブが成立しなくなる。**飛んでいる弾の照射だけ**を聞く。
+      if (!(m.guidance === 'sarh' && m.painting)) {
+        const dist = m.pos.distanceTo(t.pos);
+        const warn = m.guidance === 'ir' ? WARN_RANGE.ir : WARN_RANGE.radar;
+        if (dist > warn) continue;
+      }
       t.threats.push(m);
     }
     for (const u of w.units) {

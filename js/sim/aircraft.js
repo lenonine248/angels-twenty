@@ -115,6 +115,39 @@ const HOLD_MARGIN = 3;
 const BREAK_TTI = 2.5;
 
 /**
+ * 逃げを選ぶ残り秒数（§37.3）。**これより余裕があれば背を向けて離れる。**
+ *
+ * 逃げが効く理屈は速度差。正面から来る弾には相対速度 1,420 m/s で近づくが、
+ * 背を向ければ 780 m/s になり、**飛翔時間がほぼ倍**になる。
+ * 慣性飛行の減速は設計速度の 2.86%/秒（`COAST_TIME`）なので、
+ * **時間そのものが武器になる**。あわせてチャフを撒ける回数も増え、
+ * `Missile._screened`（チャフの壁・§35.2）の条件にも入る。
+ */
+const RUN_TTI = 12;
+/**
+ * 逃げからビームへ移る残り秒数（§37.3）。
+ *
+ * 戦法は **逃げる → ビーム → ブレイク** と一方向にしか進まない。
+ * tti が上下するたびに選び直すと機首がばたついて機動にならない
+ * （§34.5 と §22 で2回踏んだ）。
+ */
+const BEAM_TTI = 8;
+/**
+ * 逃げながらの左右振り（§37.4）。
+ *
+ * 背を向けたまま直進すると、比例航法は視線角速度がゼロのまま素直に追ってくる
+ * — **舵を切らないので減速もしない**。左右に振れば視線が揺れ、弾は曲げられ、
+ * `TURN_DRAG`（§33.6）で速度を失う。
+ *
+ * 振幅は上下から縛られる。大きいほど弾を曲げられるが、離れる速度が落ち
+ * （45°で71%）、`SCREEN_TOLERANCE`(35°) から外れてチャフの壁が弱くなる。
+ * 周期は短いほど弾が忙しくなるが、機体の旋回率（F-1 で 20°/s）で
+ * 追えない指令は**ただの直進**になる。
+ */
+const JINK_AMPLITUDE = 25 * DEG;
+const JINK_PERIOD = 7;
+
+/**
  * **目視の内側では早くブレイクを始める、は測って取り消した**（§34.5）。
  *
  * 近距離で撃たれた弾にはチャフもノッチも間に合わないので、
@@ -233,6 +266,12 @@ export class Aircraft extends Unit {
     /** いまビーム機動中か（§28.6 の低空ノッチ判定が読む） */
     this.beaming = false;
     this.evading = false;
+    /** 背を向けて離れている最中か（§37.3）。表示と計測のため */
+    this.running = false;
+    /** その脅威に対して選んだ戦法（§37.3）。'run' | 'beam' | null */
+    this._evadeTactic = null;
+    /** 逃げ始めてからの秒数。左右振りの位相（§37.4） */
+    this._runFor = 0;
     this.cranking = false;
 
     /** ミサイル誘導中でも回避機動を取るか（false なら誘導を優先して耐える） */
@@ -887,7 +926,13 @@ export class Aircraft extends Unit {
     //
     // 手動モードは機動しない。ただし**デコイは撒く**（自動使用の設定に従う）。
     // 「機動するかどうか」と「対抗手段を使うかどうか」は別の判断なので分けてある。
-    if (this.threats.length === 0) { this._evadeSide = null; this.beaming = false; }
+    if (this.threats.length === 0) {
+      this._evadeSide = null;
+      this._evadeTactic = null;
+      this._runFor = 0;
+      this.beaming = false;
+      this.running = false;
+    }
     if (this.manual) {
       const m = this.threats[0];
       if (m && m.alive) {
@@ -1177,6 +1222,51 @@ export class Aircraft extends Unit {
     const src = this._illuminatorOf(m) || m;
     const bx = src.pos.x - this.pos.x, bz = src.pos.z - this.pos.z;
     const bearing = headingOf(bx, bz);
+
+    // --- 戦法を選ぶ（§37.3）。**脅威1件につき1回だけ、一方向にしか進まない** ---
+    //
+    //   逃げる → ビーム → ブレイク
+    //
+    // 選び直さないのは `_evadeSide` と同じ理由。tti はミサイルの機動で
+    // 上下するので、そのたびに戦法が変わると機首が暴れて機動にならない。
+    //
+    // **赤外線弾からは逃げない。** 背を向けるのは排気を正面から見せること
+    // （§35.3）で、ロック距離は伸び、フレアは効かなくなる。最悪の選択になる。
+    const radarGuided = m.guidance === 'sarh' || m.guidance === 'arh'
+      || m.guidance === 'command';
+
+    // **戦法を選ぶ tti だけは、いまの速度ではなく設計速度で見る。**
+    //
+    // 弾は発射直後、母機の速度しか持っていない（AAM-M で 250 m/s 程度）。
+    // その瞬間の速度で割ると 7.7km 先の弾が「あと30秒」に見え、
+    // **ほぼ全部の脅威が「遠い」判定になる**（実測で 177/355 件）。
+    // 戦法は最初の1回で決めて動かさないので、そこだけ狂うと全部狂う。
+    //
+    // ブレイクとデコイの時機は今までどおり現在速度で見る（そちらは終末の話で、
+    // そこでは弾は設計速度に達している）。**同じ tti を使い回さない。**
+    const planTti = dist / Math.max(60, m.weapon.speed * 0.8);
+    if (this._evadeTactic == null) {
+      this._evadeTactic = radarGuided && planTti > RUN_TTI ? 'run' : 'beam';
+      this._runFor = 0;
+    }
+    if (this._evadeTactic === 'run' && planTti < BEAM_TTI) this._evadeTactic = 'beam';
+
+    // --- 逃げ（§37.3・§37.4） ---
+    //
+    // 照射源に背を向けて離れる。弾は追いつくのに倍の時間を要し、
+    // その間ずっと減速している。左右に振るのは比例航法の予測を揺さぶるため。
+    if (this._evadeTactic === 'run') {
+      this._runFor += dt;
+      this.beaming = false;
+      this.running = true;
+      const jink = JINK_AMPLITUDE * Math.sin((this._runFor / JINK_PERIOD) * Math.PI * 2);
+      return {
+        heading: bearing + Math.PI + jink,
+        alt: this.pos.y,               // 高度は捨てない（薄い空気のほうが速い）
+        speed: this.spec.maxSpeed,
+      };
+    }
+    this.running = false;
 
     // ミサイルを真横に置く向きのうち、旋回量が少ない方を選ぶ
     const left = bearing - Math.PI / 2;
