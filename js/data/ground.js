@@ -8,6 +8,29 @@
 // 以前の値（飛行場60km・レーダーサイト70km）では**戦域を丸ごと覆って**しまい、
 // 「敵の位置が分からない時間」が一度も生まれなかった。
 
+/**
+ * 弾幕の砲（§51）。**実体弾を撃つ**（`sim/bullet.js` の Bullet を流用）。
+ *
+ * `range` と `maxAlt` は**交戦の判断**であって当たり判定ではない。
+ * 機銃が `GUN_MAX_ENGAGE` と発射しきい値で「撃つかどうか」を決めるのと同じ位置づけ。
+ * 当たるかどうかは弾の側が決める。
+ *
+ * **射高だけは二値のまま残す。** 弾に重力を入れていないので、
+ * 高度で当たらなくなる仕組みが物理から出てこない。
+ * それに「射高より上へ逃げる」は §8 からの設計の柱で、
+ * チュートリアルでもステージの進入高度でもそこを前提にしている。
+ * **境界は二値、中は幾何** ── これが実体化で変えたことの全部。
+ *
+ * | | 意味 |
+ * |---|---|
+ * | `muzzle` | 初速(m/s)。飛翔時間が伸びるほど偏差の誤差が効く |
+ * | `spread` | 拡散角(rad)。据え付けの砲なので機体の機銃より締まっている |
+ * | `rps` | 毎秒発射数 |
+ * | `dmg` | 1発あたり [下限, 上限] |
+ * | `life` | 弾の寿命(秒)。`初速 × 寿命` が実際に届く距離になる |
+ */
+const DEG = Math.PI / 180;
+
 export const GROUND_TYPES = {
   RADAR: {
     id: 'RADAR',
@@ -42,7 +65,11 @@ export const GROUND_TYPES = {
     hp: 90,
     static: true,
     radar: null,                 // 電波を出さない = 目視でしか見つからない
-    weapon: { kind: 'aaa', range: 3000, maxAlt: 1500, dps: 11 },
+    // 軽対空砲。数は撃つが1発は軽い
+    weapon: {
+      kind: 'aaa', range: 3000, maxAlt: 1500,
+      muzzle: 900, spread: 0.9 * DEG, rps: 22, dmg: [2.2, 4.0], life: 3.6,
+    },
     color: 0x6b6455,
     size: 150,
   },
@@ -55,7 +82,10 @@ export const GROUND_TYPES = {
     static: true,
     radar: { range: 30000, emits: true, canSilence: false },
     // 飛行場自体も近接防空を持つ。無防備だと低空侵入が一方的になる。
-    weapon: { kind: 'aaa', range: 3500, maxAlt: 1800, dps: 12 },
+    weapon: {
+      kind: 'aaa', range: 3500, maxAlt: 1800,
+      muzzle: 950, spread: 0.85 * DEG, rps: 24, dmg: [2.2, 4.0], life: 3.9,
+    },
     color: 0x5a5a52,
     size: 900,
   },
@@ -80,7 +110,11 @@ export const GROUND_TYPES = {
     static: false,
     speed: 9,
     radar: { range: 35000, emits: true, canSilence: true },
-    weapon: { kind: 'aaa', range: 4500, maxAlt: 2500, dps: 14 },   // 近接防空
+    // 近接防空。いちばん密で、射程も射高も広い
+    weapon: {
+      kind: 'aaa', range: 4500, maxAlt: 2500,
+      muzzle: 1000, spread: 0.75 * DEG, rps: 30, dmg: [2.2, 4.0], life: 4.8,
+    },
     color: 0x4a5560,
     size: 400,
   },

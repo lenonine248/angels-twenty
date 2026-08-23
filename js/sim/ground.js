@@ -2,11 +2,42 @@
 // P3時点では「探知される側」としての振る舞い（レーダー放射・沈黙・移動）だけを持つ。
 // 交戦処理（SAM発射・AAA弾幕）は P6 で追加する。
 
+import * as THREE from 'three';
 import { Unit, headingOf, RWR_SIGNATURE_FACTOR } from './unit.js';
 import { getGroundType } from '../data/ground.js';
 import { WEAPONS } from '../data/weapons.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 import { clamp } from '../core/rng.js';
+import { Bullet, aimPointOf } from './bullet.js';
+
+/** 弾幕の計算用（毎tick確保しない） */
+const _aim = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _shot = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _up = new THREE.Vector3();
+const _muzzle = new THREE.Vector3();
+
+/** 砲口の高さ(m)。地面から撃つと自分の足元の起伏に当たって消える */
+const MUZZLE_HEIGHT = 25;
+
+/**
+ * 方向 dir を拡散角 sigma でばらつかせる（combat.js の `scatter` と同じ）。
+ * あちらは module-private なので、ここに同じものを置く。
+ */
+function scatter(dir, sigma, rng, out) {
+  const u1 = Math.max(1e-6, rng());
+  const rad = Math.sqrt(-2 * Math.log(u1)) * sigma;
+  const ang = rng() * Math.PI * 2;
+  _right.set(-dir.z, 0, dir.x);
+  if (_right.lengthSq() < 1e-8) _right.set(1, 0, 0);
+  _right.normalize();
+  _up.crossVectors(dir, _right).normalize();
+  return out.copy(dir)
+    .addScaledVector(_right, Math.cos(ang) * rad)
+    .addScaledVector(_up, Math.sin(ang) * rad)
+    .normalize();
+}
 
 /**
  * ARM の飛来に気づく距離(m) と、沈黙するまでの反応時間(秒)。
@@ -183,8 +214,17 @@ export class GroundUnit extends Unit {
   }
 
   /**
-   * 対空砲・艦艇の近接防空。
-   * 弾幕なので命中判定はせず、圏内にいる間ダメージが入り続ける。
+   * 対空砲・艦艇の近接防空。**実体弾を撒く**（§51・§22.2 と同じ作り）。
+   *
+   * ここでやるのは「偏差の狙点を作って、拡散をかけて弾を出す」ことだけ。
+   * 当たるかどうかは弾の側（`sim/bullet.js`）が決める。
+   *
+   * 以前は圏内にいる間ダメージが入り続ける形だった。距離しか見ていないので、
+   * **真横を高速で横切る機体と砲口へまっすぐ突っ込む機体が同じだけ削られた**。
+   * 実体弾にすると、偏差の誤差（＝目標の横速度と飛翔時間）が効くようになる。
+   *
+   * `range` と `maxAlt` は交戦の判断として残す。射高が二値なのは意図的で、
+   * 「射高より上へ逃げる」は §8 からの設計の柱（`data/ground.js` の注記）。
    */
   _updateAaa(dt, world) {
     const w = this.spec.weapon;
@@ -204,11 +244,34 @@ export class GroundUnit extends Unit {
     }
     if (!target) return;
 
-    const falloff = 1 - (bestD / w.range) * 0.6;
-    const rng = world.rng ? world.rng() : Math.random();
-    target.damage(w.dps * falloff * dt * (0.5 + rng), this);
+    // 砲口は地面から少し上に置く。地表ちょうどから撃つと、
+    // 自分の足元の起伏に当たって弾が即座に消える。
+    _muzzle.set(this.pos.x, this.pos.y + MUZZLE_HEIGHT, this.pos.z);
+
+    // 偏差射撃の狙点。**目標が曲がればその前提が崩れて外れる** —
+    // それがこの変更のすべて（§22.2 と同じ理屈）。
+    aimPointOf({ pos: _muzzle }, target, w.muzzle, _aim);
+    _dir.set(_aim.x - _muzzle.x, _aim.y - _muzzle.y, _aim.z - _muzzle.z).normalize();
+
+    // 発射数は端数を持ち越す。dt が小さいと毎回0発になってしまう。
+    this._gunAccum = (this._gunAccum || 0) + w.rps * dt;
+    const n = Math.floor(this._gunAccum);
+    if (n <= 0) return;
+    this._gunAccum -= n;
+
+    const rng = world.rng ? world.rng : Math.random;
+    for (let i = 0; i < n; i++) {
+      scatter(_dir, w.spread, rng, _shot);
+      world.bullets.push(new Bullet({
+        pos: _muzzle,
+        dir: _shot,
+        speed: w.muzzle,
+        damage: w.dmg[0] + rng() * (w.dmg[1] - w.dmg[0]),
+        shooter: this,
+        life: w.life,
+      }));
+    }
     this.firing = true;
-    if (rng < 0.06) world.effects?.tracer(this.pos, target.pos, this.side);
   }
 
   /** 地表に接地させる（配置時に呼ぶ） */

@@ -64,6 +64,7 @@ export class Bullet {
    * @param {number} o.speed 初速(m/s)
    * @param {number} o.damage 命中1発あたりのダメージ
    * @param {object} o.shooter 撃った機体
+   * @param {number} [o.life] 寿命(秒)。省くと機体共通の `BULLET_LIFE`
    */
   constructor(o) {
     this.pos = o.pos.clone();
@@ -73,7 +74,11 @@ export class Bullet {
     this.damage = o.damage;
     this.shooter = o.shooter;
     this.side = o.shooter.side;
-    this.life = BULLET_LIFE;
+    // 地上の砲は交戦距離が機体と違う（艦船は 4.5km）。
+    // 全機共通の 3.0 秒だと、初速 1,000m/s でも 3km 手前で消えてしまう。
+    // **射程は「初速 × 寿命」で決まる**という決め（§22.2.1）はそのままに、
+    // 砲ごとに寿命を持てるようにする。
+    this.life = o.life ?? BULLET_LIFE;
     this.alive = true;
     /** 当たった相手（演出用。命中の瞬間だけ入る） */
     this.hit = null;

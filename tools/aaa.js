@@ -15,7 +15,6 @@
   const DT = 1 / 30;
   const STAGE = () => AT.stageList().findIndex((s) => s.id === 'd1');
 
-  let hooked = false;
 
   /**
    * 対空砲のダメージを記録する。**一度だけ**取り付ける。
@@ -24,8 +23,12 @@
    * 弾幕はミサイルと違って実体が無く、`_updateAaa` から直接呼ばれるため。
    */
   async function hook() {
-    if (hooked) return;
     const { Unit } = await import('/js/sim/unit.js');
+    // **目印はプロトタイプ側に置く。** クロージャの変数だと、
+    // このツールを読み直すたびに包みが増えて、被弾が2倍・3倍に数えられる
+    // （実際に踏んだ。同じ通過で 93.6 が 187.2 に見えた）。
+    if (Unit.prototype.__aaaHook) return;
+    Unit.prototype.__aaaHook = true;
     const orig = Unit.prototype.damage;
     Unit.prototype.damage = function (amount, source) {
       const wpn = source && source.spec && source.spec.weapon;
@@ -42,7 +45,6 @@
       }
       return orig.call(this, amount, source);
     };
-    hooked = true;
   }
 
   /** 戦闘を組んで凍らせる。bench.runOne と同じ待ち方をする */
@@ -64,7 +66,8 @@
     const w = b.world;
     for (const u of w.units) if (u.alive) u.update(DT, w);
     for (const m of w.missiles) if (m.alive) m.update(DT, w);
-    if (w.bullets) for (const p of w.bullets) if (p.alive) p.update(DT, w);
+    // **弾はここで進めない。** `combat.update` が進めて掃除まで行う。
+    // 二重に進めると弾速が倍になり、偏差の狙点と食い違って一発も当たらなくなる。
     w.detection.update(DT);
     b.pilotAI.update(DT);
     b.combat.update(DT);
@@ -110,20 +113,34 @@
     const w = b.world;
     window.__aaaW = w; window.__aaaT = 0; window.__aaaLog = [];
 
+    // 横へずらして通す（`offset`）と、砲から見た**角速度**が上がる。
+    // 真上を通るのと横を掠めるのとで結果が変わるか、を見るためのつまみ。
+    const off = opts.offset ?? 0;
     const gun = gunOf(w, gunId);
     const probe = soloProbe(w);
-    const gy = Math.max(0, w.terrain.heightAt(gun.pos.x - lead, gun.pos.z));
-    probe.pos.set(gun.pos.x - lead, gy + agl, gun.pos.z);
+    const gy = Math.max(0, w.terrain.heightAt(gun.pos.x - lead, gun.pos.z + off));
+    probe.pos.set(gun.pos.x - lead, gy + agl, gun.pos.z + off);
     probe.heading = Math.PI / 2;              // 東
     probe.pitch = 0;
     probe.speed = opts.speed ?? probe.spec.cruiseSpeed;
     probe.aiMode = 'MANUAL';
     probe.hp = probe.maxHp;
-    probe.setOrder({ type: 'move', x: gun.pos.x + tail, z: gun.pos.z, alt: gy + agl });
+    probe.setOrder({ type: 'move', x: gun.pos.x + tail, z: gun.pos.z + off, alt: gy + agl });
 
     let minD = Infinity, aglAtMin = 0;
     const limit = (lead + tail) / Math.max(1, probe.speed) + 30;
     for (let t = 0; t < limit; t += DT) {
+      // 蛇行（`jink`）。左右へ振り続けると偏差の狙点が置き去りになる。
+      // 指示側を揺らす — 機体の操縦モデルはそのまま通す。
+      if (opts.jink) {
+        const a = Math.sin((t / (opts.jinkPeriod || 4)) * Math.PI * 2) * (opts.jink * Math.PI / 180);
+        probe.setOrder({
+          type: 'move',
+          x: probe.pos.x + Math.sin(Math.PI / 2 + a) * 4000,
+          z: probe.pos.z - Math.cos(Math.PI / 2 + a) * 4000,
+          alt: gy + agl,
+        });
+      }
       step(b);
       if (!probe.alive) break;
       const d = probe.pos.distanceTo(gun.pos);
