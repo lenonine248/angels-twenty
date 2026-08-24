@@ -4,10 +4,15 @@ python -m http.server だとブラウザが ES モジュールをキャッシュ
 ソースを直しても古いモジュールが読み込まれ続けることがある。
 毎回必ず取り直させるため no-store を付けて返すだけのサーバ。
 
-もう一つ役目がある。ミッションが終わるたびにゲームから送られてくる
-プレイ記録を playlog.jsonl へ追記する。
-記録はブラウザの localStorage にも入るが、そちらは開発側から読めないため、
-難易度調整の材料にするにはファイルに落ちている必要がある。
+もう二つ役目がある。
+
+1. ミッションが終わるたびにゲームから送られてくるプレイ記録を
+   playlog.jsonl へ追記する。記録はブラウザの localStorage にも入るが、
+   そちらは開発側から読めないため、難易度調整の材料にするには
+   ファイルに落ちている必要がある。
+2. 戦闘のリプレイ（仕様 §23）を replays/ へ保存する。
+   ブラウザからのダウンロードは環境によって止められるので、
+   検証で回した戦闘をそのまま残せるようにしておく。
 
 127.0.0.1 にだけ bind した開発用サーバなので、書き込み口はローカル専用。
 
@@ -21,7 +26,13 @@ import os
 import sys
 
 PLAYLOG = "playlog.jsonl"
+REPLAY_DIR = "replays"
 MAX_BODY = 512 * 1024
+# リプレイは1戦 85〜400KB（仕様 §23.5）。取りこぼさない余裕を持たせる。
+MAX_REPLAY = 8 * 1024 * 1024
+
+# ファイル名に許す文字。パスを外へ出させない。
+SAFE_NAME = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 
 
 class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
@@ -31,8 +42,23 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Expires", "0")
         super().end_headers()
 
+    def _root(self):
+        return os.path.dirname(os.path.abspath(__file__))
+
+    def _read_body(self, limit):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return None
+        if length <= 0 or length > limit:
+            return None
+        return self.rfile.read(length)
+
     def do_POST(self):
-        """ゲームからのプレイ記録を1行1件で追記する。"""
+        """/replay/ はリプレイの保存、/telemetry はプレイ記録の追記。"""
+        if self.path.startswith("/replay/"):
+            self._save_replay()
+            return
         if self.path != "/telemetry":
             self.send_error(404)
             return
@@ -54,6 +80,30 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + chr(10))
 
+        self.send_response(204)
+        self.end_headers()
+
+    def _save_replay(self):
+        """POST /replay/<name>.json で戦闘の記録を replays/ に置く。"""
+        name = self.path[len("/replay/"):]
+        if not name or not all(c in SAFE_NAME for c in name) or ".." in name:
+            self.send_error(400, "bad name")
+            return
+        if not name.endswith(".json"):
+            name += ".json"
+        raw = self._read_body(MAX_REPLAY)
+        if raw is None:
+            self.send_error(400, "bad body")
+            return
+        try:
+            json.loads(raw.decode("utf-8"))          # 壊れたものは置かない
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_error(400, "not json")
+            return
+        out = os.path.join(self._root(), REPLAY_DIR)
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, name), "wb") as f:
+            f.write(raw)
         self.send_response(204)
         self.end_headers()
 

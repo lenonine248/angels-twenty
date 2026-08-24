@@ -34,6 +34,8 @@
    *   seed  … 乱数の種を固定する（§24.3）。省くと毎回引く
    *   setup … 戦闘が組み上がった直後・1ステップも進める前に呼ばれる。
    *           ここで条件を差し替える。**進めた後に触っても A/B にならない**
+   *   record … リプレイを溜める（§56）。既定は false。
+   *           `AT.bench.save(i, seed, 名前)` から使う
    */
   function runOne(stageIndex, trace, opts = {}) {
     return new Promise((resolve) => {
@@ -62,7 +64,7 @@
         AT.loop.setPaused = setPaused;
         setPaused(true);
         if (opts.setup) opts.setup(AT.battle);
-        const r = step(trace);
+        const r = step(trace, opts.record);
         r.seed = AT.battle.seed;
         resolve(r);
       };
@@ -70,7 +72,7 @@
     });
   }
 
-  function step(trace) {
+  function step(trace, record) {
     const b = AT.battle;
     const w = b.world;
     const t0 = performance.now();
@@ -97,12 +99,23 @@
     const events = [];
     const at = () => 't' + Math.round(steps / 30);
     const km = (a, c) => (a.pos.distanceTo(c.pos) / 1000).toFixed(1) + 'km';
+    // **リプレイを録るときは記録も足す**（§56）。
+    // `main.js` が張っていたハンドラはここで上書きされるので、
+    // そちらが呼んでいた `recorder.event` も一緒に消えていた。
+    // しかも `main.js` 側は `loop.simTime` を使うが、ベンチはそれを進めない。
+    // **ベンチ自身の時計（steps/30）で録る。**
+    const now = () => steps / 30;
     w.onFire = (sh, tg, wp) => {
       shots++;
+      if (record) b.recorder?.event('fire', now(), { unit: sh, target: tg, weapon: wp.id, pos: sh.pos });
       if (trace) events.push(`${at()} ${sh.name} ${wp.id} -> ${tg.name} ${km(sh, tg)} alt${Math.round(sh.pos.y)}`);
     };
-    w.onMissileHit = (m, tg) => {
+    w.onMissileHit = (m, tg, dist) => {
       hits++;
+      if (record) {
+        b.recorder?.event('hit', now(), { unit: m.launcher, target: tg, weapon: m.weapon.id, pos: m.pos,
+          label: dist != null && dist > 25 ? '至近弾' : '直撃' });
+      }
       if (trace) events.push(`${at()}   HIT ${tg.name} hp${Math.round(tg.hp)}`);
     };
 
@@ -115,6 +128,11 @@
         if (u.alive || u._benchDead) continue;
         u._benchDead = true;
         if (trace) events.push(`${at()} DEAD ${u.name} (${u.deathCause || '被弾'})`);
+        if (record) {
+          const kind = u.deathCause === 'withdraw' ? 'withdraw'
+            : (u.side === w.playerSide ? 'loss' : 'kill');
+          b.recorder?.event(kind, now(), { unit: u, pos: u.pos, cause: u.deathCause || '被弾' });
+        }
         if (u.deathCause === 'withdraw') continue;
         if (u.side === w.playerSide) losses++; else kills++;
       }
@@ -138,10 +156,23 @@
       }
 
       auto.update(DT);
+      // **記録は頼まれたときだけ**（§56）。既定の周回では回さない —
+      // 何百戦もするので、位置の標本を溜めると重いし、
+      // ベンチが測っているのは数字であってリプレイではない。
+      if (record) b.recorder?.tick(steps / 30);
       steps++;
     }
 
     const alive = w.units.filter((u) => u.alive);
+
+    // 振り返り画面は結末を見る。書かないと空欄で開く（§23.3）。
+    if (record) {
+      b.recorder?.finish(
+        { state: b.mission.state, reason: b.mission.failReason || '', sec: +(steps / 30).toFixed(1) },
+        { kills, losses, shots, hits },
+      );
+    }
+
     return {
       stage: b.stage.name,
       state: b.mission.state,
@@ -261,7 +292,29 @@
     return r;
   }
 
-  AT.bench = { stage, all, runOne, trace, summarize, ab, sig };
+  /**
+   * 1戦して、そのリプレイを開発サーバへ保存する（§56）。
+   *
+   *   await AT.bench.save(3, 11, 'iron-umbrella')
+   *
+   * `replays/<名前>.json` に落ちる。タイトルの「リプレイ」から開ける。
+   * ブラウザからのダウンロードは環境によって止められるので、
+   * 開発サーバの受け口（`POST /replay/<名前>`）へ送る形にしてある。
+   */
+  async function save(stageIndex, seed, name) {
+    const r = await runOne(stageIndex, false, { seed, record: true });
+    const rec = AT.battle && AT.battle.recorder;
+    if (!rec) return { error: 'no recorder' };
+    const body = JSON.stringify(rec.toJSON());
+    const res = await fetch('/replay/' + name + '.json', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+    });
+    return { 面: r.stage, 結果: r.state, 秒: r.sec, 撃墜: r.kills, 損失: r.losses,
+      失敗理由: r.reason || '', 保存: res.status === 204 ? name + '.json' : 'FAILED ' + res.status,
+      KB: Math.round(body.length / 1024) };
+  }
+
+  AT.bench = { stage, all, runOne, trace, summarize, ab, sig, save };
 
   // **調整パネル（§47）で触った値はベンチにもそのまま効く。**
   // 気づかずに数字を読むと、変更の効きと調整の効きを取り違える。
