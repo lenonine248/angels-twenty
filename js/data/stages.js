@@ -91,9 +91,10 @@ export const STAGES = [
     // **敵にも中距離弾を持たせたぶん決着が速くなる**（実測の中央 162秒 → 80秒）ので、
     // 迅速の基準も詰める。ベンチは下限なので、人が指揮すればもっと速い。
     //
-    // ただし司令官AIでも中央80秒なので、**この面の「迅速」はほぼ常に◎**になる。
-    // 3つの軸のうち時間が効かない面、という理解でよい（最初の面なので厳しくしない）。
-    rating: { time: [120, 180], points: [6, 10], losses: [0, 1] },
+    // **迅速を 120/180 → 90/120 に詰めた**（§57・プレイヤーのテストプレイ）。
+    // 司令官AIでも中央80秒だったので、120秒では時間の軸が一度も効かず、
+    // 3つの評価のうち1つが常に満点という状態だった。
+    rating: { time: [90, 120], points: [6, 10], losses: [0, 1] },
     objectives: [
       { id: 'kill', type: 'destroyAll', tag: 'cap', label: '敵の哨戒機を全機撃墜する' },
     ],
@@ -276,10 +277,12 @@ export const STAGES = [
       // 対地攻撃機は2機。1機失っただけで「30km先まで積み替えて往復し直す」
       // という長い作業が確定してしまうのを避ける（実プレイで18分がそれに消えた）。
       aircraft: [
+        // §57 のテストプレイで組み直した。ANVIL 1 を爆装にして役割を分ける
+        // （ARM で防空を剥がす → 爆弾で潰す → AGM で残りを叩く）。
         { type: 'F-2', name: 'HAMMER 1', loadout: ['ARM', 'ARM', 'AAM-S'] },
-        { type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AGM', 'AAM-S', 'AAM-S'] },
+        { type: 'A-3', name: 'ANVIL 1', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'] },
         { type: 'A-3', name: 'ANVIL 2', loadout: ['AGM', 'AGM', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
       ],
     },
     enemy: {
@@ -295,7 +298,7 @@ export const STAGES = [
     },
     // 評価基準（§18）。既定搭載で34P。無誘導爆弾（0P）を混ぜて低空で入れば節約できる。
     // 迅速の基準は「積み替えの往復をせず一度の出撃で片付いたか」
-    rating: { time: [540, 900], points: [28, 40], losses: [0, 1] },
+    rating: { time: [540, 900], points: [18, 24], losses: [0, 1] },
     objectives: [
       { id: 'sead', type: 'destroyAll', tag: 'air-defense', label: 'SAM陣地2箇所とレーダーサイトを破壊する' },
       { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
@@ -311,15 +314,17 @@ export const STAGES = [
       + '飛行場は破壊するまで迎撃機を上げ続ける。長居すれば不利になる。',
     hint: '進出距離が長い。増槽(TANK)を積むか、帰投のタイミングを早めに考えること。',
     terrain: { seed: 40404, mountainAmount: 1.0, coast: 'e', valleyDepth: 1.0, rivers: 3, baseAltitude: 420 },
-    weaponPoints: 52,
+    weaponPoints: 36,
     friendly: {
       base: { x: 8000, z: 40000 },
       startAirborne: false,
       aircraft: [
-        { type: 'A-3', name: 'ANVIL 1', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'] },
-        { type: 'A-3', name: 'ANVIL 2', loadout: ['AGM', 'AGM', 'AAM-S'] },
+        // §57 のテストプレイで組み直した。**対地目標は山の陰**にあるので、
+        // 近くまで行くか横から回り込む必要がある。ARM で先に防空を剥がす。
+        { type: 'A-3', name: 'ANVIL 1', loadout: ['ARM', 'ARM', 'AAM-S', 'AAM-S'] },
+        { type: 'A-3', name: 'ANVIL 2', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S', 'AAM-S'] },
         { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
-        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-S', 'AAM-S', 'TANK'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
       ],
     },
     enemy: {
@@ -334,7 +339,7 @@ export const STAGES = [
       ],
     },
     // 評価基準（§18）。既定搭載で16P。進出38kmの往復に時間を取られる
-    rating: { time: [480, 840], points: [22, 36], losses: [0, 1] },
+    rating: { time: [360, 600], points: [16, 20], losses: [0, 1] },
     objectives: [
       { id: 'kill-base', type: 'destroyAll', tag: 'target', label: '敵飛行場を破壊する' },
       { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
@@ -357,8 +362,10 @@ export const STAGES = [
       aircraft: [
         { type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AGM', 'AAM-S', 'AAM-S'] },
         { type: 'A-3', name: 'ANVIL 2', loadout: ['AGM', 'AGM', 'AAM-S', 'AAM-S'] },
-        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-S', 'AGM'] },
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S'] },
+        // §57 のテストプレイで組み直した。護衛の2機を空戦専任にして、
+        // 増槽で足を伸ばす（沿岸まで出て戻るのに要る）。
+        { type: 'F-2', name: 'HAMMER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S', 'TANK'] },
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
       ],
       ground: [
         { type: 'RADAR', name: '沿岸レーダー', x: 34000, z: 30000, tags: ['coastal-radar'] },
@@ -378,7 +385,7 @@ export const STAGES = [
       ],
     },
     // 評価基準（§18）。既定搭載で31P。目標は西へ動いてくるので待てば距離は縮む
-    rating: { time: [540, 900], points: [34, 46], losses: [0, 1] },
+    rating: { time: [540, 900], points: [16, 24], losses: [0, 1] },
     objectives: [
       { id: 'stop', type: 'destroyAll', tag: 'invasion', label: '上陸部隊（艦船2・車両部隊）を撃破する' },
       { id: 'radar', type: 'protect', tag: 'coastal-radar', label: '沿岸レーダーを守る', fail: true },
@@ -394,15 +401,17 @@ export const STAGES = [
       + '敵は全戦力を投入してくる。損害を抑えながら段階的に削るしかない。',
     hint: '早期警戒機を先に落とせば、敵の探知網が大きく弱まり低空侵入が効くようになる。',
     terrain: { seed: 60606, mountainAmount: 1.2, coast: 'e', valleyDepth: 1.1, rivers: 3, baseAltitude: 460 },
-    weaponPoints: 90,
+    // **一度は補給して出直す前提**の面（§57）。上限はそのぶん高く取る。
+    weaponPoints: 85,
     friendly: {
       base: { x: 8000, z: 42000 },
       startAirborne: false,
       aircraft: [
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-A', 'AAM-M', 'AAM-S'] },
+        // §57 のテストプレイで組み直した。AAM-A をやめて中距離弾で揃える。
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
         { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
         { type: 'F-2', name: 'HAMMER 1', loadout: ['ARM', 'ARM', 'AAM-S'] },
-        { type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'AGM', 'BOMB', 'BOMB', 'AAM-S'] },
+        { type: 'A-3', name: 'ANVIL 1', loadout: ['AGM', 'BOMB', 'BOMB', 'AAM-S', 'AAM-S'] },
       ],
     },
     enemy: {
@@ -423,7 +432,7 @@ export const STAGES = [
     },
     // 評価基準（§18）。既定搭載で34P。目標が3系統あり出撃は2度以上になる。
     // 最終作戦なので損失には少し寛容にする
-    rating: { time: [900, 1500], points: [44, 66], losses: [0, 2] },
+    rating: { time: [900, 1500], points: [45, 60], losses: [0, 2] },
     objectives: [
       { id: 'awacs', type: 'destroyAll', tag: 'awacs', label: '敵早期警戒機を撃墜する' },
       { id: 'bases', type: 'destroyAll', tag: 'target', label: '敵飛行場2箇所を破壊する' },

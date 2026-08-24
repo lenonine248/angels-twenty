@@ -656,7 +656,7 @@ class OrderPathRenderer {
 
     for (const u of units) {
       if (typeof u.waypoints !== 'function') continue;   // 地上ユニットは経路を持たない
-      const pts = u.waypoints();
+      const pts = u.waypoints(this.world);
       let px = u.pos.x, py = u.pos.y, pz = u.pos.z;
       for (const w of pts) {
         const col = w.hostile ? RED : AMBER;

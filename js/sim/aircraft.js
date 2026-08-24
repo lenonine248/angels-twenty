@@ -325,8 +325,6 @@ export class Aircraft extends Unit {
     } else {
       this.order = order;
       this.queue.length = 0;
-      // 攻撃をやめたら狙点も捨てる。残しておくと経路の線だけが敵を指し続ける。
-      if (!order || order.type !== 'attack') this._aimPos = null;
     }
   }
 
@@ -353,8 +351,19 @@ export class Aircraft extends Unit {
     this.queue.length = 0;
   }
 
-  /** 経路表示用: 現在地から順に辿る目標地点のリスト */
-  waypoints() {
+  /**
+   * 経路表示用: 現在地から順に辿る目標地点のリスト。
+   *
+   * `world` を受けるのは、敵への線を**その都度いまの見え方から出す**ため（§57）。
+   * §53 で `update()` が置いた値（`_aimPos`）を使う形にしたが、それだと
+   *
+   * - **一時停止中は線が出ない**（`update()` が回らない）
+   * - **Shift で継ぎ足した攻撃指示にも線が出ない**（`update()` は現在の指示しか見ない）
+   *
+   * という2つの穴が空いた。どちらもプレイヤーから見れば「指示が入っていない」
+   * ようにしか見えない。
+   */
+  waypoints(world) {
     const pts = [];
     const push = (o) => {
       if (!o) return;
@@ -368,8 +377,9 @@ export class Aircraft extends Unit {
       // **敵へ引く線も真の位置を指さない**（§53）。
       // 経路の線が真の位置へ伸びていると、探知していない相手の居場所が
       // 線を見るだけで分かってしまう。見失っていれば線そのものを引かない。
-      else if (o.type === 'attack' && o.target && o.target.alive && this._aimPos) {
-        pts.push({ x: this._aimPos.x, z: this._aimPos.z, alt: this._aimPos.y, hostile: true });
+      else if (o.type === 'attack' && o.target && o.target.alive) {
+        const aim = world ? this.believedPosOf(o.target, world) : o.target.pos;
+        if (aim) pts.push({ x: aim.x, z: aim.z, alt: aim.y, hostile: true });
       }
     };
     push(this.order);
@@ -414,13 +424,7 @@ export class Aircraft extends Unit {
     if (this.queue.length > 0) this.order = this.queue.shift();
     else this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, alt: this.desiredAlt, radius: 2500 };
     this.acmMode = null;
-    /**
-     * 攻撃指示の狙点＝**こちらが目標をどこだと思っているか**（§53）。
-     * 経路の線もここを指す。見失っているあいだは null。
-     */
-    this._aimPos = null;
     this.cranking = false;
-    this._aimPos = null;
     // プレイヤーが出した指示を解くときは黙って消さない。
     if (lost && order && order.player) world.log?.(`${this.name} 目標を見失った`);
   }
@@ -813,7 +817,6 @@ export class Aircraft extends Unit {
           const c = t.static && world.detection
             ? world.detection.contactsFor(this.side).get(t.id) : null;
           if (!c) { this._releaseTarget(world, o, false); break; }
-          this._aimPos = c.pos;
           desiredHeading = headingOf(c.pos.x - this.pos.x, c.pos.z - this.pos.z);
           break;
         }
@@ -822,7 +825,6 @@ export class Aircraft extends Unit {
         // 記憶も切れていれば、そこで指示を解く。
         const aim = this.believedPosOf(t, world);
         if (!aim) { this._releaseTarget(world, o, true); break; }
-        this._aimPos = aim;
         const exact = aim === t.pos;
 
         const dx = aim.x - this.pos.x, dz = aim.z - this.pos.z;

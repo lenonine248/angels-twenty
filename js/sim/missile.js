@@ -958,6 +958,7 @@ export class Missile {
   _blast(world) {
     const radius = this.weapon.blastRadius;
     if (!radius) return;
+    let best = null, bestD = Infinity;
     for (const u of world.units) {
       if (!u.alive || u.side === this.side) continue;
       if (u.kind === 'aircraft') continue;
@@ -965,7 +966,16 @@ export class Missile {
       const d = Math.max(0, u.pos.distanceTo(this.pos) - footprint);
       if (d > radius) continue;
       u.damage(this.weapon.damage * (1 - d / radius), this);
+      if (d < bestD) { bestD = d; best = u; }
     }
+    // **爆風でも命中は命中**（§57）。
+    //
+    // 座標を狙う弾（沈黙された相手を追う ARM、記憶位置へ飛ぶ AGM）は
+    // `isPoint` 経路で炸裂するので、直撃の側にある `onMissileHit` を通らない。
+    // そのぶん**命中が1件も数えられていなかった** — ベンチの兵装別の集計でも
+    // プレイ記録（`telemetry.markHit`）でも、対地弾は撃つだけの兵装に見えていた。
+    // 実際には ARM が SAM 陣地を破壊していたのに「2発0命中」と出ていた。
+    if (best) world.onMissileHit?.(this, best, bestD);
   }
 
   destroy(world, reason) {
