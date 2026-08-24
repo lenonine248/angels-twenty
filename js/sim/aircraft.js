@@ -169,6 +169,12 @@ const CRANK_FRACTION = 0.6;
 const CORNER_FRACTION = 0.85;
 
 /** ミリタリー推力（AB無し）の上限。最大速度・加速度に対する割合（§29.3） */
+/**
+ * 「探すためにレーダーを出す」対象になるAIモード（§61.5）。
+ * 空中の敵を見つけるのが仕事のモードだけ。対地攻撃と帰投は含めない。
+ */
+const HUNTING_MODES = { PATROL: 1, PURSUIT: 1, COORDINATE: 1, ESCORT: 1 };
+
 const MIL_SPEED_FRACTION = 0.78;
 const MIL_ACCEL_FRACTION = 0.55;
 
@@ -1162,6 +1168,32 @@ export class Aircraft extends Unit {
       if (u.kind !== 'aircraft' || u.onGround) continue;
       const r = u.radarRange;
       if (r > 0 && this.pos.distanceTo(u.pos) <= r) return true;
+    }
+
+    // 4. **探すために出す**（§61.5）。
+    //    空戦の任務に就いていて、敵機を1機も掴んでいないなら点ける。
+    //
+    //    **黙るのは「どこに居るか分かっている相手へ近づく間」の戦術**であって、
+    //    見つけていない段階の沈黙は、ただ何も起きない。
+    //    1〜3 はどれも「もう相手が見えている／見られている」ことが前提で、
+    //    **探し始める規則がどこにも無かった。**
+    //
+    //    探知距離を 40 → 30km に縮めたとき（§61.3）これが表に出た。
+    //    緊急発進が **18/18 → 0/18・損失0.00**。誰も見つけないので
+    //    **交戦そのものが起きなかった**。40km のころは、探す前に
+    //    相手のレーダー圏（規則3）へ入るので偶然点いていただけ。
+    //
+    //    記憶に残っているあいだは黙れる（§54 で誤差3kmまで保つ）。
+    //    見つける → 黙って詰める → 見失ったらまた出す、という往復になる。
+    //    **対地攻撃・帰投・回避には掛けない** — 低空侵入の意味が消える。
+    if (HUNTING_MODES[this.aiMode] && world.detection) {
+      for (const [, c] of world.detection.contactsFor(this.side)) {
+        const t2 = c.unit;
+        if (t2 && t2.alive && t2.side !== this.side && t2.kind === 'aircraft' && !t2.onGround) {
+          return false;                       // 掴んでいる。黙って詰められる
+        }
+      }
+      return true;                            // 何も掴んでいない。出さないと始まらない
     }
     return false;
   }

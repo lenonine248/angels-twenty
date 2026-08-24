@@ -226,9 +226,31 @@ export class PilotAI {
     });
   }
 
+  /**
+   * 護衛。
+   *
+   * **守る相手は「随伴している相手」から拾う**（§60.3）。
+   * `escortTarget` を書いていたのは司令官AI（`ai/commander.js`）だけで、
+   * プレイヤーには書く手段が無かった。つまり
+   * **パネルの「護衛」ボタンは押しても必ず哨戒に落ちていた** ——
+   * 押せるのに一度も働かないボタンが1つ並んでいたことになる。
+   */
   _escort(u, attackers) {
-    const ward = u.escortTarget;
-    if (!ward || !ward.alive) { u.aiMode = 'PATROL'; return; }
+    let ward = u.escortTarget;
+    if ((!ward || !ward.alive)
+      && u.order && u.order.type === 'follow' && u.order.target && u.order.target.alive) {
+      ward = u.escortTarget = u.order.target;
+    }
+    if (!ward || !ward.alive) {
+      u.aiMode = 'PATROL';
+      // 一度だけ知らせる。押しても何も起きない、という状態にはしない
+      if (!u._escortWarned && u.side === this.world.playerSide) {
+        u._escortWarned = true;
+        this.world.log?.(`${u.name} 護衛する相手がいません — 哨戒に戻ります`);
+      }
+      return;
+    }
+    u._escortWarned = false;
 
     // 護衛対象に近づく敵を排除する
     const threat = this._pickAirTarget(u, ENGAGE_RANGE.ESCORT, attackers, ward);
@@ -376,6 +398,11 @@ export class PilotAI {
     const o = u.order;
     if (!o || !o.player) return false;
     if (o.type === 'attack') return !!(o.target && o.target.alive);
+    // **護衛モードのときの随伴指示は「誰を護るか」の指定**であって、
+    // 「そこに張り付いていろ」ではない（§60.3）。
+    // ここで止めてしまうと `_escort` が一度も走らず、
+    // **パネルの「護衛」ボタンは押しても何も起きないまま**になる。
+    if (o.type === 'follow' && u.aiMode === 'ESCORT') return false;
     return o.type === 'move' || o.type === 'follow' || o.type === 'rtb';
   }
 

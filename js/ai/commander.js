@@ -2,7 +2,7 @@
 //
 // **1機では決められないことだけを決める層。**
 //
-//   司令官 (ここ)        誰にどの任務を与えるか
+//   司令官 (ここ)        誰にどの任務を与えるか・誰が誰を護るか・どこで待つか
 //   ai/pilot.js          その任務の中で、どの敵を撃つか
 //   sim/acm.js           どう飛ぶか
 //   sim/aircraft.js      飛ぶ
@@ -28,6 +28,27 @@ const THINK_INTERVAL = 2;
 
 /** 対地兵装 */
 const AG_WEAPONS = ['AGM', 'ARM', 'BOMB'];
+
+/** 哨戒エリアの半径(m) */
+const PATROL_RADIUS = 4500;
+
+/**
+ * 護衛する相手が居ないときに置く哨戒エリアの位置。
+ * 本拠と目標を結ぶ線の、この割合だけ前（§59.4）。
+ */
+const FORWARD_FRAC = 0.5;
+
+/**
+ * 哨戒エリアを、探知している SAM にこれ以上は寄せない(m)。
+ *
+ * SAM の交戦距離は相手の高度で伸びる（20km 前後）。
+ * 哨戒は交戦ではないので、撃たれる位置で旋回させる意味が無い。
+ * COORDINATE には対地脅威の手当てが無い（`ai/pilot.js` の降下は STRIKE だけ）。
+ */
+const SAM_KEEPOUT = 22000;
+
+/** 哨戒エリアを置き直す最小の移動量(m)。これ未満なら動かさない */
+const PATROL_HYSTERESIS = 3000;
 
 export class Commander {
   /**
@@ -78,6 +99,7 @@ export class Commander {
   _assign() {
     const ward = this._ward();
     const ground = this._groundTargets();
+    const wards = this._strikeWards();
 
     for (const u of this._myAircraft()) {
       if (!u.alive || u.onGround || u.state === 'takeoff' || u.state === 'landing') continue;
@@ -87,12 +109,21 @@ export class Commander {
       if (u.order && u.order.player) continue;          // プレイヤーの直接指示が優先
       if (u.spec.hardpoints === 0) continue;            // 非武装の支援機は経路のまま
 
-      // 1. 守るものがあり、対地兵装を持たないなら護衛に付く。
+      // 1. 対地兵装を持たない機体は護衛に付く。
       //    攻撃目標より先に見る（護衛ステージには destroyAll 目標が無い）。
-      if (ward && ward !== u && !this._hasAg(u)) {
-        this._setMode(u, 'ESCORT');
-        u.escortTarget = ward;
-        continue;
+      //
+      //    守る相手は2種類ある。**protect 目標の機体が最優先**で、
+      //    それが無ければ**進出する味方の攻撃機**に付く（§59.4）。
+      //    後者を入れるまで、後半4面の空戦機は一度も護衛にならなかった ——
+      //    protect 目標が自軍飛行場（＝機体ではない）なので 1 が成立せず、
+      //    全機が 3 に落ちて発進地点で旋回していた（§59.2）。
+      if (!this._hasAg(u)) {
+        const w = (ward && ward !== u) ? ward : this._pickWard(u, wards);
+        if (w) {
+          this._setMode(u, 'ESCORT');
+          u.escortTarget = w;
+          continue;
+        }
       }
 
       // 2. 対地兵装を持っていて、狙える地上目標が見えているなら対地攻撃。
@@ -101,6 +132,7 @@ export class Commander {
         if (t) {
           this._setMode(u, 'STRIKE');
           u.strikeTarget = t;
+          u.escortTarget = null;
           continue;
         }
       }
@@ -108,7 +140,9 @@ export class Commander {
       // 3. それ以外は連携（編隊で扇を分担し、目標の重複を避ける）。
       //    どの敵機を撃つかは pilot.js が探知から決める。
       this._setMode(u, 'COORDINATE');
+      this._placePatrol(u);
       u.strikeTarget = null;
+      u.escortTarget = null;
     }
   }
 
@@ -120,9 +154,133 @@ export class Commander {
   _setMode(u, mode) {
     if (u.aiMode === mode) return;
     u.aiMode = mode;
-    if (mode === 'COORDINATE' && !u.patrolArea) {
-      u.patrolArea = { x: u.pos.x, z: u.pos.z, alt: u.desiredAlt, radius: 4500 };
+    if (mode === 'COORDINATE') this._placePatrol(u);
+  }
+
+  /**
+   * 護衛に付く値打ちのある味方機 —— **対地兵装を持って進出する機体**。
+   *
+   * 地上に居るあいだと帰投中は外す。駐機中の機体に編隊を組ませても仕方がないし、
+   * 帰る機体に付いていくと護衛まで一緒に戦域を離れる。
+   */
+  _strikeWards() {
+    const out = [];
+    for (const u of this._myAircraft()) {
+      if (!u.alive || u.onGround) continue;
+      if (u.state === 'takeoff' || u.state === 'landing') continue;
+      if (u.aiMode === 'RTB' || u.aiMode === 'MANUAL') continue;
+      if (!this._hasAg(u)) continue;
+      out.push(u);
     }
+    return out;
+  }
+
+  /**
+   * 護衛に付く相手を選ぶ。
+   *
+   * **護衛の付いていない機体から埋める。** 近い順だけで選ぶと、
+   * 護衛が全員おなじ1機に群がる（`_pickGround` と同じ事故）。
+   */
+  _pickWard(u, wards) {
+    if (!wards.length) return null;
+    // いま付いている相手がまだ対象なら変えない。乗り換えるたびに編隊が組み直しになる
+    if (u.escortTarget && wards.includes(u.escortTarget)) return u.escortTarget;
+
+    const assigned = new Map();
+    for (const o of this._myAircraft()) {
+      if (o === u || !o.alive || o.aiMode !== 'ESCORT' || !o.escortTarget) continue;
+      assigned.set(o.escortTarget, (assigned.get(o.escortTarget) || 0) + 1);
+    }
+
+    let best = null;
+    let bestScore = Infinity;
+    for (const w of wards) {
+      if (w === u) continue;
+      const score = (assigned.get(w) || 0) * 1e6 + u.pos.distanceTo(w.pos);
+      if (score < bestScore) { bestScore = score; best = w; }
+    }
+    return best;
+  }
+
+  // ------------------------------------------------------------ 哨戒エリア
+
+  /**
+   * 護衛する相手が居ない機体の哨戒エリアを置く。**目標側へ寄せる。**
+   *
+   * 従来は「COORDINATE に落ちた時点の現在地」だった。最初の割り当ては
+   * 発進直後なので、**飛行場の真上に固定される。**
+   * COORDINATE の交戦距離(30km)は自機からの距離で測るので、
+   * そこに居るかぎり遠くの敵は永久に見えない（§59.2）。
+   *
+   * **人が置いたエリアは動かさない。** プレイヤーが指定した哨戒地点や、
+   * ステージ定義が敵の CAP に与えた配置を上書きすると指揮が効かなくなる。
+   */
+  _placePatrol(u) {
+    const a = u.patrolArea;
+    if (a && !a.byCommander) return;
+
+    const front = this._frontPoint();
+
+    // 進出先が分からない（空戦だけの面・まだ何も見えていない）。
+    // **すでに置いてあるものは動かさない。** 現在地で置き直すと、
+    // 哨戒エリアが機体にくっついて流れていき、哨戒が哨戒でなくなる。
+    if (!front) {
+      if (a) return;
+      u.patrolArea = { x: u.pos.x, z: u.pos.z, alt: u.desiredAlt,
+        radius: PATROL_RADIUS, byCommander: true };
+      return;
+    }
+
+    const home = u.airbase && u.airbase.alive ? u.airbase.pos : u.pos;
+    const t = this._forwardFraction(home, front);
+    const x = home.x + (front.x - home.x) * t;
+    const z = home.z + (front.z - home.z) * t;
+
+    if (a && Math.hypot(a.x - x, a.z - z) < PATROL_HYSTERESIS) return;
+    u.patrolArea = { x, z, alt: u.desiredAlt, radius: PATROL_RADIUS, byCommander: true };
+  }
+
+  /**
+   * 進出先。**未達の destroyAll 目標のうち、いま分かっている位置の重心。**
+   *
+   * 地上目標が無いステージ（空戦だけの面）では null を返す ——
+   * 「どこへ攻めるか」が与えられていないのに前に出しても、出る先が無い。
+   * おかげでこの変更は**後半4面にしか掛からない**。
+   */
+  _frontPoint() {
+    const contacts = this.world.detection.contactsFor(this.side);
+    let x = 0;
+    let z = 0;
+    let n = 0;
+    for (const t of this._groundTargets()) {
+      const c = contacts.get(t.id);
+      if (!c) continue;                 // 真の位置は読まない。記憶の位置だけを使う
+      x += c.pos.x; z += c.pos.z; n++;
+    }
+    return n ? { x: x / n, z: z / n } : null;
+  }
+
+  /**
+   * どこまで前に出すか。中間(0.5)を基本に、**探知している SAM の圏には入れない。**
+   *
+   * 手前から刻んで、**最初に圏へ触れた一歩前で止める。**
+   * 方程式を解くと「SAM を跨いだ向こう側」も解に出てしまい、
+   * 圏を突っ切った先に哨戒エリアを置きかねない。
+   */
+  _forwardFraction(from, front) {
+    const sams = [];
+    for (const [, c] of this.world.detection.contactsFor(this.side)) {
+      const s = c.unit;
+      if (s && s.alive && s.side !== this.side && s.kind === 'sam') sams.push(c.pos);
+    }
+    let best = 0;
+    for (let t = 0; t <= FORWARD_FRAC + 1e-9; t += 0.05) {
+      const x = from.x + (front.x - from.x) * t;
+      const z = from.z + (front.z - from.z) * t;
+      if (sams.some((s) => Math.hypot(x - s.x, z - s.z) < SAM_KEEPOUT)) break;
+      best = t;
+    }
+    return best;
   }
 
   /**

@@ -27,7 +27,18 @@ const STATE_LABEL = {
   flying: '飛行中', landing: '着陸進入', parked: '駐機',
   servicing: '整備中', ready: '発進待ち', takeoff: '離陸中',
 };
-const ALT_PRESETS = [[600, '低空'], [2000, '中低'], [4000, '中高'], [7000, '高々度'], [10000, '最大']];
+/**
+ * 目標高度のボタン（§62.1）。
+ *
+ * **10,000m は「最大」ではない。** F-1 は 13,500m、F-2 は 12,500m まで登れる。
+ * 以前ここを「最大」と書いていたので、**登れる高さの上のほうを
+ * ボタンから指示する手段が無かった**（Z/X で刻むしかなかった）。
+ * 機種ごとの上昇限度は `_altButtons` が末尾に足す。
+ */
+const ALT_PRESETS = [[600, '低空'], [2000, '中低'], [4000, '中高'], [7000, '高々度'], [10000, '超高']];
+
+/** 上昇限度のボタンを足す下限(m)。これ以下だと「超高」とほぼ重なる */
+const CEILING_BUTTON_MIN = 10500;
 
 export class Hud {
   constructor({ world, commands }) {
@@ -553,7 +564,14 @@ export class Hud {
 
   _altButtons(u) {
     const cur = u ? Math.round(u.desiredAlt) : null;
-    const btns = ALT_PRESETS.map(([alt, label]) => {
+    // **機種ごとの上昇限度を末尾に足す**（§62.1）。
+    // `commands._applyAltitude` は元から `spec.ceiling` で頭打ちにしているので、
+    // ここは「押せる場所を用意する」だけで済む。
+    const ceiling = u && u.spec ? Math.round(u.spec.ceiling) : 0;
+    const presets = ceiling > CEILING_BUTTON_MIN
+      ? [...ALT_PRESETS, [ceiling, '限界']]
+      : ALT_PRESETS;
+    const btns = presets.map(([alt, label]) => {
       const active = cur != null && Math.abs(cur - alt) < 250 ? ' active' : '';
       const p = altitudeProfile(alt);
       return `<button data-alt="${alt}" class="${active}"
@@ -587,11 +605,16 @@ export class Hud {
           title="整備が終わった時点で自動で発進する。一度きりで、発進すると解除される">
           整備後に発進 ${u.autoLaunch ? 'ON' : 'OFF'}</button>`
       : '';
+    // **操作ボタンは縦に積む**（§62.2）。
+    // 高度ボタンが1つ増えて右へ伸びたので、横並びのままだと重なる。
+    // 上が「まず押すほう」（整備後に発進 / 帰投）、下がその補助。
     const actions = ground
-      ? `<button data-cmd="launch" class="wide go${pend ? ' warn' : ''}">発進</button>${auto}${warn}`
+      ? `${auto}<button data-cmd="launch" class="wide go${pend ? ' warn' : ''}">発進</button>`
       : '<button data-cmd="rtb" class="wide">帰投</button><button data-cmd="clear">指示解除</button>';
-    return `<div class="dt-alt"><label>目標高度</label>${btns}
-      <span class="dt-spacer"></span>${actions}</div>`;
+    return `<div class="dt-alt"><label>目標高度</label>
+        <div class="dt-alts">${btns}</div>
+        <div class="dt-act">${actions}</div>
+      </div>${warn}`;
   }
 }
 

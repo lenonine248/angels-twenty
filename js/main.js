@@ -582,13 +582,21 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   world.recorder = battle.recorder;
   battle.recorder.sample(0);          // 開始時の配置を1枚残す
 
-  // 初期カメラ
+  // 初期カメラ。**選択はしない**（§64）。
+  //
+  // 以前は先頭の機体を選んだ状態で始めていた。カメラを合わせるのはよいが、
+  // **選ぶところまでやってしまうと、指揮官が最初に決めることを機械が決めてしまう。**
+  // 実害もある —— 開始直後に Z/X（高度）や B（帰投）を押すと、
+  // **自分で選んでいない機体に指示が入る。**
+  // パネルには「ユニット未選択 — 機体をクリック、またはドラッグで範囲選択」が出る。
+  //
+  // `select([])` を明示するのは、前の戦闘の選択が残っているため。
   const lead = world.units.find((u) => u.side === SIDE.BLUE && u.kind === 'aircraft');
   if (lead) {
     scene.rig.lookAtPoint(lead.pos.x, lead.pos.z);
     scene.rig._target.set(lead.pos.x, lead.pos.y, lead.pos.z);
-    commands.select([lead]);
   }
+  commands.select([]);
   scene.rig.distance = 16000;
   scene.rig._distance = 16000;
 

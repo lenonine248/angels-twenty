@@ -156,12 +156,17 @@ export class ScreenManager {
       if (!g) { g = { key, items: [] }; groups.push(g); }
       g.items.push(t);
     }
-    const GROUP_SUB = { 基本: '操作と仕組み', 兵装: '1兵装ずつ、特性と使い方' };
+    const GROUP_SUB = {
+      基本: '操作と仕組み',
+      兵装: '1兵装ずつ、特性と使い方',
+      詳細: '踏み込んだ仕組みと任せ方',
+    };
+    const GROUP_TAG = { 基本: 'BASIC', 兵装: 'WEAPON', 詳細: 'DETAIL' };
     const sections = groups.map((g) => {
       const n = g.items.filter((t) => done.includes(t.id)).length;
       const cards = g.items.map((t, i) => `
         <div class="stage-card tut${done.includes(t.id) ? ' cleared' : ''}" data-tutorial="${t.id}">
-          <div class="sc-no">${g.key === '兵装' ? 'WEAPON' : 'BASIC'} ${String(i + 1).padStart(2, '0')}</div>
+          <div class="sc-no">${GROUP_TAG[g.key] || 'BASIC'} ${String(i + 1).padStart(2, '0')}</div>
           ${done.includes(t.id) ? '<div class="sc-rank done-mark">✔</div>' : ''}
           <div class="sc-name">${t.name}</div>
           <div class="sc-title">${t.title}</div>

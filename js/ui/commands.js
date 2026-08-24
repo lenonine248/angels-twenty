@@ -664,6 +664,16 @@ class OrderPathRenderer {
         // 目標点から地表への垂線
         const g = Math.max(0, terrain.heightAt(w.x, w.z));
         seg(w.x, w.alt, w.z, w.x, g, w.z, col);
+        // **垂線に指示高度を出す**（§62.3）。
+        //
+        // Z/X で刻むとボタンに無い値（3,500m など）になるが、
+        // **いくつを指示したのかはパネルを開かないと読めなかった。**
+        // 経路を見ている最中に高度が分かるのが要点なので、線の側に置く。
+        // 地面すれすれの点には出さない（読めないうえに邪魔になる）。
+        if (camera && w.alt - g > 400) {
+          this._label(labelIdx++, w.x, g + (w.alt - g) * 0.82, w.z,
+            `${Math.round(w.alt)}m`, w.hostile ? '#ff8a78' : '#6fd8e8', camera);
+        }
         // 区間の中央に距離を出す
         if (camera) {
           const d = Math.hypot(w.x - px, w.alt - py, w.z - pz);
