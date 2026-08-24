@@ -374,7 +374,10 @@ export class ScreenManager {
 
   showResult(stage, result, stats) {
     const clear = result === 'clear';
-    const next = STAGES[STAGES.indexOf(stage) + 1];
+    // 検証用ステージ（§47.2）は STAGES に無い。indexOf が -1 を返すので、
+    // そのまま +1 すると**先頭のステージが「次の任務」として出てしまう**。
+    const at = STAGES.indexOf(stage);
+    const next = at >= 0 ? STAGES[at + 1] : null;
     const r = stats.rating;
 
     // 評価（§18）。クリアしたときだけ出す。
@@ -414,9 +417,10 @@ export class ScreenManager {
         <div class="screen-foot">
           <button data-act="select" class="ghost">ステージモードへ</button>
           <button data-act="review" class="ghost">戦闘を振り返る</button>
-          <button data-act="rerun" class="ghost"
-            title="同じ乱数の種で、まったく同じ状況をもう一度">同じ条件で</button>
-          <button data-act="retry" class="go">${clear ? 'もう一度' : '再挑戦'}</button>
+          ${isDebug() ? `<button data-act="rerun" class="ghost"
+            title="同じ乱数の種で、まったく同じ状況をもう一度">同じ条件で</button>` : ''}
+          <button data-act="retry" class="${clear && next ? 'ghost' : 'go'}">${clear ? 'もう一度' : '再挑戦'}</button>
+          ${clear && next ? `<button data-act="next" data-id="${next.id}" class="go">次のステージへ</button>` : ''}
         </div>
       </div>`);
   }
@@ -505,8 +509,16 @@ export class ScreenManager {
       case 'retry':
         this.showBriefing(this.stage);
         break;
-      // 同じ種でやり直す（§24.3）。運が違うと、指示を変えた効果を比べられない
+      // 次のステージへ。クリアした直後だけ出る
+      case 'next': {
+        const s = STAGES.find((x) => x.id === act.dataset.id);
+        if (s) this.showBriefing(s);
+        break;
+      }
+      // 同じ種でやり直す（§24.3）。運が違うと、指示を変えた効果を比べられない。
+      // 調べるための道具なので、デバッグモードでだけ出す（§47.2）
       case 'rerun':
+        if (!isDebug()) break;
         this.onRerun?.();
         break;
       // タイトルから、保存した記録を開く（§23.5）
