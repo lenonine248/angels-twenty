@@ -680,7 +680,12 @@ export const TUTORIALS = [
       aircraft: [
         // 機銃も切る（`loadout: []` だけでは無害にならない。dummyFighter の注記を参照）。
         // **ここは機銃のチュートリアルなので、撃ち返されると練習にならない。**
-        { type: 'J-7', name: 'BANDIT 1', x: 21000, z: 30000, agl: 2000,
+        //
+        // **戦闘機ではなく爆撃機にする**（§55）。J-7 の巡航は 220m/s で
+        // F-1 とまったく同じなので、追いつくのにアフターバーナーが要り、
+        // **命中まで90秒の追いかけっこ**になっていた（実測）。
+        // B-9 は 165m/s。的も大きく、機銃の練習台としては素直。
+        { type: 'B-9', name: 'BANDIT 1', x: 21000, z: 30000, agl: 2000,
           aiMode: 'TRANSIT', loadout: [], autoWeapons: { GUN: false }, tags: ['target'],
           moveTo: { x: 36000, z: 18000, agl: 2000 } },
       ],
@@ -928,9 +933,9 @@ export const TUTORIALS = [
     group: '兵装',
     name: 'AGM 空対地ミサイル',
     title: '射程の外から叩く',
-    brief: '地上目標を遠くから撃つためのミサイルです。射程14km、撃ちっぱなし。\n'
+    brief: '地上目標を対空砲の外から撃つためのミサイルです。射程10km、撃ちっぱなし。\n'
       + '高度を上げても射程はあまり伸びません（対レーダーミサイルとの違い）。\n'
-      + 'コスト5・スロット2。対地攻撃の主力になります。',
+      + 'コスト4・スロット2。対地攻撃の主力になります。',
     hint: '目標は撃ち返してきません。',
     terrain: { seed: 90015, mountainAmount: 0.8, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 420 },
     weaponPoints: 20,
@@ -957,7 +962,7 @@ export const TUTORIALS = [
           + '機体はその場から動きません',
         done: 'order:attack' },
       { text: '下のパネルで使用兵装に AGM を指定する',
-        note: 'コスト5・スロット2。A-3 は6スロットなので3発積めます',
+        note: 'コスト4・スロット2。A-3 は6スロットなので3発積めます',
         done: 'weapon', when: (d) => d.weapon === 'AGM',
         pause: true, highlight: '[data-pick="AGM"]',
         // 指定する前に自動発射で撃ち尽くすと、押すチップが無くなる。行き止まりにしない。
@@ -965,15 +970,17 @@ export const TUTORIALS = [
           && mine(ctx).every((u) => !u.loadout.includes('AGM')) },
       { text: 'AGM を発射する',
         note: '兵装を指定した状態で目標を右クリックすると射撃指示になります。'
-          + '目標の対空砲（射程3km）の外から撃てます。'
-          + 'ただし**低いところから遠射すると途中で失速して届きません** — '
-          + '低空なら7〜8km、中高度なら9km あたりが実際に届く距離です',
+          + '**対空砲（射程3km）の外から撃てる**のがこの兵装の値打ちです。'
+          + '射程は10km。**表記どおり届きます** — '
+          + '以前は14kmと書いてありながら実際は11kmしか飛ばず、'
+          + '届かない距離から撃って目標の手前で失速していました（§55）',
         done: 'fire', when: (d) => d.weapon === 'AGM',
         check: (ctx) => mine(ctx).length > 0
           && mine(ctx).every((u) => !u.loadout.includes('AGM')) },
       { text: '目標を破壊する',
         note: '撃ちっぱなしなので、撃ったあとは離脱して構いません。'
-          + '至近弾でも効きます（爆風60m）',
+          + '**至近弾でも効きます（爆風110m）** — '
+          + '多少ずれても無駄弾にならないのが、遠射をあきらめた代わりです',
         check: (ctx) => {
           const u = unit(ctx, 'レーダーサイト');
           return (!!u && !u.alive) || spentAll('AGM')(ctx);
