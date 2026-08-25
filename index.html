@@ -23,7 +23,47 @@
 <div id="loading">
   <div class="loading-title">ANGELS TWENTY</div>
   <div class="loading-msg">GENERATING TERRAIN...</div>
+  <div id="loadingHint" class="hidden">
+    <p>読み込みが進みません。<b>再読み込み</b>すると直ることがあります。</p>
+    <p class="lh-sub">それでも直らないときは <b>Ctrl+F5</b>（Mac は <b>Cmd+Shift+R</b>）で
+      キャッシュを無視して読み直してください。</p>
+    <button id="loadingReload">再読み込み</button>
+  </div>
 </div>
+
+<!--
+  読み込みが進まないときの受け皿（§65）。
+
+  **モジュール側には置けない。** 進まなくなる原因のほとんどは
+  `js/main.js` かその依存が読めていないことで、そのときは
+  `boot().catch(showFatal)` も動かない ── 画面は
+  「GENERATING TERRAIN...」のまま何も出ない。
+  だから**モジュールではない素のスクリプト**でここに置く。
+-->
+<script>
+(function () {
+  var box = document.getElementById('loading');
+  var hint = document.getElementById('loadingHint');
+  var shown = false;
+  function stuck() {
+    // 起動できていれば何もしない
+    if (shown || !box || !hint || window.AT_READY) return;
+    if (box.className.indexOf('hidden') >= 0) return;
+    shown = true;
+    hint.className = '';
+  }
+  // スクリプト／スタイルの読み込み失敗は即座に出す。
+  // バブリングしないので capture で拾う。
+  window.addEventListener('error', function (e) {
+    var t = e && e.target;
+    if (t && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) stuck();
+  }, true);
+  // 失敗せずに止まる場合（応答が返らない等）は時間で見る
+  setTimeout(stuck, 10000);
+  var btn = document.getElementById('loadingReload');
+  if (btn) btn.addEventListener('click', function () { location.reload(); });
+})();
+</script>
 
 <!-- ===== HUD ===== -->
 <div id="hud" class="hidden">

@@ -193,6 +193,10 @@ ${err.message}`);
   setupTimeControls();
 
   setupPauseMenu();
+  // 起動できたことを素のスクリプト側へ知らせる（§65）。
+  // これが立たないまま10秒経つと、index.html の受け皿が
+  // 「再読み込みしてください」を出す。
+  window.AT_READY = true;
   el('loading').classList.add('hidden');
   screens.showTitle();
   audio.startMusic('menu');

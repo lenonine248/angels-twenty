@@ -62,6 +62,34 @@ html, body {
   letter-spacing: 0.25em;
   font-size: 12px;
 }
+/*
+ * 読み込みが進まないときの案内（§65）。既定では出さない ——
+ * 普通に読み込めた人には無関係な文章で、出しっぱなしにすると
+ * 「いつも何か失敗している」ように見える。
+ */
+#loadingHint {
+  margin-top: 26px;
+  max-width: 34em;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.9;
+}
+#loadingHint b { color: var(--amber); font-weight: normal; }
+#loadingHint p { margin: 0; }
+#loadingHint .lh-sub { font-size: 11px; opacity: 0.75; }
+#loadingHint button {
+  margin-top: 14px;
+  background: rgba(255, 182, 72, 0.14);
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  padding: 7px 22px;
+  cursor: pointer;
+}
+#loadingHint button:hover { background: rgba(255, 182, 72, 0.28); }
 
 /* ===== HUD 共通 ===== */
 #hud {
