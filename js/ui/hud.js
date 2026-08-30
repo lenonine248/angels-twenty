@@ -8,17 +8,16 @@
 
 import { formatTime } from '../core/loop.js';
 import { altitudeProfile } from '../core/atmosphere.js';
-import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
+import { WEAPONS, loadoutCost, loadoutFits } from '../data/weapons.js';
 import { AI_MODES } from '../ai/pilot.js';
 import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
 import { notify } from './actions.js';
+import { loadoutRow, removeOne, pylonLabel, LOADOUT_HINT } from './loadout.js';
 
 const REFRESH_INTERVAL = 1 / 10;
 
 /** 詳細パネルに並べるAIモード */
 const MODE_BUTTONS = ['PATROL', 'PURSUIT', 'COORDINATE', 'EVADE', 'ESCORT', 'STRIKE', 'MANUAL'];
-/** 搭載パネルに並べる兵装（SAM弾は地上専用なので除く） */
-const LOADABLE = ['AAM-S', 'AAM-M', 'AAM-A', 'AGM', 'ARM', 'BOMB', 'TANK'];
 
 const ORDER_LABEL = {
   move: '移動', orbit: '待機旋回', attack: '攻撃', follow: '随伴', hold: '保持',
@@ -39,6 +38,38 @@ const ALT_PRESETS = [[600, '低空'], [2000, '中低'], [4000, '中高'], [7000,
 
 /** 上昇限度のボタンを足す下限(m)。これ以下だと「超高」とほぼ重なる */
 const CEILING_BUTTON_MIN = 10500;
+
+/**
+ * 機体ごとの設定の選択肢。**単機のパネルと複数機のパネルで同じものを使う**（§76）。
+ * 2か所に書くと、片方だけ増えたときに気づけない。
+ */
+const RADAR = [
+  ['auto', '自動', '交戦・誘導中と、相手のレーダー圏内でだけ出す'],
+  ['on', '常時ON', '常に出す。遠くまで見えるが、遠くから見つかる'],
+  ['off', '常時OFF', '出さない。目視と逆探知だけになり、AAM-M と AAM-A が撃てない'],
+];
+const AB = [
+  ['save', '温存', '巡航を保つ。ミサイルから逃げるときだけ焚く'],
+  ['normal', '標準', '敵機と交戦するときに焚く。移動や対地では焚かない'],
+  ['max', '全力', '効くなら焚く。燃料の減りは受け入れる（消費3倍）'],
+];
+const THRESHOLD = [
+  ['low', '低', 'この期待度を下回るとAIは自動発射しない'],
+  ['mid', '中', 'この期待度を下回るとAIは自動発射しない'],
+  ['high', '高', 'この期待度を下回るとAIは自動発射しない'],
+];
+
+/**
+ * 選んでいる機体すべてで揃っている値。**揃っていなければ null**（§76）。
+ *
+ * 揃っていないものを「先頭の機体の値」で描くと、押していないボタンが
+ * 光って見える。**混在は混在として出す** —— どれも光らせない。
+ */
+function common(list, pick) {
+  if (!list.length) return null;
+  const first = pick(list[0]);
+  return list.every((u) => pick(u) === first) ? first : null;
+}
 
 export class Hud {
   constructor({ world, commands }) {
@@ -77,9 +108,13 @@ export class Hud {
       const cmd = e.target.closest('button[data-cmd]');
       if (cmd) { this._runCommand(cmd.dataset.cmd); this._detailKey = null; return; }
       const add = e.target.closest('button[data-load-add]');
-      if (add) { this._editLoadout(add.dataset.loadAdd, null); this._detailKey = null; return; }
+      if (add && !add.classList.contains('disabled')) {
+        this._editLoadout(add.dataset.loadAdd, null); this._detailKey = null; return;
+      }
       const del = e.target.closest('button[data-load-del]');
-      if (del) { this._editLoadout(null, Number(del.dataset.loadDel)); this._detailKey = null; return; }
+      if (del && !del.classList.contains('disabled')) {
+        this._editLoadout(null, del.dataset.loadDel); this._detailKey = null; return;
+      }
 
       // 使用兵装の指定（クリックで選択／再クリックで解除）
       const pick = e.target.closest('button[data-pick]');
@@ -95,10 +130,9 @@ export class Hud {
       // 兵装ごとの自動使用 ON/OFF
       const auto = e.target.closest('button[data-auto]');
       if (auto) {
-        for (const u of this.commands.selection) {
-          const id = auto.dataset.auto;
-          u.autoWeapons[id] = u.autoWeapons[id] === false;
-        }
+        const id = auto.dataset.auto;
+        this._toggleAll((u) => u.autoWeapons[id] !== false,
+          (u, v) => { u.autoWeapons[id] = v; });
         this._detailKey = null;
         return;
       }
@@ -113,7 +147,7 @@ export class Hud {
       }
       const guard = e.target.closest('button[data-guard]');
       if (guard) {
-        for (const u of this.commands.selection) u.evadeWhileGuiding = !u.evadeWhileGuiding;
+        this._toggleAll((u) => !!u.evadeWhileGuiding, (u, v) => { u.evadeWhileGuiding = v; });
         notify('guard', {});
         this._detailKey = null;
         return;
@@ -121,7 +155,7 @@ export class Hud {
       // 増槽（§32.2）
       const tankAuto = e.target.closest('button[data-tankauto]');
       if (tankAuto) {
-        for (const u of this.commands.selection) u.autoDropTank = !u.autoDropTank;
+        this._toggleAll((u) => !!u.autoDropTank, (u, v) => { u.autoDropTank = v; });
         this._detailKey = null;
         return;
       }
@@ -139,7 +173,7 @@ export class Hud {
       }
       const decoy = e.target.closest('button[data-decoy]');
       if (decoy) {
-        for (const u of this.commands.selection) u.autoDecoy = !u.autoDecoy;
+        this._toggleAll((u) => !!u.autoDecoy, (u, v) => { u.autoDecoy = v; });
         this._detailKey = null;
         return;
       }
@@ -211,16 +245,18 @@ export class Hud {
     }
   }
 
-  _editLoadout(addId, delIndex) {
+  _editLoadout(addId, delId) {
     const u = this.commands.selection[0];
     if (!u || !u.onGround) return;
-    const plan = (u.plannedLoadout ?? u.baseLoadout ?? []).slice();
+    let plan = (u.plannedLoadout ?? u.baseLoadout ?? []).slice();
     if (addId) {
       const w = WEAPONS[addId];
-      if (loadoutSlots(plan) + w.slots > u.spec.hardpoints) return;
+      if (!loadoutFits([...plan, addId], u.spec)) return;
       plan.push(addId);
-    } else if (delIndex != null) {
-      plan.splice(delIndex, 1);
+    } else if (delId != null) {
+      // **添字ではなく兵装IDで降ろす**（§70.3.3）。畳んで表示している以上、
+      // 「何番目のチップか」はもう画面に存在しない。
+      plan = removeOne(plan, delId);
     }
     u.plannedLoadout = plan;
     if (u.airbase) u.airbase.replan(u, this.world);
@@ -309,14 +345,22 @@ export class Hud {
       return;
     }
     if (sel.length > 1) {
-      const key = 'multi' + sel.map((u) => u.id).join(',');
+      // **設定も一緒に出す**（§76）。押した先の処理はもともと選択全体を
+      // 回していたのに、**ボタンが単機のときしか描かれていなかった**ので、
+      // 4機に同じ指定をするには1機ずつ選び直すしかなかった。
+      const key = 'multi' + sel.map((u) => u.id).join(',') + '|'
+        + [common(sel, (u) => u.radarMode), common(sel, (u) => u.abMode || 'normal'),
+          common(sel, (u) => u.fireThreshold), common(sel, (u) => !!u.autoDecoy),
+          common(sel, (u) => !!u.evadeWhileGuiding),
+          common(sel, (u) => u.autoWeapons.GUN !== false)].join(',');
       if (key !== this._detailKey) {
         this._detailKey = key;
         this.detail.innerHTML = `
           <div class="dt-multi">${sel.length} 機を選択中</div>
           <div class="dt-multi-sub">${sel.map((u) => u.name).join(', ')}</div>
           ${this._modeButtons(sel[0])}
-          ${this._altButtons(sel[0])}`;
+          ${this._altButtons(sel[0])}
+          ${this._groupSettings(sel)}`;
       }
       return;
     }
@@ -430,15 +474,22 @@ export class Hud {
     // 兵装ゼロで早期 return していたので**まとめて消えていた**。
     // 撃ち尽くして帰る途中こそ、レーダーやABを触りたい。
     const empty = !u.loadout.length;
+    // **種類ごとに畳んで「×数」で出す**（§70.3）。
+    //
+    // 1発1チップだと、爆装の A-3 は `BOMB BOMB BOMB BOMB AAM-S AAM-S` と
+    // 6個並ぶ。**残り何発かを数えないと読めない**うえ、指定はどれを押しても
+    // 同じ（`data-pick` は兵装IDなので、個体を指してはいない）。
+    // 畳んでも押せる対象は変わらず、残数がそのまま読めるようになる。
+    const kinds = [...new Set(u.loadout)];
     const chips = empty
       ? '<span class="chip empty">なし</span>'
-      : u.loadout.map((id, i) => {
+      : kinds.map((id) => {
+        const n = u.loadout.reduce((c, x) => c + (x === id ? 1 : 0), 0);
         const on = u.selectedWeapon === id ? ' picked' : '';
-        return `<button class="chip pick${on}" data-pick="${id}" data-i="${i}"
-          title="この兵装を指定して攻撃する">${id}</button>`;
+        return `<button class="chip pick${on}" data-pick="${id}"
+          title="この兵装を指定して攻撃する">${id}<i>×${n}</i></button>`;
       }).join('');
 
-    const kinds = [...new Set(u.loadout)];
     const autos = kinds.map((id) => {
       const off = u.autoWeapons[id] === false;
       return `<button class="autow${off ? ' off' : ''}" data-auto="${id}"
@@ -468,11 +519,6 @@ export class Hud {
 
     // レーダーの扱い（§26.5）。切ると見えなくなるが、こちらも見えなくなる。
     // いま出しているかどうかは自動のときに変わるので、状態も添える。
-    const RADAR = [
-      ['auto', '自動', '交戦・誘導中と、相手のレーダー圏内でだけ出す'],
-      ['on', '常時ON', '常に出す。遠くまで見えるが、遠くから見つかる'],
-      ['off', '常時OFF', '出さない。目視と逆探知だけになり、AAM-M と AAM-A が撃てない'],
-    ];
     const radar = `<span class="svc-meta">レーダー</span>`
       + RADAR.map(([id, label, tip]) => `<button class="autow${u.radarMode === id ? '' : ' off'}"
         data-radar="${id}" title="${tip}">${label}</button>`).join('')
@@ -481,11 +527,6 @@ export class Hud {
 
     // アフターバーナーの方針（§29.3）。**意図を選ばせる**ので、
     // 常時ON/OFF ではなく「どこまで燃料を使ってよいか」を指定する。
-    const AB = [
-      ['save', '温存', '巡航を保つ。ミサイルから逃げるときだけ焚く'],
-      ['normal', '標準', '敵機と交戦するときに焚く。移動や対地では焚かない'],
-      ['max', '全力', '効くなら焚く。燃料の減りは受け入れる（消費3倍）'],
-    ];
     // 積んでいない機種（攻撃機・早期警戒機）では**行ごと出さない**（§39・§41）。
     // 「非搭載」は高度性能の欄に既に出ているので、ここに書くと縦に伸びるだけ。
     const abBtns = u.spec.noAfterburner ? ''
@@ -494,10 +535,8 @@ export class Hud {
           data-ab="${id}" title="${tip}">${label}</button>`).join('');
 
     // AIが自動発射に踏み切る命中期待度
-    const th = ['low', 'mid', 'high'];
-    const thLabel = { low: '低', mid: '中', high: '高' };
-    const thBtns = th.map((k) => `<button class="autow${u.fireThreshold === k ? '' : ' off'}"
-      data-thr="${k}" title="この期待度を下回るとAIは自動発射しない">${thLabel[k]}</button>`).join('');
+    const thBtns = THRESHOLD.map(([k, label, tip]) => `<button class="autow${u.fireThreshold === k ? '' : ' off'}"
+      data-thr="${k}" title="${tip}">${label}</button>`).join('');
 
     const tasks = (u.fireTasks || []).filter((t) => t.target && t.target.alive);
     const taskRow = tasks.length
@@ -517,30 +556,87 @@ export class Hud {
 
   _groundPanel(u) {
     const plan = u.plannedLoadout ?? u.baseLoadout ?? [];
-    const used = loadoutSlots(plan);
     const cost = loadoutCost(plan);
     const points = this.world.weaponPoints ?? 0;
 
-    const chips = plan.length
-      ? plan.map((id, i) =>
-          `<button class="chip load" data-load-del="${i}" title="降ろす">${id}<i>×</i></button>`).join('')
-      : '<span class="chip empty">なし</span>';
-    const adds = LOADABLE.map((id) => {
-      const w = WEAPONS[id];
-      const room = used + w.slots <= u.spec.hardpoints;
-      return `<button class="addw${room ? '' : ' disabled'}" data-load-add="${id}"
-        title="${w.name} / ${w.slots}スロット / コスト${w.cost}">+${id}</button>`;
-    }).join('');
+    const row = loadoutRow({
+      loadout: plan, spec: u.spec,
+      add: (id) => `data-load-add="${id}"`,
+      del: (id) => `data-load-del="${id}"`,
+    });
 
     return `<div class="dt-service">
       <div class="svc-row"><label>整備</label><b id="dv-svc"></b>
         <span class="svc-slot">${u.airbase ? u.airbase.name : '—'}</span></div>
-      <div class="dt-load"><label>搭載</label>${chips}
-        <span class="svc-meta ${used > u.spec.hardpoints ? 'bad' : ''}">${used}/${u.spec.hardpoints}スロット</span>
+      <div class="dt-load"><label>搭載</label>
+        <span class="svc-meta ${loadoutFits(plan, u.spec) ? '' : 'bad'}">${pylonLabel(plan, u.spec)}</span>
         <span class="svc-meta ${cost > points ? 'bad' : ''}">コスト ${cost} / 残${points}</span>
+        <span class="ld-hint">${LOADOUT_HINT}</span>
       </div>
-      <div class="dt-add">${adds}</div>
+      <div class="dt-add">${row}</div>
     </div>`;
+  }
+
+  /**
+   * 選択している全機のトグルを**揃えてから**動かす（§76）。
+   *
+   * 1機ずつ反転させると、混在した状態で押したときに**混在のまま入れ替わる**
+   * （ONだった機はOFFに、OFFだった機はONに）。押した本人には何が起きたか読めない。
+   *
+   * **混在なら ON へ揃える。揃っていれば反転する。**
+   * 1回目の押下が混在の解消になり、2回目から普通のトグルとして働く。
+   */
+  _toggleAll(get, set) {
+    const sel = this.commands.selection;
+    if (!sel.length) return;
+    const mixed = !sel.every((u) => get(u) === get(sel[0]));
+    const next = mixed ? true : !get(sel[0]);
+    for (const u of sel) set(u, next);
+  }
+
+  /**
+   * 複数機に共通の設定（§76）。レーダー・AB・自動発射のしきい値・デコイ・機銃。
+   *
+   * **揃っていない項目はどのボタンも光らせない**（`common` が null を返す）。
+   * 光らせてしまうと「4機ともONです」と嘘をつくことになる。
+   * 押せば揃うので、混在の解消手段そのものになっている。
+   *
+   * 兵装の指定・射撃指示・増槽の投棄はここに出さない ——
+   * **機体ごとに中身が違う**ので、まとめて押す意味が無い。
+   */
+  _groupSettings(sel) {
+    const mixed = '<span class="svc-meta mixed">混在</span>';
+    const row = (label, table, cur, attr) => {
+      const btns = table.map(([id, text, tip]) =>
+        `<button class="autow${cur === id ? '' : ' off'}" data-${attr}="${id}"
+          title="${tip}">${text}</button>`).join('');
+      return `<span class="svc-meta">${label}</span>${btns}${cur === null ? mixed : ''}`;
+    };
+
+    const radar = row('レーダー', RADAR, common(sel, (u) => u.radarMode), 'radar');
+    // AB を積んでいる機体が1機も無ければ行ごと出さない（単機のときと同じ規則）
+    const hasAb = sel.some((u) => !u.spec.noAfterburner);
+    const ab = hasAb
+      ? row('AB', AB, common(sel, (u) => u.abMode || 'normal'), 'ab') : '';
+    const thr = row('自動発射', THRESHOLD, common(sel, (u) => u.fireThreshold), 'thr');
+
+    // 3値（ON / OFF / 混在）。混在は消灯＋「混在」表示にする
+    const tri = (val, on, off, data, tip) => {
+      const cls = val === null ? ' off mix' : (val ? '' : ' off');
+      return `<button class="autow${cls}" ${data} title="${tip}">${
+        val === null ? `${on.split(' ')[0]} 混在` : (val ? on : off)}</button>`;
+    };
+    const toggles = tri(common(sel, (u) => u.autoWeapons.GUN !== false),
+      '機銃 自動', '機銃 停止', 'data-auto="GUN"', 'AIが機銃を自動で使うか')
+      + tri(common(sel, (u) => !!u.autoDecoy),
+        'デコイ 自動', 'デコイ 停止', 'data-decoy="1"', '飛来ミサイルにフレア／チャフを自動で撒くか')
+      + tri(common(sel, (u) => !!u.evadeWhileGuiding),
+        '誘導中も回避', '誘導を優先', 'data-guard="1"', 'AAM-M誘導中に撃たれたら、回避するか誘導を続けるか');
+
+    return `<div class="dt-add">${toggles}</div>
+      <div class="dt-add">${radar}</div>
+      ${ab ? `<div class="dt-add">${ab}</div>` : ''}
+      <div class="dt-add">${thr}</div>`;
   }
 
   _modeButtons(u) {

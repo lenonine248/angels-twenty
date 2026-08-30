@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import { Unit, headingOf, RWR_SIGNATURE_FACTOR } from './unit.js';
-import { getGroundType } from '../data/ground.js';
+import { getGroundType, weaponsOf } from '../data/ground.js';
 import { WEAPONS } from '../data/weapons.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 import { clamp } from '../core/rng.js';
@@ -61,6 +61,21 @@ const SILENCE_DURATION = 25;
  */
 const SHIP_MIN_DEPTH = 40;
 
+/**
+ * 目標へ寄っていくときに止まる距離（射程に対する割合・§67.3）。
+ * 射程ぎりぎりで止めると、地形の起伏で視線が切れたときに撃てなくなる。
+ */
+const ADVANCE_STOP = 0.75;
+
+/** その兵装がその目標を狙うか（§67.1） */
+function aims(w, unit) {
+  const t = w.targets || 'air';
+  const air = unit.kind === 'aircraft' && !unit.onGround;
+  if (t === 'air') return air;
+  if (t === 'ground') return !air;
+  return true;
+}
+
 export class GroundUnit extends Unit {
   constructor(o) {
     const spec = getGroundType(o.type);
@@ -83,9 +98,23 @@ export class GroundUnit extends Unit {
     this.routeIndex = 0;
     this.speed = 0;
 
-    // 交戦用
-    this.reload = 0;
-    this.ammo = spec.weapon?.ammo ?? Infinity;
+    /**
+     * 交戦用の砲座（§67.2）。**兵装ごとに弾数と再装填を分けて持つ。**
+     * まとめて1つにすると、SAM を撃ったせいで機銃が止まる。
+     */
+    // `unarmed: true` を付けた個体は武装を積まない（§67.3）。
+    // 機銃のチュートリアル(w1)は「車両部隊は撃ち返してこない」を前提にしている。
+    // ステージ側で無害な個体を置けるようにしておく。
+    this.mounts = (o.unarmed ? [] : weaponsOf(spec)).map((w) => ({
+      w, reload: 0, ammo: w.ammo ?? Infinity, accum: 0,
+    }));
+
+    /**
+     * 進んで壊しに行く相手のタグ（§67.3）。
+     * これがあると巡回をやめ、そのタグを持つ敵へ寄って射程で止まる。
+     */
+    this.attackTag = o.attackTag || null;
+
     this._silence = 0;        // 沈黙の残り時間
     this._armTimer = 0;       // ARM を認識してから沈黙するまでの反応時間
     this.firing = false;      // AAA が撃っているか（描画用）
@@ -113,13 +142,22 @@ export class GroundUnit extends Unit {
   update(dt, world) {
     if (!this.alive) return;
     this._updateCombat(dt, world);
-    if (!this.route || this.route.length === 0) return;
+    if (this.spec.static) return;
 
-    // 巡回経路を辿る（車両・艦船）
-    const wp = this.route[this.routeIndex];
+    // **壊しに行く相手がいれば、巡回より優先する**（§67.3）。
+    // 射程まで詰めたら止まって撃つ。
+    const goal = this._advanceGoal(world);
+    let wp = goal;
+    if (!wp) {
+      if (!this.route || this.route.length === 0) return;
+      wp = this.route[this.routeIndex];
+    }
     const dx = wp.x - this.pos.x, dz = wp.z - this.pos.z;
     const dist = Math.hypot(dx, dz);
-    if (dist < 200) {
+    if (goal) {
+      // 止まる距離は射程の内側。撃てるところまで来たら足を止める
+      if (dist <= goal.stop) { this.speed = 0; this.heading = headingOf(dx, dz); return; }
+    } else if (dist < 200) {
       this.routeIndex = (this.routeIndex + 1) % this.route.length;
       return;
     }
@@ -145,11 +183,38 @@ export class GroundUnit extends Unit {
   // -------------------------------------------------------------- 交戦
 
   _updateCombat(dt, world) {
-    const w = this.spec.weapon;
-    if (!w || !world.combat) return;
-    this.reload = Math.max(0, this.reload - dt);
-    if (w.kind === 'sam') this._updateSam(dt, world);
-    else if (w.kind === 'aaa') this._updateAaa(dt, world);
+    if (!world.combat || !this.mounts.length) return;
+    this.firing = false;
+    for (const m of this.mounts) {
+      m.reload = Math.max(0, m.reload - dt);
+      if (m.w.kind === 'howitzer') this._updateHowitzer(dt, world, m);
+      else if (m.w.kind === 'sam') this._updateSam(dt, world, m);
+      else if (m.w.kind === 'irsam') this._updateIrSam(dt, world, m);
+      else if (m.w.kind === 'aaa') this._updateAaa(dt, world, m);
+    }
+  }
+
+  /**
+   * 寄っていく先（§67.3）。`attackTag` を持つ生きている敵のうち最も近いもの。
+   *
+   * **探知は通さない。** 地上部隊はレーダーを持たないので、
+   * 探知に通すと何も見つけられず一歩も動けない。
+   * 「どこを攻めるか」はステージが与える情報として扱う。
+   */
+  _advanceGoal(world) {
+    if (!this.attackTag) return null;
+    const reach = this.mounts.reduce(
+      (n, m) => (m.w.targets && m.w.targets !== 'air' ? Math.max(n, m.w.range || 0) : n), 0);
+    if (reach <= 0) return null;
+    let best = null; let bestD = Infinity;
+    for (const u of world.units) {
+      if (!u.alive || u.side === this.side || u === this) continue;
+      if (!u.tags || !u.tags.includes(this.attackTag)) continue;
+      const d = this.pos.distanceTo(u.pos);
+      if (d < bestD) { bestD = d; best = u; }
+    }
+    if (!best) return null;
+    return { x: best.pos.x, z: best.pos.z, stop: reach * ADVANCE_STOP };
   }
 
   /**
@@ -159,7 +224,7 @@ export class GroundUnit extends Unit {
    * 沈黙すれば ARM の誘導は切れるが、その間は自分も撃てない。
    * 気づくのが遅れれば（＝ARM が既に近い）そのまま食らう。
    */
-  _updateSam(dt, world) {
+  _updateSam(dt, world, m) {
     const armIncoming = world.missiles.some(
       (m) => m.alive && m.target === this && m.guidance === 'arm'
         && !m.lost && m.pos.distanceTo(this.pos) < ARM_NOTICE_RANGE);
@@ -180,18 +245,119 @@ export class GroundUnit extends Unit {
       return;                                  // 沈黙中は撃てない
     }
 
-    if (!this.radarActive || this.reload > 0 || this.ammo <= 0) return;
+    if (!this.radarActive || m.reload > 0 || m.ammo <= 0) return;
 
-    const target = this._pickAirTarget(world);
+    const target = this._pickAirTarget(world, m.w);
     if (!target) return;
     world.combat.fireGround(this, target, WEAPONS['SAM-M']);
-    this.ammo--;
-    this.reload = this.spec.weapon.reloadSeconds;
+    m.ammo--;
+    m.reload = m.w.reloadSeconds;
+  }
+
+  /**
+   * 榴弾砲（§69.2）。**山なりの弾で地上目標を叩く。**
+   *
+   * 発射角は放物線の式をそのまま解く。距離 d・初速 v・重力 g に対して
+   *
+   *     sin(2θ) = g·d / v²
+   *
+   * 解は2つあり、**低いほう（θ が小さい側）を使う**。
+   * 高いほうは見た目こそ榴弾砲らしいが、飛翔時間が70秒を超えて
+   * **撃ったことがプレイヤーに分からない兵器**になる。
+   *
+   * 高低差は「水平距離だけで角を決めて、あとは弾に任せる」で足りる ——
+   * 数百mの差なら拡散の中に埋もれる。
+   */
+  _updateHowitzer(dt, world, m) {
+    if (m.reload > 0) return;
+    const w = m.w;
+    const g = 9.81;
+
+    let target = null; let bestD = Infinity;
+    for (const u of world.units) {
+      if (!u.alive || u.side === this.side || u === this) continue;
+      if (!aims(w, u)) continue;
+      // **水平距離で見る。** 3次元で測ると、坂の上の目標が射程の外に落ちる
+      const d = Math.hypot(u.pos.x - this.pos.x, u.pos.z - this.pos.z);
+      if (d > w.range || d >= bestD) continue;
+      bestD = d; target = u;
+    }
+    if (!target) return;
+
+    const dx = target.pos.x - this.pos.x;
+    const dz = target.pos.z - this.pos.z;
+    const flat = Math.hypot(dx, dz);
+    const v = w.muzzle;
+
+    // **高低差を入れて解く。**
+    //
+    // 平地の式（sin2θ = g·d/v²）は「撃った高さに落ちてくる」前提なので、
+    // 高いところから撃つと落下が伸びて奥へ外れる。
+    // 実測では砲が的より 128m 高いだけで、**一律 550m 奥に落ちていた**。
+    //
+    // 落下点 (d, -h) を通る条件を tanθ = u について解く:
+    //   k·u² − d·u + (k − h) = 0     ただし k = g·d² / (2v²)
+    // 低いほうの解（マイナス側）を使う。
+    const muzzleY = this.pos.y + MUZZLE_HEIGHT;
+    const h = muzzleY - target.pos.y;          // 撃つ側がどれだけ高いか
+    const k = (g * flat * flat) / (2 * v * v);
+    const disc = flat * flat - 4 * k * (k - h);
+    if (disc < 0) return;                      // 届かない（射程の外）
+    const theta = Math.atan((flat - Math.sqrt(disc)) / (2 * k));
+
+    _muzzle.set(this.pos.x, muzzleY, this.pos.z);
+    _dir.set((dx / flat) * Math.cos(theta), Math.sin(theta), (dz / flat) * Math.cos(theta))
+      .normalize();
+    const rng = world.rng ? world.rng : Math.random;
+    scatter(_dir, w.spread, rng, _shot);
+    world.bullets.push(new Bullet({
+      pos: _muzzle,
+      dir: _shot,
+      speed: v,
+      damage: w.dmg[0] + rng() * (w.dmg[1] - w.dmg[0]),
+      shooter: this,
+      life: w.life,
+      gravity: g,
+    }));
+    m.reload = w.reloadSeconds;
+    this.firing = true;
+    world.onGunFire?.(this, target, 1, v);
+  }
+
+  /**
+   * 赤外線 SAM（§68.2）。**目で見て撃つ。**
+   *
+   * レーダーを使わないので、
+   *   ・逆探知に映らない（`radar: null` なので `rwrSignature` が 0）
+   *   ・ARM で黙らせられない（沈黙する電波がない）
+   *   ・**探知の輪に頼らず、自分の目で捉えた相手だけを撃つ**
+   * という3つが同時に成り立つ。
+   *
+   * 「見えている」は `detection.isVisible` ではなく**この砲からの距離と視線**で見る。
+   * 探知の輪（陣営で共有される）を使うと、
+   * **遠くの味方が見つけた機体へ撃ってしまう** —— それはレーダーの働きになる。
+   */
+  _updateIrSam(dt, world, m) {
+    if (m.reload > 0 || m.ammo <= 0) return;
+    const w = m.w;
+    let best = null; let bestD = Infinity;
+    for (const u of world.units) {
+      if (!u.alive || u.side === this.side || u.kind !== 'aircraft' || u.onGround) continue;
+      const agl = u.pos.y - this.pos.y;
+      if (agl < w.minAlt || agl > w.maxAlt) continue;
+      const d = this.pos.distanceTo(u.pos);
+      if (d > w.range || d >= bestD) continue;
+      if (!world.terrain.hasLineOfSight(this.pos, u.pos, 8, 300)) continue;
+      bestD = d; best = u;
+    }
+    if (!best) return;
+    world.combat.fireGround(this, best, WEAPONS['IR-SAM']);
+    m.ammo--;
+    m.reload = w.reloadSeconds;
   }
 
   /** 交戦可能な空中目標のうち最も近いもの */
-  _pickAirTarget(world) {
-    const w = this.spec.weapon;
+  _pickAirTarget(world, w) {
     const sam = WEAPONS['SAM-M'];
     let best = null, bestD = Infinity;
     for (const u of world.units) {
@@ -226,19 +392,24 @@ export class GroundUnit extends Unit {
    * `range` と `maxAlt` は交戦の判断として残す。射高が二値なのは意図的で、
    * 「射高より上へ逃げる」は §8 からの設計の柱（`data/ground.js` の注記）。
    */
-  _updateAaa(dt, world) {
-    const w = this.spec.weapon;
-    this.firing = false;
+  _updateAaa(dt, world, m) {
+    const w = m.w;
 
-    // 砲は1基しかないので、同時に狙えるのは1目標だけ。最も近い機体を撃つ。
+    // 砲座は1つにつき1目標。最も近いものを撃つ。
     let target = null, bestD = Infinity;
     for (const u of world.units) {
-      if (!u.alive || u.side === this.side || u.kind !== 'aircraft' || u.onGround) continue;
-      const agl = u.pos.y - this.pos.y;
-      if (agl < 0 || agl > w.maxAlt) continue;
+      if (!u.alive || u.side === this.side || u === this) continue;
+      if (!aims(w, u)) continue;                       // 狙う種類か（§67.1）
+      const air = u.kind === 'aircraft' && !u.onGround;
+      if (air) {
+        // 空中目標は**射高で切る**。ここが二値なのは §8 からの設計の柱
+        const agl = u.pos.y - this.pos.y;
+        if (agl < 0 || agl > w.maxAlt) continue;
+        // 見えていない機体は撃てない
+        if (!world.detection.isVisible(this.side, u)) continue;
+      }
       const d = this.pos.distanceTo(u.pos);
       if (d > w.range || d >= bestD) continue;
-      if (!world.detection.isVisible(this.side, u)) continue;
       if (!world.terrain.hasLineOfSight(this.pos, u.pos, 8, 200)) continue;
       bestD = d; target = u;
     }
@@ -254,10 +425,10 @@ export class GroundUnit extends Unit {
     _dir.set(_aim.x - _muzzle.x, _aim.y - _muzzle.y, _aim.z - _muzzle.z).normalize();
 
     // 発射数は端数を持ち越す。dt が小さいと毎回0発になってしまう。
-    this._gunAccum = (this._gunAccum || 0) + w.rps * dt;
-    const n = Math.floor(this._gunAccum);
+    m.accum += w.rps * dt;
+    const n = Math.floor(m.accum);
     if (n <= 0) return;
-    this._gunAccum -= n;
+    m.accum -= n;
 
     const rng = world.rng ? world.rng : Math.random;
     for (let i = 0; i < n; i++) {
@@ -279,7 +450,8 @@ export class GroundUnit extends Unit {
 
   /** 地表に接地させる（配置時に呼ぶ） */
   groundTo(terrain) {
-    this.pos.y = this.spec.category === 'ship'
+    // 艦船と空母は海面（y=0）。それ以外は地表に置く
+    this.pos.y = (this.spec.category === 'ship' || this.spec.category === 'carrier')
       ? 0
       : Math.max(0, terrain.heightAt(this.pos.x, this.pos.z));
     return this;

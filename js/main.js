@@ -26,7 +26,7 @@ import { Airbase, pickRunwayHeading, flattenRunway } from './sim/airbase.js';
 import { DetectionSystem, Contact, LEVEL } from './sim/detection.js';
 import { CombatSystem } from './sim/combat.js';
 import { resetMissileIds } from './sim/missile.js';
-import { Mission, MISSION } from './sim/mission.js';
+import { Mission, MISSION, SideObjectives } from './sim/mission.js';
 import { SIDE, resetUnitIds } from './sim/unit.js';
 import { PilotAI } from './ai/pilot.js';
 import * as tuning from './ui/tuning.js';
@@ -38,6 +38,8 @@ import { Hud } from './ui/hud.js';
 import { ScreenManager } from './ui/briefing.js';
 import { notify, onAction } from './ui/actions.js';
 import { TutorialRunner } from './ui/tutorial.js';
+import { StageEditor } from './ui/editor.js';
+import { getCustom } from './data/custom.js';
 import { TUTORIALS, getTutorial } from './data/tutorials.js';
 import { markTutorialDone } from './core/save.js';
 import { isChangelogOpen, hideChangelog } from './ui/changelog.js';
@@ -45,6 +47,7 @@ import { ReviewScreen } from './ui/review.js';
 import { ReplayPlayer } from './ui/replay.js';
 import { STAGES, stageList } from './data/stages.js';
 import { getType, defaultEnemyLoadout } from './data/aircraft.js';
+import { loadoutCost } from './data/weapons.js';
 
 const el = (id) => document.getElementById(id);
 
@@ -76,6 +79,9 @@ let battle = null;
 
 /** チュートリアル進行（§19）。通常のステージでは null。 */
 let tutorial = null;
+
+/** ステージエディタ（§66）。デバッグモードのときだけ開ける。 */
+let editor = null;
 
 boot().catch(showFatal);
 
@@ -109,6 +115,17 @@ async function boot() {
     onStart: (stage, loadouts) => startBattle(stage, loadouts),
     onStartTutorial: (t) => startBattle(t, null, t),
   });
+
+  // ステージエディタ（§66）。試遊はブリーフィングを通さず直接出す ——
+  // 作りかけの搭載をそのまま試したいので、組み直しの画面を挟まない。
+  editor = new StageEditor({
+    onPlaytest: (stage) => {
+      const loadouts = (stage.friendly.aircraft || []).map((a) => (a.loadout || []).slice());
+      startBattle(stage, loadouts);
+    },
+    onExit: () => screens.showTitle(),
+  });
+  screens.onEditor = (stage) => editor.open(stage);
 
   // チュートリアルは UI 側の操作通知だけで進む（§19.2）
   onAction((kind, detail) => {
@@ -209,6 +226,8 @@ ${err.message}`);
     get hud() { return hud; },
     get minimap() { return minimap; },
     get tutorial() { return tutorial; },
+    // ステージエディタ（§66）。検証から配置を組み立てるために出しておく
+    get editor() { return editor; },
     scene, loop, screens, progress, audio, stages: STAGES, stageList, tutorials: TUTORIALS, telemetry,
     // ステージの調整パネル（§47）。コンソールからも戻せるようにしておく
     tuning,
@@ -250,6 +269,10 @@ function fixedUpdate(dt) {
   handleDeaths(world);
   pruneFormations(world);
   mission.update(dt);
+  // 敵側の司令官（§27.6）。**任務の判定より後**に置く ——
+  // 目標が達成された直後の1ステップで、達成済みの目標へ機体を送らないため。
+  battle.enemyPlan?.update(dt);
+  battle.enemyCommander?.update(dt);
 
   // 記録は**全部が動いたあと**に取る。途中で取ると、
   // 同じ時刻のはずのユニットとコンタクトが1ステップずれる。
@@ -425,6 +448,18 @@ function drawBattleSeed() {
   return (Math.random() * 0xffffffff) >>> 0;
 }
 
+/**
+ * 出撃時の散らばりの大きさ（§70.11）。位置・高度・針路。
+ *
+ * **崖のある軸をわざと少しだけ跨ぐ大きさ**にしてある。
+ * §41.4 の実測では初陣は会敵距離 +3km で 61%、+4.5km で 100% と急に変わる。
+ * 両軍に ±1.2km 効くので会敵距離は最大 2.4km ぶん揺れ、
+ * **同じ面でも毎回違う戦いになる**が、ミッションの構図は壊れない。
+ */
+const SPAWN_SPREAD_XZ = 1200;
+const SPAWN_SPREAD_ALT = 400;
+const SPAWN_SPREAD_HDG = 15 * (Math.PI / 180);
+
 function buildBattle(stage, loadouts, asTutorial, seed) {
   // ID を振り直す。ID はレーダーの扇の分担や逆探知の誤差に効くので、
   // 通し番号のままだと「同じステージ・同じシードでも、その回までに何戦したか」で
@@ -452,7 +487,22 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     // 地形の種とは分ける。地形まで毎回変わると覚えた地形が使えず、
     // ミッションの個性も消える。**地図は同じ、戦闘の綾は毎回違う**（§24.2）。
     rng: makeRng(battleSeed),
-    log: pushLog,
+    /**
+     * ログを1行出す。**第2引数にユニットを渡すと、自軍のときだけ出る**（§71.2）。
+     *
+     * 「敵機が着陸した」「敵機が燃料切れで帰投する」といった**相手の内部事情**が
+     * そのまま流れていた。ログは自分の部隊からの無線という体裁なので、
+     * 敵の判断がここに出ると世界の成り立ちが崩れる。
+     *
+     * 陣営の判定を**呼ぶ側それぞれに書かせない**。書き忘れが漏れになるし、
+     * 実際 `${unit.name} ...` の形をした行のうち4か所が忘れていた。
+     * 撃墜・任務・妨害といった「こちらが観測した出来事」は
+     * 従来どおり第2引数なしで出す（見えているかは呼ぶ側が判断済み）。
+     */
+    log(msg, unit) {
+      if (unit && unit.side !== this.playerSide) return;
+      pushLog(msg);
+    },
     weaponPoints: stage.weaponPoints,
     weaponPointsMax: stage.weaponPoints,
     enemySkill: stage.enemy?.skill ?? 1,
@@ -485,7 +535,7 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     },
   };
 
-  const spawned = spawnStage(world, stage, loadouts, terrain);
+  const spawned = spawnStage(world, stage, loadouts, terrain, asTutorial);
 
   scene.add(terrain.buildMesh());
   scene.add(buildMapBoundary());
@@ -499,14 +549,28 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   world.formations = [];
 
   const mission = new Mission(world, stage);
-  world.spawnReinforcement = (airbase, type, index) =>
-    spawnReinforcement(world, airbase, type, index);
+
+  /**
+   * **敵側の司令官AI**（§27.6）。`stage.enemy.objectives` を書いた面でだけ動く。
+   *
+   * 書かなければ何も起きない —— 既存の7面は1行も変わらない。
+   * 敵機はこれまでどおりステージ定義の `aiMode` で動く。
+   *
+   * プレイヤーには付けない（指揮するのがこのゲームなので・§27.5）。
+   */
+  const enemyPlan = stage.enemy && stage.enemy.objectives && stage.enemy.objectives.length
+    ? new SideObjectives(world, stage.enemy.objectives) : null;
+  const enemyCommander = enemyPlan ? new Commander(world, SIDE.RED, enemyPlan) : null;
+  world.spawnReinforcement = (airbase, type, index, tags) =>
+    spawnReinforcement(world, airbase, type, index, tags);
   for (const { airbase, config } of spawned.reinforcements) {
     mission.registerReinforcement(airbase, config);
   }
 
   // ブリーフィングで判明していた敵は、開始時から記憶コンタクトとして地図に出す
   seedKnownContacts(world, spawned.known);
+  // 敵側のブリーフィング（§27.6）。自軍側で `known: true` を付けたものが入る
+  seedKnownContacts(world, spawned.knownToEnemy, SIDE.RED);
 
   world.effects.onExplosion = (pos, size, kind) => audio.explosion(pos, size, kind);
 
@@ -521,9 +585,8 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     world.effects.launchFlash(shooter.pos, missile ? missile.dir : null);
     audio.missileLaunch(shooter.pos);
   };
-  world.onDecoyed = (m) => {
-    if (m.target && m.target.side === world.playerSide) world.log(`${m.target.name} デコイ有効`);
-  };
+  // `onDecoyed` は §70.5.1 で鳴らなくなった。フレアはシーカーを奪うのではなく
+  // 狙点を引っ張るので、「効いた／効かなかった」という瞬間が存在しない。
   world.onDecoy = (unit) => audio.flare(unit.pos);
   // 増槽の投棄（§32.2）。自分の機体のときだけ知らせる
   world.onTankDropped = (unit) => {
@@ -576,7 +639,7 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
 
   battle = {
     stage, world, terrain, detection: world.detection, combat, pilotAI,
-    mission, contacts, objectiveMarkers, finished: false,
+    mission, enemyPlan, enemyCommander, contacts, objectiveMarkers, finished: false,
     kills: 0, losses: 0,
     seed: battleSeed,
     loadouts: (loadouts || []).map((l) => l.slice()),
@@ -648,11 +711,29 @@ function finishTutorial() {
 }
 
 /** ステージ定義からユニットを並べる */
-function spawnStage(world, stage, loadouts, terrain) {
+function spawnStage(world, stage, loadouts, terrain, asTutorial) {
   const known = [];
+  /**
+   * **敵に最初から見えているもの**（§27.6）。自軍側の `known: true` を拾う。
+   *
+   * 敵に司令官AIを付けるなら、敵にもブリーフィングが要る ——
+   * 「自軍飛行場を叩け」という目標を与えても、
+   * **どこにあるか知らなければ何も起きない**（`_groundTargets` は探知を通す）。
+   * 攻める側が固定施設の位置を知っているのは自然でもある。
+   */
+  const knownToEnemy = [];
   const reinforcements = [];
 
   const placeAirbase = (o) => {
+    // **空母は海に浮かぶ飛行場**（§69.3）。
+    // 平坦な場所を探すのも滑走路を削るのも要らない —— 海面はもともと平ら。
+    // 甲板は陸の滑走路より短くする。
+    if (o.type === 'CARRIER') {
+      return world.spawn(new Airbase({
+        ...o, runwayHeading: o.runwayHeading ?? 0,
+        runwayLength: o.runwayLength ?? 900, serviceSlots: o.serviceSlots ?? 2,
+      }).groundTo(terrain));
+    }
     const spot = findFlatSpot(terrain, o.x, o.z, 2000);
     const heading = pickRunwayHeading(terrain, spot.x, spot.z);
     const fieldAlt = Math.max(20, terrain.heightAt(spot.x, spot.z));
@@ -662,13 +743,36 @@ function spawnStage(world, stage, loadouts, terrain) {
     }).groundTo(terrain));
   };
 
+  /**
+   * 出撃時の散らばり（§70.11）。**同じ面でも毎回まったく同じ戦いにならないように。**
+   *
+   * §70 で当否の抽選を全部消したら、**18種すべてが秒まで同一**になった（§70.10）。
+   * 種が動かしていたのは実質ミサイルの抽選だけで、それが無くなったため。
+   * 上の `rng` のコメントにある「**地図は同じ、戦闘の綾は毎回違う**」（§24.2）が、
+   * 綾のほうを失って成立しなくなっていた。
+   *
+   * 地形の種は面ごとに固定のまま（ブリーフィングの地形読みが成立する条件・§3）。
+   * **散らばりは初期配置のほうに持たせる。**
+   * 実戦でも編隊がまったく同じ位置・同じ針路で会敵することはない。
+   *
+   * **決定論的な戦闘 × 揺れる初期条件** —— これで
+   * 「運ではなく状況で勝敗が決まる」という形になる。
+   *
+   * **チュートリアルには掛けない。** 手順が特定の位置と距離を前提にしている。
+   * ステージ側から `spread: 0` で切ることもできる。
+   */
+  const spread = asTutorial ? 0 : (stage.spread ?? 1);
+  const jit = (amount) => (spread ? (world.rng() - 0.5) * 2 * amount * spread : 0);
+
   // --- 自軍 ---
   const f = stage.friendly;
   const base = placeAirbase({ name: '自軍飛行場', side: SIDE.BLUE, tags: ['home'], ...f.base });
   world.playerBase = base;
+  if (f.base && f.base.known) knownToEnemy.push(base);
 
   for (const g of f.ground || []) {
-    world.spawn(new GroundUnit({ ...g, side: SIDE.BLUE }).groundTo(terrain));
+    const u = world.spawn(new GroundUnit({ ...g, side: SIDE.BLUE }).groundTo(terrain));
+    if (g.known) knownToEnemy.push(u);
   }
 
   f.aircraft.forEach((a, i) => {
@@ -677,12 +781,13 @@ function spawnStage(world, stage, loadouts, terrain) {
       // **出撃位置を指定できる**（§40）。敵側は最初から x/z を持っていたが、
       // 自軍は飛行場の近くに並べるだけだった。護衛のように
       // 「被護衛機より前に出た状態で始める」構図が作れない。
-      const x = a.x ?? (base.pos.x + 1500 + i * 1200);
-      const z = a.z ?? (base.pos.z - 1500 - i * 900);
+      const x = (a.x ?? (base.pos.x + 1500 + i * 1200)) + jit(SPAWN_SPREAD_XZ);
+      const z = (a.z ?? (base.pos.z - 1500 - i * 900)) + jit(SPAWN_SPREAD_XZ);
       const ac = world.spawn(new Aircraft({
         type: a.type, name: a.name, side: SIDE.BLUE, loadout,
-        x, z, alt: Math.max(0, terrain.heightAt(x, z)) + (f.startAlt || 4000),
-        heading: Math.PI * 0.35,
+        x, z,
+        alt: Math.max(0, terrain.heightAt(x, z)) + (f.startAlt || 4000) + jit(SPAWN_SPREAD_ALT),
+        heading: Math.PI * 0.35 + jit(SPAWN_SPREAD_HDG),
       }));
       ac.airbase = base;
       ac.patrolArea = { x: ac.pos.x, z: ac.pos.z, alt: ac.pos.y, radius: 4500 };
@@ -701,8 +806,14 @@ function spawnStage(world, stage, loadouts, terrain) {
   });
 
   // 出撃前に消費した兵装ポイントを引く
-  world.weaponPoints = stage.weaponPoints
-    - (loadouts || []).reduce((n, l) => n + l.reduce((m, id) => m + (WEAPON_COST[id] || 0), 0), 0);
+  // **値段は `data/weapons.js` の1か所から取る**（§74.5）。
+  //
+  // ここには `WEAPON_COST` という**2つ目の値段表**があった。`AGM` だけ 5（正は 4）で、
+  // ブリーフィングの表示（`loadoutCost`）と実際の消費が食い違い、
+  // **帰投後の再装備だけがまた別の値段**（`airbase.js` は `getWeapon().cost` を見る）
+  // という三重の食い違いになっていた。同じ数字を2か所に書くと必ずこうなる。
+  world.weaponPoints = stage.weaponPoints - (loadouts || []).reduce(
+    (n, l) => n + loadoutCost(l), 0);
 
   // --- 敵 ---
   const e = stage.enemy;
@@ -715,10 +826,15 @@ function spawnStage(world, stage, loadouts, terrain) {
   }
 
   for (const a of e.aircraft || []) {
+    // 散らばりは**哨戒の中心もろとも**ずらす。配置だけ動かすと
+    // 30秒ほどで元の周回に戻ってしまい、散らばりが消える。
+    const ex = a.x + jit(SPAWN_SPREAD_XZ);
+    const ez = a.z + jit(SPAWN_SPREAD_XZ);
     const u = world.spawn(new Aircraft({
       type: a.type, name: a.name, side: SIDE.RED, tags: a.tags,
-      x: a.x, z: a.z, alt: Math.max(0, terrain.heightAt(a.x, a.z)) + (a.agl || 5000),
-      heading: Math.PI, loadout: a.loadout || defaultEnemyLoadout(a.type),
+      x: ex, z: ez,
+      alt: Math.max(0, terrain.heightAt(ex, ez)) + (a.agl || 5000) + jit(SPAWN_SPREAD_ALT),
+      heading: Math.PI + jit(SPAWN_SPREAD_HDG), loadout: a.loadout || defaultEnemyLoadout(a.type),
       // 練度はステージ既定 → 機体ごとの指定 の順で上書きできる
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
@@ -740,8 +856,8 @@ function spawnStage(world, stage, loadouts, terrain) {
       u.patrolArea = { x: a.moveTo.x, z: a.moveTo.z, alt, radius: 4500 };
       u.setOrder({ type: 'move', x: a.moveTo.x, z: a.moveTo.z, alt });
     } else {
-      u.patrolArea = { x: a.x, z: a.z, alt: u.pos.y, radius: 4500 };
-      u.setOrder({ type: 'orbit', x: a.x, z: a.z, alt: u.pos.y, radius: 4500 });
+      u.patrolArea = { x: ex, z: ez, alt: u.pos.y, radius: 4500 };
+      u.setOrder({ type: 'orbit', x: ex, z: ez, alt: u.pos.y, radius: 4500 });
     }
     if (a.strikeTargetTag) u._strikeTargetTag = a.strikeTargetTag;
     if (a.known) known.push(u);
@@ -774,7 +890,7 @@ function spawnStage(world, stage, loadouts, terrain) {
     if (t) { u.strikeTarget = t; u.aiMode = 'STRIKE'; }
   }
 
-  return { known, reinforcements };
+  return { known, knownToEnemy, reinforcements };
 }
 
 /**
@@ -791,12 +907,9 @@ function applyAutoWeapons(ac, def) {
   for (const [id, on] of Object.entries(def.autoWeapons)) ac.autoWeapons[id] = on;
 }
 
-/** 兵装コスト（data/weapons.js を都度importしないための表） */
-const WEAPON_COST = { 'AAM-S': 0, 'AAM-M': 2, 'AAM-A': 6, AGM: 5, ARM: 6, BOMB: 0, TANK: 0 };
-
 /** ブリーフィングで判明していた敵を、記憶コンタクトとして地図に載せる */
-function seedKnownContacts(world, units) {
-  const map = world.detection.contactsFor(world.playerSide);
+function seedKnownContacts(world, units, side = world.playerSide) {
+  const map = world.detection.contactsFor(side);
   for (const u of units) {
     const c = new Contact(u, 0);
     c.level = LEVEL.DETAILED;
@@ -817,11 +930,15 @@ function seedKnownContacts(world, units) {
  * 目標上空へ飛んで対空砲に落ちるだけになる（実際そうなっていた）。
  */
 /** 敵飛行場からの増援 */
-function spawnReinforcement(world, airbase, type, index) {
+function spawnReinforcement(world, airbase, type, index, tags) {
   const ac = world.spawn(new Aircraft({
-    type, name: `増援 ${index}`, side: airbase.side,
+    type, name: `増援 ${index}`, side: airbase.side, tags,
     x: airbase.pos.x, z: airbase.pos.z, alt: airbase.pos.y,
-    loadout: ['AAM-M', 'AAM-S', 'AAM-S'],
+    // **機種に合った搭載を積む**（§74.2）。ここは長く
+    // `['AAM-M','AAM-S','AAM-S']` の決め打ちだった —— `defaultEnemyLoadout` の
+    // 注記が警告しているそのもので、**爆撃機の増援が爆弾を1発も持たない**。
+    // 既存面の増援は J-7 だけなので同じ値になり、露見していなかった。
+    loadout: defaultEnemyLoadout(type),
     skill: world.enemySkill ?? 1,
   }));
   ac.baseLoadout = ac.loadout.slice();
@@ -995,7 +1112,11 @@ function renderObjectives() {
     if (objectivesKey !== 'none') { box.innerHTML = ''; objectivesKey = 'none'; }
     return;
   }
-  const ready = battle.world.units.filter((u) => u.state === 'ready').length;
+  // **自軍だけ数える**（§71.1）。陣営を見ていなかったので、敵の増援が
+  // 飛行場で待機している間じゅう「全機発進」が出ていた。押すと
+  // `u.airbase.launch()` がそのまま通り、**敵の増援を発進させていた**。
+  const ready = battle.world.units.filter(
+    (u) => u.state === 'ready' && u.side === battle.world.playerSide).length;
   // 内容が変わらないうちは作り直さない（作り直すとホバー中のボタンが点滅する）
   const key = status.map((s) => s.state).join(',') + '|' + ready;
   if (key === objectivesKey) return;
@@ -1016,10 +1137,17 @@ function setupPauseMenu() {
   // メニューを開く前が止まっていたかを覚えておく。
   // 常に動かし直すと、自分で止めてから Esc を押した人の状態を勝手に解いてしまう。
   let wasPaused = false;
+  const edBtn = menu.querySelector('[data-menu="editor"]');
   const open = () => {
     if (!battle || battle.finished) return;
     wasPaused = loop.paused;
     loop.setPaused(true);
+    // 「エディタに戻る」は**自作ステージを遊んでいるときだけ**（§66.9）。
+    // 試遊してから直す、の往復がこれで閉じる。
+    if (edBtn) {
+      const custom = isDebug() && battle.stage && battle.stage.custom;
+      edBtn.classList.toggle('hidden', !custom);
+    }
     menu.classList.remove('hidden');
   };
   const close = () => {
@@ -1057,6 +1185,13 @@ function setupPauseMenu() {
       case 'select':
         leave();
         if (asTutorial) screens.showTutorialSelect(); else screens.showStageSelect();
+        break;
+      case 'editor':
+        if (!isDebug() || !stage) break;
+        leave();
+        screens.hide();
+        // 試遊の直前に保存しているので、保管庫の側が最新（§66.9）
+        editor.open(getCustom(stage.id) || stage);
         break;
       case 'title':    leave(); screens.showTitle(); break;
       default: break;
@@ -1161,6 +1296,7 @@ function setupTimeControls() {
     if (e.target && e.target.id === 'launchAll' && battle) {
       let launched = false;
       for (const u of battle.world.units) {
+        if (u.side !== battle.world.playerSide) continue;
         if (u.state === 'ready' && u.airbase) { u.airbase.launch(u, battle.world); launched = true; }
       }
       if (launched) notify('takeoff', {});

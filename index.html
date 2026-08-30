@@ -145,6 +145,8 @@
       <div class="pm-title">MENU</div>
       <button data-menu="resume">続ける</button>
       <button data-menu="briefing">ブリーフィングに戻る</button>
+      <!-- 自作ステージを試遊しているときだけ出す（§66.9） -->
+      <button data-menu="editor" class="hidden">エディタに戻る</button>
       <button data-menu="select">ステージモードに戻る</button>
       <button data-menu="title">モード選択に戻る</button>
     </div>
@@ -164,6 +166,8 @@
 
 <!-- 更新履歴（タイトル画面の版表示から開く） -->
 <div id="changelog" class="hidden"></div>
+<!-- ステージエディタ（§66。デバッグモードのときだけ開ける） -->
+<div id="editor" class="hidden"></div>
 <div id="review" class="hidden"></div>
 <div id="replayBar" class="hidden"></div>
 

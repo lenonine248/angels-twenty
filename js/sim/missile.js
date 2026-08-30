@@ -10,7 +10,7 @@
 import * as THREE from 'three';
 import { clamp } from '../core/rng.js';
 import { missileDragFactor, turnFactor } from '../core/atmosphere.js';
-import { angleDiff } from './unit.js';
+import { angleDiff, headingOf } from './unit.js';
 
 /**
  * 直撃と判定する距離(m)。**目標の大きさを足して使う**（`hitRadii`）。
@@ -56,22 +56,42 @@ const OVERSHOOT_SEC = 0.5;
 const OVERSHOOT_MARGIN = 150;
 
 /**
- * ドップラー欺瞞（§35.1）。**ビーム機動・地面クラッター・チャフを一つにまとめた。**
+ * 妨害が満額のときの、位置を測り直せる間隔(秒)（§70.4.1）。
  *
- * 真横を向くと接近速度が消え、レーダーは地面と同じ「動いていないもの」として
- * 捨てる。だから**紛れる先が要る** — 地面か、チャフの雲か。
- * 見上げる形でビームを取っても、背景は空で紛れる先が無い。
+ * **妨害は誘導を切らない。測り直しを遅らせる。**
+ * 抽選をやめたので、外れるかどうかは
+ * 「どれだけ古い位置へ向かって飛んだか」から自然に決まる。
  *
- * 低空へ降りるのは、この「紛れる先」を手に入れるため。
- * 代わりに機銃にも対空砲にも無防備になる。
- * **確率が低くても選ぶ価値がある**、という関係にしたい。
- *
- * **0.9 から下げた**（§46）。§35.2.1 で「3条件がそろうのは1発あたり約0.9秒」
- * という測定を前提に置いた値だったが、§46 でチャフを
- * 「効く機動に入ってから撒く」ようにした結果、**背景の条件が常時成立**して
- * 窓が数秒に伸び、AAM-M の命中が 5% まで落ちた。
+ * **止める形にはしない。** 回避AIは中途をまるごとビームで飛ぶので、
+ * 完全に止めると20秒ぶん位置が更新されず、誤差が6kmに達して
+ * **AAM-M は構造上ぜったいに当たらない兵装**になる。
+ * 遅らせる形なら誤差が有界になり、命中率だけが落ちる。
  */
-const DECEPTION_CHANCE_PER_SEC = 0.35;
+const GUIDE_GAP_MAX = 2.0;
+/**
+ * 位置を測り直せないまま何秒で諦めるか（§70.4.2）。
+ *
+ * 妨害されているだけなら `GUIDE_GAP_MAX` で必ず測り直せるので、
+ * ここに掛かるのは**シーカーの受信範囲から目標が出た**とき。
+ */
+const FIX_LOST_SEC = 3.0;
+/**
+ * シーカーのジンバル限界（±deg）。弾の機首からこれを超えると測り直せない。
+ *
+ * **最初 25 度にしていたが、これは誤りだった**（§70.4.2）。
+ * 「比例航法の先行角は最大16度だから25度で足りる」と見積もったが、
+ * 先行角は**落ち着いたあと**の話で、発射直後の話ではない。
+ *
+ * 実測: **発射時の機首からのずれは中央値 34.9度**、
+ * 67% は最後まで25度の内側に入れなかった。
+ * ロックの扇が ±40度（`radarLockFovH`）なので、**そもそも扇の縁で撃てば
+ * 弾は40度ずれた状態で出る**。比例航法は視線角速度をゼロにする式で、
+ * **機首のずれを直接詰める式ではない。**
+ *
+ * 実機のシーカーは首を振る。**機体軸に固定された視野ではなく、
+ * アンテナが向けられる限界**として持つのが正しい。
+ */
+const SEEKER_GIMBAL_DEFAULT = 60;
 /**
  * ビーム欺瞞で、チャフが「紛れる背景」としてどれだけ地面の代わりになるか（§46）。
  *
@@ -84,20 +104,62 @@ const CHAFF_AS_BACKGROUND = 0.4;
 const LOOKDOWN_FULL = 0.12;
 /** 背を向けて逃げていると言える角度（§35.2）。これを超えると雲が視線から外れる */
 const SCREEN_TOLERANCE = 35 * (Math.PI / 180);
-/**
- * **チャフの雲1つが誘導を切る確率**（§46）。真後ろに逃げているときの値で、
- * 角度がずれるほど下がる。**雲1つにつき1回しか判定しない。**
- *
- * 以前は毎秒 0.9 の抽選で、雲の寿命6秒のあいだに 98% になっていた。
- * 枚数を増やして1枚あたりを下げる、という設計意図（§35.2.2）と逆を向いていた。
- */
-const SCREEN_CHANCE_PER_CLOUD = 0.10;
 /** チャフの雲が「背景」として働く半径(m)（§35.2） */
 const CHAFF_COVER_RADIUS = 700;
 /** 目標の対地高度がこれを超えると、地面には紛れられない(m) */
 const CLUTTER_MAX_AGL = 300;
 /** ビームと言える角度。真横からこれだけ外れると効かない */
 export const NOTCH_TOLERANCE = 20 * (Math.PI / 180);
+
+/**
+ * 赤外線シーカーの明るさ（§70.5.1）。**機体の見え方 = 基礎 + 後方 + 温度。**
+ *
+ * `sim/combat.js` の `flareFactor` が持っていた式をここへ移した。
+ * **シーカーの狙点を決めるのも、命中期待度を見積もるのも同じ明るさ**なので、
+ * 2か所に置くと必ずずれる（§67.2 の `weaponsOf` と同じ理由）。
+ */
+const SIG_BASE = 0.25;
+const SIG_REAR = 0.45;
+const SIG_HEAT = 0.30;
+
+/** 見る位置から見た機体の明るさ 0..1 */
+export function irBrightness(unit, fromPos) {
+  const dx = unit.pos.x - fromPos.x, dz = unit.pos.z - fromPos.z;
+  const rear = 1 - Math.abs(angleDiff(headingOf(dx, dz), unit.heading)) / Math.PI;
+  const heat = unit.heat ?? 0.5;
+  return clamp(SIG_BASE + SIG_REAR * rear + SIG_HEAT * heat, 0, 1);
+}
+
+/**
+ * フレアの明るさ。**燃え尽きるにつれて暗くなる。**
+ * 寿命6秒の後半で落ちるので、撒いた直後がいちばん強い。
+ *
+ * `FLARE_PEAK` は**機体の明るさに対する比**を決める較正値（§70.5.4）。
+ * 1.0 で入れたら AAM-S の命中が **0.59 → 0.16** に落ちた ——
+ * 後方から見た機体は 0.84 前後なので、**フレア1発で狙点が半分持っていかれる**。
+ * §46 と同じ失敗で、**形を直すついでに量まで動かしていた。**
+ *
+ * 抽選をやめるのが目的であって、フレアを強くするのが目的ではない。
+ * **前の強さ（実測 0.59）を保つ値に合わせる。**
+ */
+const FLARE_LIFE = 6;
+const FLARE_PEAK = 0.35;
+function flareBrightness(d) {
+  return clamp(d.life / FLARE_LIFE, 0, 1) * FLARE_PEAK;
+}
+
+/**
+ * 赤外線シーカーの視野（±deg）。**発射直後は広く、数秒かけて絞る**（§70.5.2）。
+ *
+ * 絞り込みは「フレアが視野に入りにくくなる」という形でだけ効かせる。
+ * **「絞り切ったらフレアは効かない」にはしない** —— そうすると
+ * 追尾位置からの AAM-S が数秒後に無敵になり、A-3 のフレア10発が無意味になる。
+ * 近距離戦が「先に撃った方が勝つ」＝**開幕の位置取りで決まる**ようになって、
+ * 運の感じ方はむしろ増える。
+ */
+const IR_FOV_LAUNCH = 45;
+const IR_FOV_TERMINAL = 12;
+const IR_NARROW_SEC = 4;
 
 /**
  * アクティブレーダー弾のシーカーが目標を探し続ける時間(秒)（§28.13）。
@@ -226,6 +288,16 @@ export class Missile {
     this._prevTargetPos = null;   // 比例航法で目標の速度を差分から取るため（§34.2）
     this._prevTargetRef = null;   // その位置を測った相手。入れ替わったら測り直す
 
+    // **いま信じている目標の位置**（§70.4.1）。妨害されると測り直せなくなり、
+    // そのあいだは最後に測った速度で外挿しながらここへ向かって飛ぶ。
+    // 妨害が無ければ毎フレーム実測で置き換わるので、従来とまったく同じ挙動になる。
+    this._fix = null;
+    this._fixVel = new THREE.Vector3();
+    this._noFixFor = 0;           // 最後に測ってからの秒数
+    this._irAim = null;           // 赤外線シーカーの狙点（§70.5.1）
+    this._jam = 0;                // いま受けている妨害の強さ 0..1
+    this._jamPeak = 0;            // その最大値（計測用）
+
     // アクティブレーダー弾の終末誘導（§28.2）。
     // 中途は発射機の索敵レーダーから位置をもらい、**相手に警報は出ない**。
     // 予測位置まで詰めたところでシーカーを入れ、そこで初めて気づかれる。
@@ -340,7 +412,11 @@ export class Missile {
         this._steerTowards(this._leadPoint(), dt);
       } else {
         this._targetDist = this.pos.distanceTo(this.seekTarget.pos);
-        this._guide(dt, this.seekTarget);
+        // **狙うのは「信じている位置」**（§70.4.1）。妨害が無ければ
+        // 毎フレーム実測で置き換わるので実体と一致する。
+        // 当たり判定は `seekTarget`（実体）のままなので、ここを差し替えても
+        // 「点に当たって爆発する」ことにはならない。
+        this._guide(dt, this._fix || this.seekTarget);
       }
     }
 
@@ -445,9 +521,14 @@ export class Missile {
       default: break;
     }
 
-    // ノッチ（§28.5）と地面クラッター（§28.6）。どちらも真横を向くのが条件。
-    if (this._deceived(dt, world, t)) { this._goStupid('ビーム欺瞞'); return; }
-    if (this._screened(dt, world, t)) { this._goStupid('チャフ遮蔽'); return; }
+    // 妨害（§70.4.1）。**誘導は切れない。測り直しが遅れるだけ。**
+    //
+    // ビーム機動（ドップラー欺瞞・§35.1）とチャフの壁（§35.2）は、
+    // どちらも「レーダーが目標を分離できない」状態を作る。
+    // 強いほど測り直せる間隔が開き、そのあいだ弾は古い位置へ向かって飛ぶ。
+    // **外れるかどうかは、どれだけ古い位置を追ったかから自然に決まる。**
+    if (this._radarGuided()) { if (!this._trackTarget(dt, world)) return; }
+    else if (this.guidance === 'ir') { if (!this._irTrack(dt, world)) return; }
 
     // シーカーの視線（地形に遮られたら見失う）。
     //
@@ -616,99 +697,194 @@ export class Missile {
    * 見るのは**照射しているもの**。セミアクティブなら発射機、
    * アクティブの終末なら弾自身。赤外線には効かない。
    */
-  _deceived(dt, world, t) {
-    if (this.guidance !== 'sarh' && this.guidance !== 'arh'
-        && this.guidance !== 'command') return false;
-    // **地上・水上目標は欺瞞しない**（§42）。
-    //
-    // ドップラー欺瞞は「動いている目標が、真横を向いて接近速度を消し、
-    // 地面と同じ“動かないもの”に紛れる」という仕組み。
-    // **最初から動かないものには意味が無い。**
-    //
-    // ところが地上目標では3条件がすべて自動的に成立していた —
-    // 見下ろしは機体が必ず上にいるので常に真、紛れる背景は対地高度0なので常に満額、
-    // ビームは `heading` が固定値0のまま**進入方位だけで決まって**いた。
-    // その結果、AGM（`command`）は進入方向が帯に入ると **0.9/秒で誘導を失い**、
-    // 目標のはるか手前で自爆していた（実測: 9km から撃って 3km 先で喪失）。
-    if (isGroundTarget(t)) return false;
-    if (!t.heading && t.heading !== 0) return false;
-
-    let src = null;
-    if (this.guidance === 'sarh' || this.guidance === 'command') src = this.launcher;
-    else src = this.active ? this : this.launcher;
-    if (!src || src.alive === false || !src.pos) return false;
-
-    // 1. ビーム。真横ほど強い
-    const dx = t.pos.x - src.pos.x, dz = t.pos.z - src.pos.z;
-    const flat = Math.hypot(dx, dz);
-    const los = Math.atan2(dx, -dz);
-    const off = Math.abs(Math.abs(angleDiff(los, t.heading)) - Math.PI / 2);
-    if (off > NOTCH_TOLERANCE) return false;
-    const beam = 1 - off / NOTCH_TOLERANCE;
-
-    // 2. 見下ろし。**見上げている間は成立しない**
-    const depression = (src.pos.y - t.pos.y) / Math.max(1, flat);
-    if (depression <= 0) return false;
-    const look = clamp(depression / LOOKDOWN_FULL, 0, 1);
-
-    // 3. 紛れる背景。地面か、チャフの雲か（§35.2）
-    const ground = Math.max(0, world.terrain.heightAt(t.pos.x, t.pos.z));
-    const byGround = clamp(1 - (t.pos.y - ground) / CLUTTER_MAX_AGL, 0, 1);
-    const cover = clamp(byGround + CHAFF_AS_BACKGROUND * chaffCover(world, t), 0, 1);
-    if (cover <= 0) return false;
-
-    const rng = world.rng ? world.rng() : Math.random();
-    return rng < DECEPTION_CHANCE_PER_SEC * beam * look * cover * dt;
+  /** レーダーで見ている弾か（妨害が効く相手） */
+  _radarGuided() {
+    const g = this.guidance;
+    return g === 'sarh' || g === 'arh' || g === 'command';
   }
 
   /**
-   * チャフの壁で見失うか（§35.2）。
+   * この弾のシーカーのジンバル限界(rad)。
    *
-   * **背を向けて逃げるとき、撒いたチャフは追う側との間に残る。**
-   * 電波を通さない雲が視線上に立つので、レーダーは目標を掴めなくなる。
-   * こちらはビームでも見下ろし角でもなく、**遮蔽**そのもの。
-   *
-   * 逃げる向きが視線と揃っているほど強い。真横に逃げれば雲は視線から外れる
-   * （そちらは上の `_deceived` のドップラー欺瞞が引き受ける）。
+   * **`seekerFov` とは別物。** あちらは AAM-A が終末で目標を掴みにいくときの
+   * 視野（`_goActive`）で、こちらは誘導中に首を振れる限界。
    */
-  _screened(dt, world, t) {
-    if (this.guidance !== 'sarh' && this.guidance !== 'arh'
-        && this.guidance !== 'command') return false;
-    // 地上・水上目標はチャフを撒かないので元から成立しないが、
-    // `_deceived` と同じ理由で明示的に外す（§42）。
-    if (isGroundTarget(t)) return false;
-    if (!t.heading && t.heading !== 0) return false;
+  _seekerGimbal() {
+    return (this.weapon.seekerGimbal ?? SEEKER_GIMBAL_DEFAULT) * (Math.PI / 180);
+  }
+
+  /**
+   * 目標の位置を測り直せているかを見て、信じている位置(`_fix`)を更新する（§70.4）。
+   *
+   * **ここが第2段の中心。** 3つが1本の流れになっている。
+   *
+   * | | 何が起きるか |
+   * |---|---|
+   * | 妨害（ビーム・チャフ） | 測り直せる**間隔が開く**。誘導は切れない |
+   * | 受信範囲（角度） | 機首から外れていると**そもそも測れない** |
+   * | 測れないまま `FIX_LOST_SEC` | 諦めて自爆 |
+   *
+   * **妨害が無ければ毎フレーム実測で置き換わる**ので、
+   * 従来の「実体をそのまま追う」挙動と一致する（A/Bが1変数で取れる）。
+   *
+   * @returns {boolean} 誘導を続けられるか
+   */
+  _trackTarget(dt, world) {
+    const t = this.target;
+    if (!t || t.alive === false || !t.pos) return true;   // 別の経路が面倒を見る
+    // 地上・水上目標は妨害しないし、動かないので測り直しも要らない（§42）
+    if (isGroundTarget(t)) return true;
+
+    const q = Math.max(this._notchQuality(world, t), this._screenQuality(world, t));
+    this._jam = q;
+    if (q > this._jamPeak) this._jamPeak = q;
+
+    // 最後に測った速度で外挿しながら飛ぶ。
+    // **直進している相手なら外挿は正確**で、妨害されても当たる。
+    // 曲がられるとそのぶんずれる —— ビーム機動は視線が回るので
+    // 「真横を保つ」こと自体が曲がり続けることを意味する。
+    if (this._fix) this._fix.pos.addScaledVector(this._fixVel, dt);
+
+    this._noFixFor += dt;
+    if (this._noFixFor >= GUIDE_GAP_MAX * q && this._canSee(t)) {
+      this._takeFix(t);
+      this._noFixFor = 0;
+    } else if (this._fix && this._noFixFor > FIX_LOST_SEC) {
+      // 妨害だけなら必ず測り直せる（間隔は GUIDE_GAP_MAX で頭打ち）。
+      // ここに掛かるのは**受信範囲から出た**とき
+      this._goStupid('受信範囲外');
+      return false;
+    }
+    if (!this._fix) this._takeFix(t);        // 初回
+    this.lastKnown.copy(this._fix.pos);
+    return true;
+  }
+
+  /** いまのシーカー視野(rad)。発射から `IR_NARROW_SEC` かけて絞る（§70.5.2） */
+  _irFov() {
+    const w = this.weapon;
+    const a = (w.seekerFovLaunch ?? IR_FOV_LAUNCH);
+    const b = (w.seekerFov ?? IR_FOV_TERMINAL);
+    const k = clamp(this.age / (w.seekerNarrowSec ?? IR_NARROW_SEC), 0, 1);
+    return (a + (b - a) * k) * (Math.PI / 180);
+  }
+
+  /**
+   * 赤外線シーカー（§70.5.1）。**「移る／移らない」を決めない。**
+   *
+   * 視野の中にある熱源を**明るさで重み付けして平均した点**を狙う。
+   * フレアは吸い取るのではなく**狙点を引っ張る**。
+   *
+   * | 見え方 | 何が起きるか |
+   * |---|---|
+   * | 正面・側面 | 機体は暗い（排気が見えない）→ フレアが圧倒して大きく引かれる |
+   * | 後方 | 排気が見える → 機体が明るい → **温度次第**。AB を焚いていれば引かれない |
+   *
+   * **確率が消えても、実機の関係はそのまま出る。**
+   * §35.3 の「推力を絞れば隠れられるが、そのぶん速度で負ける」も効き続ける。
+   *
+   * そして**古典的な機動がそのまま最適解になる** ——
+   * フレアを撒いて直後にブレイクすると、フレアが自分とミサイルの間に残り、
+   * 狙点が引かれている隙に自分は視野の縁へ逃げる。
+   *
+   * 視野は**前フレームの狙点を中心**に取る。弾の機首を中心にすると、
+   * 45度まで許している発射角（`inEnvelope`）で撃った弾が
+   * 発射直後に自分の目標を見失う（§70.4.2 で踏んだのと同じ誤り）。
+   *
+   * @returns {boolean} 誘導を続けられるか
+   */
+  _irTrack(dt, world) {
+    const t = this.target;
+    if (!t || t.alive === false || !t.pos) return true;
+    if (!this._irAim) this._irAim = t.pos.clone();
+
+    // 前フレームの狙点を向く。これがシーカーの首の向き
+    const look = _v12.copy(this._irAim).sub(this.pos);
+    if (look.lengthSq() < 1) return true;
+    look.normalize();
+
+    // **ジンバル限界**（§70.5.3）。首を振り切ったら掴み直せない
+    if (this.dir.angleTo(look) > this._seekerGimbal()) {
+      this._noFixFor += dt;
+      if (this._noFixFor > FIX_LOST_SEC) { this._goStupid('ジンバル外'); return false; }
+    } else {
+      this._noFixFor = 0;
+    }
+
+    const fov = this._irFov();
+    const resist = clamp(1 - (this.weapon.decoyResist ?? 0.5), 0, 1);
+    _v13.set(0, 0, 0);
+    let wsum = 0;
+    const consider = (pos, bright) => {
+      if (bright <= 0) return;
+      const to = _v14.copy(pos).sub(this.pos);
+      if (to.lengthSq() < 1) return;
+      const off = look.angleTo(to.normalize());
+      if (off >= fov) return;
+      const w = bright * (1 - off / fov);      // 縁ほど弱く。段差を作らない
+      if (w <= 0) return;
+      _v13.addScaledVector(pos, w);
+      wsum += w;
+    };
+
+    consider(t.pos, irBrightness(t, this.pos));
+    for (const d of world.decoys) {
+      if (!d.alive || d.kind !== 'flare' || d.side !== t.side) continue;
+      consider(d.pos, flareBrightness(d) * resist);
+    }
+
+    // 視野に何も無い（機体は外れ、フレアも燃え尽きた）
+    if (wsum <= 0) {
+      this._noFixFor += dt;
+      if (this._noFixFor > FIX_LOST_SEC) { this._goStupid('熱源喪失'); return false; }
+      return true;
+    }
+
+    this._irAim.copy(_v13).divideScalar(wsum);
+    // 狙点を誘導へ渡す。当たり判定は `seekTarget`（実体）のままなので、
+    // フレアの位置へ飛んでも「フレアに当たって爆発」にはならず、素直に外れる
+    if (!this._fix) this._fix = { pos: new THREE.Vector3(), alive: true, speed: 0, isPoint: true };
+    this._fix.pos.copy(this._irAim);
+    this.lastKnown.copy(this._irAim);
+    return true;
+  }
+
+  /** シーカーが首を振って届く範囲に目標が入っているか（§70.4.2） */
+  _canSee(t) {
+    const to = _v11.copy(t.pos).sub(this.pos);
+    if (to.lengthSq() < 1) return true;
+    return this.dir.angleTo(to.normalize()) <= this._seekerGimbal();
+  }
+
+  /** いま測れた位置と速度で `_fix` を置き換える */
+  _takeFix(t) {
+    if (!this._fix) this._fix = { pos: new THREE.Vector3(), alive: true, speed: 0, isPoint: true };
+    this._fix.pos.copy(t.pos);
+    // 速度は水平だけ見る（`_leadPoint` の会合点計算と揃える）
+    if (t.forward && t.speed) {
+      const f = t.forward(_v11);
+      this._fixVel.set(f.x * t.speed, 0, f.z * t.speed);
+    } else {
+      this._fixVel.set(0, 0, 0);
+    }
+  }
+
+  _notchQuality(world, t) {
+    if (!this._radarGuided()) return 0;
     let src = null;
     if (this.guidance === 'sarh' || this.guidance === 'command') src = this.launcher;
     else src = this.active ? this : this.launcher;
-    if (!src || src.alive === false || !src.pos) return false;
-
-    // 照射源から見た視線と、目標の進む向きが揃っているか（＝背を向けて逃げている）
-    const los = Math.atan2(t.pos.x - src.pos.x, -(t.pos.z - src.pos.z));
-    const away = Math.abs(angleDiff(los, t.heading));
-    if (away > SCREEN_TOLERANCE) return false;
-    const align = 1 - away / SCREEN_TOLERANCE;
-
-    // **雲1つにつき1回だけ判定する**（§46）。
-    //
-    // 以前は毎秒の抽選（0.9/秒）だった。雲は6秒生きるので、
-    // **1枚撒けば 98% で誘導が切れる**計算になり、
-    // 実測でも AAM-M の 24発中23発がこれで落ちていた。
-    // 設計意図は「4枚でミサイル1発ぶん」（§35.2.2）なので、桁が違う。
-    //
-    // 「電波を通さない雲を1つ通り抜ける」のは1回の出来事であって、
-    // 秒ごとに繰り返し起きるものではない。
-    if (!this._screenRolled) this._screenRolled = new Set();
-    for (const d of world.decoys) {
-      if (!d.alive || d.kind !== 'chaff' || d.side !== t.side) continue;
-      if (this._screenRolled.has(d.id)) continue;
-      if (d.pos.distanceTo(t.pos) > CHAFF_COVER_RADIUS) continue;
-      this._screenRolled.add(d.id);
-      const rng = world.rng ? world.rng() : Math.random();
-      if (rng < SCREEN_CHANCE_PER_CLOUD * align) return true;
-    }
-    return false;
+    return notchQuality(src, t, world);
   }
+
+  _screenQuality(world, t) {
+    if (!this._radarGuided()) return 0;
+    let src = null;
+    if (this.guidance === 'sarh' || this.guidance === 'command') src = this.launcher;
+    else src = this.active ? this : this.launcher;
+    return chaffScreen(src, t, world);
+  }
+
 
   _goStupid(reason = '?') {
     if (this.lost) return;
@@ -926,8 +1102,9 @@ export class Missile {
     const passed = seg.t < 0.999;
     if (!passed && d > direct) return false;          // まだ近づいている最中
 
-    // デコイに当たった場合は消えるだけ
-    if (t.isDecoy) { this.destroy(world, 'decoy'); return true; }
+    // **デコイを目標にすることは無くなった**（§70.5.1）。
+    // シーカーは狙点を引っ張られるだけで、追う相手は実体のまま。
+    // フレアの位置へ飛んでも「囮に当たって消える」のではなく、素直に外れる。
 
     // 実体ではなく「最後に分かっていた座標」を狙っている場合は爆発だけ起こす
     if (t.isPoint) {
@@ -987,6 +1164,107 @@ export class Missile {
       && this.pos.y - Math.max(0, world.terrain.heightAt(this.pos.x, this.pos.z)) < 70;
     world.effects?.explosion(this.pos, reason === 'hit' ? 260 : 140, ground ? 'ground' : 'air');
   }
+}
+
+
+/**
+ * ドップラー欺瞞の強さ 0..1（§35.1 / §70.4.1 / §70.6）。
+ *
+ * **ミサイルの誘導と、レーダーの探知の両方から使う。**
+ * 「レーダーが目標を分離できているか」という同じ現象なので、
+ * 2か所に式を置くと必ずずれる（§67.2 の `weaponsOf` と同じ理由）。
+ *
+ * 真横を向くと接近速度が消え、レーダーは「動いていないもの」として捨てる。
+ * **ただしそれは、背景に「動いていないもの」がある場合だけ。**
+ * 見上げる形でビームを取っても、背景は空で紛れる先が無い。
+ *
+ * | | 何を見るか |
+ * |---|---|
+ * | ビーム | 照射源に対して真横を向いているか |
+ * | 見下ろし | 照射源が目標を**見下ろしている**か。見上げていれば成立しない |
+ * | 背景 | 地面が近いか、チャフの雲があるか |
+ */
+export function notchQuality(src, t, world) {
+  if (!src || src.alive === false || !src.pos) return 0;
+  if (!t || !t.pos) return 0;
+  // **地上・水上目標は欺瞞しない**（§42）。
+  //
+  // ドップラー欺瞞は「動いている目標が、真横を向いて接近速度を消し、
+  // 地面と同じ“動かないもの”に紛れる」という仕組み。
+  // **最初から動かないものには意味が無い。**
+  //
+  // ところが地上目標では3条件がすべて自動的に成立していた —
+  // 見下ろしは機体が必ず上にいるので常に真、紛れる背景は対地高度0なので常に満額、
+  // ビームは `heading` が固定値0のまま**進入方位だけで決まって**いた。
+  // その結果、AGM（`command`）は進入方向が帯に入ると **0.9/秒で誘導を失い**、
+  // 目標のはるか手前で自爆していた（実測: 9km から撃って 3km 先で喪失）。
+  if (isGroundTarget(t)) return 0;
+  if (!t.heading && t.heading !== 0) return 0;
+
+  // 1. ビーム。真横ほど強い
+  const dx = t.pos.x - src.pos.x, dz = t.pos.z - src.pos.z;
+  const flat = Math.hypot(dx, dz);
+  const los = Math.atan2(dx, -dz);
+  const off = Math.abs(Math.abs(angleDiff(los, t.heading)) - Math.PI / 2);
+  if (off > NOTCH_TOLERANCE) return 0;
+  const beam = 1 - off / NOTCH_TOLERANCE;
+
+  // 2. 見下ろし。**見上げている間は成立しない**
+  const depression = (src.pos.y - t.pos.y) / Math.max(1, flat);
+  if (depression <= 0) return 0;
+  const look = clamp(depression / LOOKDOWN_FULL, 0, 1);
+
+  // 3. 紛れる背景。地面か、チャフの雲か（§35.2）
+  const ground = Math.max(0, world.terrain.heightAt(t.pos.x, t.pos.z));
+  const byGround = clamp(1 - (t.pos.y - ground) / CLUTTER_MAX_AGL, 0, 1);
+  const cover = clamp(byGround + CHAFF_AS_BACKGROUND * chaffCover(world, t), 0, 1);
+  if (cover <= 0) return 0;
+
+  // **積をそのまま妨害の強さとして返す**（§70.4.1）。
+  // 以前はこれを毎秒の確率にして抽選していた。式は変えていない ——
+  // **抽選をやめただけ。**
+  return clamp(beam * look * cover, 0, 1);
+  }
+
+/**
+ * チャフの壁がどれだけ効いているか 0..1（§35.2 / §70.4.1）。
+ *
+ * **背を向けて逃げるとき、撒いたチャフは追う側との間に残る。**
+ * 電波を通さない雲が視線上に立つので、レーダーは目標を分離できなくなる。
+ * こちらはビームでも見下ろし角でもなく、**遮蔽**そのもの。
+ *
+ * 逃げる向きが視線と揃っているほど強い。真横に逃げれば雲は視線から外れる
+ * （そちらは `_notchQuality` のドップラー欺瞞が引き受ける）。
+ *
+ * **抽選をやめた**（§70.4.1）。以前は「雲1つにつき10%で誘導を切る」で、
+ * 実測では **1,141発を通して一度も発動しなかった**（§70.1.2）。
+ * §46 で毎秒抽選という形の誤りを直したとき、
+ * **形と一緒に量まで動かして、ゼロまで持っていっていた。**
+ * 雲が立っているあいだ測り直しを遅らせる、という形なら
+ * 「壁になる」という §35.2 の設計がそのまま効きの強さになる。
+ */
+export function chaffScreen(src, t, world) {
+  if (!src || src.alive === false || !src.pos) return 0;
+  if (!t || !t.pos) return 0;
+  // 地上・水上目標はチャフを撒かないので元から成立しないが、
+  // `notchQuality` と同じ理由で明示的に外す（§42）。
+  if (isGroundTarget(t)) return 0;
+  if (!t.heading && t.heading !== 0) return 0;
+
+  // 照射源から見た視線と、目標の進む向きが揃っているか（＝背を向けて逃げている）
+  const los = Math.atan2(t.pos.x - src.pos.x, -(t.pos.z - src.pos.z));
+  const away = Math.abs(angleDiff(los, t.heading));
+  if (away > SCREEN_TOLERANCE) return 0;
+  const align = 1 - away / SCREEN_TOLERANCE;
+
+  // 目標を覆う雲が1つでも生きていれば壁が立っている。
+  // 枚数で強くはしない —— 雲は6秒で消えるので、
+  // **枚数が効くのは「どれだけ長く覆えるか」**（§35.2.2 の設計どおり）。
+  for (const d of world.decoys) {
+    if (!d.alive || d.kind !== 'chaff' || d.side !== t.side) continue;
+    if (d.pos.distanceTo(t.pos) <= CHAFF_COVER_RADIUS) return align;
+  }
+  return 0;
 }
 
 /**
@@ -1118,6 +1396,10 @@ const _v7 = new THREE.Vector3();
 const _v8 = new THREE.Vector3();
 const _v9 = new THREE.Vector3();
 const _v10 = new THREE.Vector3();
+const _v11 = new THREE.Vector3();
+const _v12 = new THREE.Vector3();
+const _v13 = new THREE.Vector3();
+const _v14 = new THREE.Vector3();
 const _sa = new THREE.Vector3();
 const _sb = new THREE.Vector3();
 

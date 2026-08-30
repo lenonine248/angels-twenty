@@ -65,6 +65,7 @@ export class Bullet {
    * @param {number} o.damage 命中1発あたりのダメージ
    * @param {object} o.shooter 撃った機体
    * @param {number} [o.life] 寿命(秒)。省くと機体共通の `BULLET_LIFE`
+   * @param {number} [o.gravity] 落下加速度(m/s^2)。**既定は 0**（§69.2）
    */
   constructor(o) {
     this.pos = o.pos.clone();
@@ -79,6 +80,15 @@ export class Bullet {
     // **射程は「初速 × 寿命」で決まる**という決め（§22.2.1）はそのままに、
     // 砲ごとに寿命を持てるようにする。
     this.life = o.life ?? BULLET_LIFE;
+    /**
+     * 落下加速度（§69.2）。**既定は 0 で、機銃と弾幕はこれまでどおり直進する。**
+     *
+     * 榴弾だけが 9.81 を持つ。重力を全部の弾に入れると、
+     * 「射高は二値」という §8 からの決め（`data/ground.js` の注記）が
+     * 物理側から崩れて、機銃と弾幕の釣り合いがまるごと動く。
+     * **任意にしておけば、入れたい弾にだけ入る。**
+     */
+    this.gravity = o.gravity || 0;
     this.alive = true;
     /** 当たった相手（演出用。命中の瞬間だけ入る） */
     this.hit = null;
@@ -90,6 +100,7 @@ export class Bullet {
     if (this.life <= 0) { this.alive = false; return; }
 
     this.prev.copy(this.pos);
+    if (this.gravity) this.vel.y -= this.gravity * dt;
     this.pos.addScaledVector(this.vel, dt);
 
     // 地面に当たったら消える。対地掃射の外れ弾がどこへ行ったか分かる。

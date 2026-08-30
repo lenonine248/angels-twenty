@@ -109,6 +109,10 @@
     // 射手は原点、目標は +Z 方向へ R 離れた点。射手は目標を向く
     shooter.pos.set(0, alt, 0);
     shooter.heading = Math.PI;                  // +Z 方向（headingOf(0, R) = π）
+    // **機首ずれ**（§75）。発射の瞬間に目標からどれだけ外れているか。
+    // `combat.fire()` は交戦包絡線を見ないので、ここで向きを変えれば
+    // 「横を向いたまま撃った」弾をそのまま測れる。
+    if (mods.off) shooter.heading += (mods.off * Math.PI) / 180;
     shooter.speed = shooter.spec.cruiseSpeed * 1.2;
     shooter.onGround = false;
     shooter.state = 'flying';
@@ -348,7 +352,42 @@
     return out;
   }
 
-  AT.kin = { run, one, threshold, profile, report, reset, rows, WEAPONS: null };
+  /**
+   * **機首ずれ × 距離**の掃引（§75）。
+   *
+   * 発射包絡線は最大 40〜55°の機首ずれを許すが、`estimateHitChance` は
+   * それを見ていない —— **射程さえ入れば横を向いたまま撃つ。**
+   * どれだけ損をするのかを測る。
+   */
+  async function boresight(opts = {}) {
+    const wid = opts.weapon || 'AAM-M';
+    const ranges = opts.ranges || [4, 6, 8, 10, 12, 16, 20];
+    const offs = opts.offs || [0, 10, 20, 30, 40, 50];
+    const aspects = opts.aspects || [0, 90, 180];
+    const alt = opts.alt ?? 6000;
+    const seeds = opts.seeds || [11, 22, 33];
+    await patch();
+    const grid = {};
+    const b = await fresh(seeds[0]);
+    for (const km of ranges) {
+      for (const off of offs) {
+        let hit = 0; let n = 0;
+        for (const asp of aspects) {
+          for (let i = 0; i < seeds.length; i++) {
+            const r = shot(b, wid, km, asp, alt, { off });
+            if (!r || r.結末 === '発射できず') continue;
+            n++; if (r.結末 === '撃墜') hit++;
+          }
+        }
+        grid[`${km}km`] = grid[`${km}km`] || {};
+        grid[`${km}km`][`${off}°`] = n ? +(hit / n).toFixed(2) : null;
+      }
+    }
+    console.table(grid);
+    return grid;
+  }
+
+  AT.kin = { run, one, threshold, profile, boresight, report, reset, rows, WEAPONS: null };
   return import('/js/data/weapons.js').then((m) => {
     AT.kin.WEAPONS = m.WEAPONS;
     return 'kinematics ready';

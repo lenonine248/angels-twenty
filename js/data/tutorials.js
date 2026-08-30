@@ -741,8 +741,11 @@ export const TUTORIALS = [
           moveTo: { x: 36000, z: 18000, agl: 2000 } },
       ],
       ground: [
-        // 車両部隊は撃ち返してこないので掃射の練習に向く（対空砲は撃ってくる）
-        { type: 'CONVOY', name: '車両部隊', x: 17000, z: 32000, tags: ['target'], known: true },
+        // 車両部隊は撃ち返してこないので掃射の練習に向く（対空砲は撃ってくる）。
+        // **§67 で車両部隊に機銃が付いた**ので、ここは明示的に武装を外す ——
+        // 機銃のチュートリアルで撃ち返されると練習にならない。
+        { type: 'CONVOY', name: '車両部隊', x: 17000, z: 32000, tags: ['target'],
+          known: true, unarmed: true },
       ],
     },
     steps: [

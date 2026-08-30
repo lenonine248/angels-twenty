@@ -10,6 +10,8 @@
 
 import { headingOf, angleDiff, DEG } from '../sim/unit.js';
 import { LEVEL } from '../sim/detection.js';
+import { weaponsOf } from '../data/ground.js';
+import { isArmed } from '../data/weapons.js';
 
 /** AIの思考間隔(秒)。毎フレーム考える必要はない。 */
 const AI_INTERVAL = 0.5;
@@ -246,7 +248,7 @@ export class PilotAI {
       // 一度だけ知らせる。押しても何も起きない、という状態にはしない
       if (!u._escortWarned && u.side === this.world.playerSide) {
         u._escortWarned = true;
-        this.world.log?.(`${u.name} 護衛する相手がいません — 哨戒に戻ります`);
+        this.world.log?.(`${u.name} 護衛する相手がいません — 哨戒に戻ります`, u);
       }
       return;
     }
@@ -332,13 +334,18 @@ export class PilotAI {
     for (const [, c] of contacts) {
       const g = c.unit;
       if (!g.alive || g.side === u.side) continue;
-      const w = g.spec && g.spec.weapon;
-      if (!w || w.kind !== 'aaa') continue;
-      const flat = Math.hypot(u.pos.x - c.pos.x, u.pos.z - c.pos.z);
-      if (flat > w.range + GUN_APPROACH_PAD) continue;
-      const need = Math.max(0, this.world.terrain.heightAt(c.pos.x, c.pos.z))
-        + w.maxAlt + GUN_CLEAR_MARGIN;
-      if (need > floor) floor = need;
+      // **1ユニットに複数の砲があり得る**（§67.2）。いちばん高い射高で決める。
+      for (const w of weaponsOf(g.spec)) {
+        // **弾幕と赤外線SAMは同じ扱い**（§68.2）。どちらも射高の上へ出れば届かない。
+        // 電波で誘導するSAMだけが「低く降りて隠れる」相手になる。
+        if (w.kind !== 'aaa' && w.kind !== 'irsam') continue;
+        if ((w.targets || 'air') === 'ground') continue;   // 対地専用の砲は上に効かない
+        const flat = Math.hypot(u.pos.x - c.pos.x, u.pos.z - c.pos.z);
+        if (flat > w.range + GUN_APPROACH_PAD) continue;
+        const need = Math.max(0, this.world.terrain.heightAt(c.pos.x, c.pos.z))
+          + w.maxAlt + GUN_CLEAR_MARGIN;
+        if (need > floor) floor = need;
+      }
     }
 
     u._gunFloor = floor;
@@ -481,12 +488,20 @@ export class PilotAI {
     return best;
   }
 
-  /** 探知済み（記憶を含む）の最寄りのSAM陣地 */
+  /**
+   * 探知済み（記憶を含む）の最寄りのSAM陣地。**電波で誘導するものだけ。**
+   *
+   * ここで見つけた相手からは「低空へ降りて隠れる」（§6.2.5）。
+   * **赤外線SAM には効かない** —— 電波で見ているわけではないので、
+   * 降りても隠れないどころか、**射高の中へ自分から入る**。
+   * 赤外線SAM は `_clearGuns`（射高の上を取る）の側で扱う（§68.2）。
+   */
   _nearestThreatSite(u, range) {
     const contacts = this.world.detection.contactsFor(u.side);
     let best = null, bestD = range;
     for (const [, c] of contacts) {
       if (c.unit.kind !== 'sam' || !c.unit.alive) continue;
+      if (!weaponsOf(c.unit.spec).some((w) => w.kind === 'sam')) continue;
       const d = u.pos.distanceTo(c.pos);
       if (d < bestD) { bestD = d; best = c.unit; }
     }
@@ -497,7 +512,7 @@ export class PilotAI {
   _checkWinchester(u) {
     if (u.aiMode === 'RTB' || u.order.type === 'rtb') return;
     if (u._winchester) return;
-    if (u.spec.hardpoints === 0) return;     // 非武装の支援機（早期警戒機）は対象外
+    if (!isArmed(u.spec)) return;            // 非武装の支援機（早期警戒機）は対象外
     // 最後の1発がまだ飛んでいる間は帰投へ切り替えない。
     // ここで指示を差し替えると、機首が目標から外れて自分の弾の誘導を切ってしまう。
     if (u._guidingSarh(this.world)) return;
@@ -507,6 +522,6 @@ export class PilotAI {
     if (u.gun > 40) return;                 // 機銃が残っていればまだ戦える
     u._winchester = true;
     u.aiMode = 'RTB';
-    this.world.log?.(`${u.name} 兵装を撃ち尽くしました — 帰投`);
+    this.world.log?.(`${u.name} 兵装を撃ち尽くしました — 帰投`, u);
   }
 }

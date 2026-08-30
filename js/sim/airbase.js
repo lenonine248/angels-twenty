@@ -73,7 +73,11 @@ const SERVICE_TIME = {
 
 export class Airbase extends GroundUnit {
   constructor(o) {
-    super({ ...o, type: 'AIRBASE' });
+    // **型を差し替えられるようにしてある**（§69.3）。
+    // 空母（`CARRIER`）は海面に浮かぶ飛行場で、滑走路の平坦化が要らない。
+    // 滑走路・進入点・整備の仕組みはそのまま使える —— どれも `pos` から出るので、
+    // 陸か海かを区別しているのは平坦化と高度の置き方だけだった。
+    super({ ...o, type: o.type || 'AIRBASE' });
 
     this.runwayHeading = o.runwayHeading ?? 0;   // 離陸方向（0=北）
     this.runwayLength = o.runwayLength ?? 2200;
@@ -307,7 +311,7 @@ export class Airbase extends GroundUnit {
     ac.roll = 0;
     ac.pitch = 0;
     ac.baseLoadout = ac.loadout.slice();
-    world.log?.(`${ac.name} 発進`);
+    world.log?.(`${ac.name} 発進`, ac);
     return true;
   }
 }
@@ -427,12 +431,14 @@ function applyComplete(ac, task, world) {
       }
       // 増槽を降ろしたぶん、燃料容量を戻す
       ac.refreshFuelCapacity?.();
+      // 降ろした兵装が指定されたままなら外す（§70.3）
+      ac.clearSpentSelection?.();
       break;
     case 'weapon': {
       const w = getWeapon(task.weaponId);
       if (w.cost > 0) {
         if ((world.weaponPoints ?? 0) < w.cost) {
-          world.log?.(`兵装ポイント不足: ${task.weaponId} を搭載できません`);
+          world.log?.(`兵装ポイント不足: ${task.weaponId} を搭載できません`, ac);
           break;
         }
         world.weaponPoints -= w.cost;

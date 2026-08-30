@@ -442,6 +442,71 @@ const REATTACK_RANGE = 3500;
  *
  * @returns {{heading:number, phase:'in'|'out', flat:number}}
  */
+/** 重力加速度(m/s^2)。無誘導爆弾の弾道解に使う */
+const G = 9.8;
+
+/**
+ * 偏差の掛け率。1 で「落下時間ぶんきっちり先」（§32.5）。
+ * 下げると手前に落ちる —— 実装の都合ではなく味の調整用に残してある。
+ */
+const BOMB_LEAD = 1;
+
+/**
+ * 無誘導爆弾の弾道解（§71.6）。
+ *
+ * 落下時間は**高度だけ**で決まり、水平距離には依らないので一度で解ける。
+ * 母機の上下速度を含めた `h = -vy·t + g·t²/2` を t について解く。
+ *
+ * @param {object} shooter 投下する機体
+ * @param {number} aimY    狙点の標高(m)
+ * @returns {{h:number, fallTime:number, throwRange:number}}
+ *   h … 狙点からの高度差 / throwRange … 投下点から着弾点までの水平距離
+ */
+export function bombSolution(shooter, aimY) {
+  const h = shooter.pos.y - aimY;
+  const pitch = shooter.pitch || 0;
+  const vy = shooter.speed * Math.sin(pitch);
+  const vh = shooter.speed * Math.cos(pitch);
+  const fallTime = (vy + Math.sqrt(Math.max(0, vy * vy + 2 * G * h))) / G;
+  return { h, fallTime, throwRange: vh * fallTime };
+}
+
+/**
+ * 無誘導爆弾で狙うべき点 —— **目標がそこへ来るまでの先**（§71.6）。
+ *
+ * §32.5 でこの計算自体は入っていたが、**投下の判定側が受け取っていなかった**。
+ * 判定は「機首方位±16°の円錐」だったので、偏差が針路の横へ出る
+ * **真横からの進入では、ずらした点と現在位置が同じ窓に入って**しまい、
+ * 偏差が結果に一切届かなかった。正面から入ったときだけ効いていた
+ * （そのときは偏差が距離の差になり、距離の窓が拾っていた）。
+ *
+ * 進入の狙点にも、投下の判定にも**同じこの点**を使う。
+ * 進入がここを向いていないと、正しい判定を入れても窓に入れない。
+ */
+export function bombAimPoint(shooter, target, aimPos) {
+  const sol = bombSolution(shooter, aimPos.y);
+  let x = aimPos.x, z = aimPos.z;
+  if (target.speed > 0 && target.heading != null) {
+    const lead = target.speed * sol.fallTime * BOMB_LEAD;
+    x += Math.sin(target.heading) * lead;
+    z -= Math.cos(target.heading) * lead;
+  }
+  return { x, y: aimPos.y, z, fallTime: sol.fallTime, throwRange: sol.throwRange, h: sol.h };
+}
+
+/**
+ * その機体・その瞬間に爆弾が落ちる地点（§71.6）。
+ *
+ * 爆弾は**機首方向へ**投げ出される。狙点への方位ではない ——
+ * ここを取り違えていたのが偏差が効かなかった原因なので、式として分けて置く。
+ */
+export function bombImpactPoint(shooter, throwRange) {
+  return {
+    x: shooter.pos.x + Math.sin(shooter.heading) * throwRange,
+    z: shooter.pos.z - Math.cos(shooter.heading) * throwRange,
+  };
+}
+
 export function groundAttackRun(self, target, aimPos = target.pos) {
   const dx = aimPos.x - self.pos.x;
   const dz = aimPos.z - self.pos.z;

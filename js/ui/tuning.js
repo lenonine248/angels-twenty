@@ -15,6 +15,7 @@
 import { STAGES } from '../data/stages.js';
 import { ENEMY_TYPES, SUPPORT_TYPES, defaultEnemyLoadout } from '../data/aircraft.js';
 import { isDebug } from '../core/debug.js';
+import { loadoutRow, removeOne, LOADOUT_HINT } from './loadout.js';
 
 const KEY = 'at_stage_tuning_v1';
 
@@ -159,18 +160,19 @@ export function render(id) {
     // 既定搭載（ステージ定義に書かれていない機体）もそのまま出す。
     // 「既定」とだけ表示すると、何を積んでいるのか分からないまま触ることになる。
     const load = e.loadout || a.loadout || defaultEnemyLoadout(a.type);
-    const chips = load.length
-      ? load.map((w, k) => `<button class="chip load" data-tnd="${i}:${k}">${w}<i>×</i></button>`).join('')
-      : '<span class="chip empty">なし</span>';
-    const adds = ENEMY_LOADABLE.map((w) =>
-      `<button class="addw" data-tna="${i}:${w}">+${w}</button>`).join('');
+    // 敵の搭載はスロットもポイントも見ない（難易度を試すための欄なので）
+    const row = loadoutRow({
+      loadout: load, list: ENEMY_LOADABLE,
+      add: (id) => `data-tna="${i}:${id}"`,
+      del: (id) => `data-tnd="${i}:${id}"`,
+    });
     return `<div class="tn-foe${e.off ? ' off' : ''}">
       <div class="tn-foe-head">
         <button class="autow${e.off ? ' off' : ''}" data-tnoff="${i}">${e.off ? '出さない' : '出す'}</button>
         <b>${a.name}</b><span>${a.type}</span>
+        <span class="ld-hint">${LOADOUT_HINT}</span>
       </div>
-      <div class="bf-load">${chips}</div>
-      <div class="bf-add">${adds}</div>
+      <div class="bf-add">${row}</div>
     </div>`;
   }).join('');
 
@@ -242,15 +244,15 @@ export function handle(id, e) {
     return commit(id);
   }
   const del = e.target.closest('[data-tnd]');
-  if (del) {
+  if (del && !del.classList.contains('disabled')) {
     const o = ov(id);
-    const [i, k] = del.dataset.tnd.split(':').map(Number);
+    const parts = del.dataset.tnd.split(':');
+    const i = Number(parts[0]);
     o.enemy = o.enemy || {};
     o.enemy[i] = o.enemy[i] || {};
     const src = PRISTINE.get(id).enemy.aircraft[i];
     const cur = o.enemy[i].loadout || (src.loadout || defaultEnemyLoadout(src.type)).slice();
-    cur.splice(k, 1);
-    o.enemy[i].loadout = cur;
+    o.enemy[i].loadout = removeOne(cur, parts[1]);
     return commit(id);
   }
   const newFoe = e.target.closest('[data-tnadd]');

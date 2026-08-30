@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import { Unit, headingOf, angleDiff, DEG, RWR_SIGNATURE_FACTOR } from './unit.js';
 import { getType } from '../data/aircraft.js';
 import { loadoutSlots, loadoutFuelBonus } from '../data/weapons.js';
-import { attackManeuver, defensiveManeuver, groundAttackRun } from './acm.js';
+import { attackManeuver, defensiveManeuver, groundAttackRun, bombAimPoint } from './acm.js';
 import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
 import { clamp } from '../core/rng.js';
 import { thrustFactor, turnFactor, maxSpeedFactor } from '../core/atmosphere.js';
@@ -164,6 +164,14 @@ const JINK_PERIOD = 7;
 
 /** クランクで振る角度を、ロックの扇の何割までにするか（§28.7） */
 const CRANK_FRACTION = 0.6;
+/**
+ * 回避中でも自分の弾を支える上限（秒・§70.4.6）。
+ *
+ * これより着弾が遠い弾は諦めて、真横まで振り切って避ける。
+ * **支えるほど自分が当たりやすくなる**ので、遠い弾のために
+ * 20秒も甘い機動を続けるのは割に合わない。
+ */
+const CRANK_SUPPORT_SEC = 8;
 
 /** コーナー速度の既定値（巡航速度に対する割合・§29.2） */
 const CORNER_FRACTION = 0.85;
@@ -432,7 +440,7 @@ export class Aircraft extends Unit {
     this.acmMode = null;
     this.cranking = false;
     // プレイヤーが出した指示を解くときは黙って消さない。
-    if (lost && order && order.player) world.log?.(`${this.name} 目標を見失った`);
+    if (lost && order && order.player) world.log?.(`${this.name} 目標を見失った`, this);
   }
 
   update(dt, world) {
@@ -535,7 +543,7 @@ export class Aircraft extends Unit {
       if (this.speed <= 12) {
         this.rolling = false;
         ab.onArrive(this);
-        world.log?.(`${this.name} 着陸`);
+        world.log?.(`${this.name} 着陸`, this);
         return;
       }
     }
@@ -603,7 +611,7 @@ export class Aircraft extends Unit {
     if (this.manual) {
       if (!this._bingoWarned && this.fuel < this._bingoFuel(world)) {
         this._bingoWarned = true;
-        world.log?.(`${this.name} 燃料残少 — 手動のため自動帰投しません`);
+        world.log?.(`${this.name} 燃料残少 — 手動のため自動帰投しません`, this);
       }
       return;
     }
@@ -620,7 +628,7 @@ export class Aircraft extends Unit {
       // そのまま燃料切れで落ちる（実際にミッション4で多発していた）。
       this.aiMode = 'RTB';
       this.setOrder({ type: 'rtb', airbase: ab });
-      world.log?.(`${this.name} 燃料残少 — 帰投`);
+      world.log?.(`${this.name} 燃料残少 — 帰投`, this);
     }
   }
 
@@ -677,7 +685,7 @@ export class Aircraft extends Unit {
 
     const hpFactor = 0.6 + 0.4 * (this.hp / this.maxHp);
     // ハードポイント0の機体（早期警戒機）でゼロ除算しないよう下限を置く
-    const loadFactor = 1 - 0.25 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.hardpoints));
+    const loadFactor = 1 - 0.25 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.loadCapacity));
     return Math.min(structural, lift) * hpFactor * loadFactor;
   }
 
@@ -887,7 +895,16 @@ export class Aircraft extends Unit {
         // 逆探知だけで掴んでいる相手なら、そのぶんずれた場所へ入っていく。
         // （狙点は上の `believedPosOf` で決めてある。以前はここで
         //  `|| t.pos` と書いていたので、**見失った瞬間に真の位置へ戻っていた**）
-        const run = groundAttackRun(this, t, aim);
+        // **爆弾を積んでいるなら、進入も偏差点へ向ける**（§71.6）。
+        //
+        // 投下の判定を「実際に落ちる場所」で見る形にしたので、進入が
+        // 目標の現在位置を向いたままだと**真横からは永久に窓へ入れない**。
+        // 狙う点と判定する点は同じでなければならない。
+        // 止まっている目標では `bombAimPoint` は狙点をそのまま返すので、
+        // 対地攻撃の大半（SAM陣地・建物）の飛び方は変わらない。
+        const runAim = this.loadout.includes('BOMB') && t.speed > 0
+          ? bombAimPoint(this, t, aim) : aim;
+        const run = groundAttackRun(this, t, runAim);
         desiredHeading = run.heading;
         this.attackRun = run.phase;
         const egress = run.phase === 'out';
@@ -1264,6 +1281,44 @@ export class Aircraft extends Unit {
   }
 
   /**
+   * 回避の向きを**ロックの扇の内側に留める**（§70.4.6）。クランク機動。
+   *
+   * それまでの回避は「全部か無か」だった —— 照射を保つ（まったく避けない）か、
+   * 真横90度へ振る（自分の弾を確実に殺す）か。実測では、
+   * **敵の AAM-M は90発中72発（80%）が自分の回避で照射切れ**になっていて、
+   * **1発も当たっていなかった**。切れた瞬間はどれも
+   * `beaming: true` で機首から目標まで 62〜64度、扇は40度（§70.4.5）。
+   *
+   * 実機の答えは中間にある。**ジンバル／扇の縁まで振る**と、
+   * 離隔はほとんど稼ぎつつ照射は切れない。
+   * `_updateOrders` の攻撃側には既にこの機動があった（`cranking`）のに、
+   * **回避に入った瞬間に上書きされて消えていた。**
+   *
+   * **終末のブレイクには掛けない**（呼ぶ側で後から混ぜる）。
+   * 弾が数秒先まで来たら生き残るほうが先で、そのときには
+   * 自分の弾もたいてい着弾間際にいる。
+   */
+  _crankHeading(world, heading) {
+    const mine = this._mySarh(world);
+    const t = mine && mine.target;
+    if (!t || !t.pos || t.alive === false) { this.cranking = false; return heading; }
+    // **着弾が遠い弾のために身を晒さない**（§70.4.6）。
+    //
+    // クランクは回避を弱める（真横まで振れない）ので、支え続けるほど
+    // 自分が当たりやすくなる。17km で撃った弾は着弾まで20秒あり、
+    // そのあいだずっと甘い機動を続けるのは割に合わない。
+    // **20秒先の弾は諦めて避ける。数秒先の弾は支える。**
+    if (mine._tti > CRANK_SUPPORT_SEC) { this.cranking = false; return heading; }
+    const toT = headingOf(t.pos.x - this.pos.x, t.pos.z - this.pos.z);
+    const lockFov = this.spec.radarLockFovH ?? this.spec.radarFovH ?? 60;
+    const limit = Math.max(8, lockFov * CRANK_FRACTION) * DEG;
+    const off = angleDiff(heading, toT);
+    if (Math.abs(off) <= limit) { this.cranking = false; return heading; }
+    this.cranking = true;
+    return toT + (off > 0 ? limit : -limit);
+  }
+
+  /**
    * デコイ投射（誘導方式に合わせてフレア／チャフを選ぶ）。
    *
    * **練度は「どれだけ早く撒くか」に効く**（§28.4.1）。
@@ -1294,6 +1349,10 @@ export class Aircraft extends Unit {
     //
     // フレアは引き付ける囮なので、機動と関係なくいつでも効く。
     if (kind === 'chaff' && !this.running && !this.beaming) return;
+    // 空になったら呼ばない。`deployDecoy` は無ければ false を返すだけだが、
+    // 失敗すると `_decoyTimer` が入らないので**毎フレーム呼び続けていた**
+    // （7面×12種の計測で 45,860 回。結果は変わらないが、ただの空回り）
+    if ((kind === 'flare' ? this.flares : this.chaff) <= 0) return;
     if (world.combat.deployDecoy(this, kind)) this._decoyTimer = DECOY_INTERVAL;
   }
 
@@ -1393,7 +1452,8 @@ export class Aircraft extends Unit {
       this.running = true;
       const jink = JINK_AMPLITUDE * Math.sin((this._runFor / JINK_PERIOD) * Math.PI * 2);
       return {
-        heading: bearing + Math.PI + jink,
+        // 誘導中なら扇の内側までしか背を向けない（§70.4.6）
+        heading: this._crankHeading(world, bearing + Math.PI + jink),
         alt: this.pos.y,               // 高度は捨てない（薄い空気のほうが速い）
         speed: this.spec.maxSpeed,
       };
@@ -1410,7 +1470,8 @@ export class Aircraft extends Unit {
       this._evadeSide = Math.abs(angleDiff(left, this.heading))
         < Math.abs(angleDiff(right, this.heading)) ? -1 : 1;
     }
-    let heading = this._evadeSide < 0 ? left : right;
+    // 誘導中なら真横まで振り切らず、扇の縁で止める（§70.4.6）
+    let heading = this._crankHeading(world, this._evadeSide < 0 ? left : right);
     this.beaming = true;
 
     // 終末は**ミサイルへ舵を切る**（§28.5）。
@@ -1671,7 +1732,7 @@ export class Aircraft extends Unit {
     if (this.abActive) rate *= 3;
     if (this.pos.y > 6000) rate *= 0.7;
     else if (this.pos.y < 1000) rate *= 1.4;
-    rate *= 1 + 0.3 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.hardpoints));
+    rate *= 1 + 0.3 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.loadCapacity));
 
     this.fuel -= rate * dt;
 
@@ -1720,8 +1781,30 @@ export class Aircraft extends Unit {
     if (!force && this.fuel > restMax) return false;
     this.loadout.splice(i, 1);
     this.refreshFuelCapacity();
+    this.clearSpentSelection();
     world?.onTankDropped?.(this);
     return true;
+  }
+
+  /**
+   * 使い切った・降ろした兵装の指定を外す（§70.3）。
+   *
+   * 指定が残ったままだと「AAM-M 指定中」の表示が消えず、しかも
+   * **右クリックの射撃指示は何も起こさない** ——
+   * `ui/commands.js` が `loadout.includes` で弾いて黙って読み飛ばすため。
+   * **押しても反応しない指示がいちばん分かりにくい。**
+   *
+   * 搭載を減らす側すべてから呼ぶ（発射・整備での積み替え・増槽の投棄）。
+   * 片方だけに置くと必ず取り残しが出る。
+   *
+   * @returns {string|null} 外した兵装ID。外していなければ null
+   */
+  clearSpentSelection() {
+    if (!this.selectedWeapon) return null;
+    if (this.loadout.includes(this.selectedWeapon)) return null;
+    const id = this.selectedWeapon;
+    this.selectedWeapon = null;
+    return id;
   }
 
   /**

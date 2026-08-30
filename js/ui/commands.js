@@ -118,12 +118,16 @@ export class CommandController {
     if (!box) return;
     if (!this.hoverUnit && this.hoverMissile) { this._showMissileInfo(box, px, py); return; }
     const u = this.hoverUnit;
-    if (!u || !u.alive) { box.classList.add('hidden'); return; }
+    if (!u) { box.classList.add('hidden'); return; }
 
     const det = this.world.detection;
-    const contact = u.side === this.world.playerSide
-      ? null : det && det.contactsFor(this.world.playerSide).get(u.id);
-    if (u.side !== this.world.playerSide && !contact) { box.classList.add('hidden'); return; }
+    const mine = u.side === this.world.playerSide;
+    const contact = mine ? null : det && det.contactsFor(this.world.playerSide).get(u.id);
+    // **記憶しているだけの敵は、既に壊れていても情報を出す**（§71.7）。
+    // `!u.alive` で閉じていたので、地図に印が出ているのに**なぞると欄が消え**、
+    // それだけで「壊れている」と分かってしまっていた（`_unitAtScreen` 側は
+    // 同じ理由で既に直してある）。生死の判定は探知に一本化する。
+    if (mine ? !u.alive : !contact) { box.classList.add('hidden'); return; }
 
     // 識別段階に応じて出せる情報を変える
     const detailed = !contact || (contact.level >= 2);
@@ -210,10 +214,22 @@ export class CommandController {
   _clickSelect(px, py, additive) {
     const u = this._unitAtScreen(px, py, this.world.playerSide);
     // 指示できるのは航空機だけ（飛行場はロースター/パネルから操作する）
-    if (u && u.kind !== 'aircraft') { if (!additive) this.select([]); return; }
-    if (!u) { if (!additive) this.select([]); return; }
-    if (additive) this.toggle(u);
-    else this.select([u]);
+    if (u && u.kind === 'aircraft') {
+      if (additive) this.toggle(u);
+      else this.select([u]);
+      return;
+    }
+    // **敵や地上のものを押しただけなら、選択を落とさない**（§78）。
+    //
+    // ここは自軍機しか探していないので、**敵を押した**のと
+    // **空を押した**のを区別せずに選択を空にしていた。すると
+    //
+    //   1. 記憶しているSAMの印を左クリックして確かめる → 選択が全部外れる
+    //   2. そのまま右クリックで指示 → `_issueOrderAt` が無言で return
+    //
+    // という手順で「**右クリックしても反応がない**」が起きる。
+    // 見るために押しただけで、指揮していた編隊を手放す理由は無い。
+    if (!additive && !this._unitAtScreen(px, py, null)) this.select([]);
   }
 
   _boxSelect(a, b, additive) {
@@ -255,7 +271,13 @@ export class CommandController {
   // ------------------------------------------------------------ 指示
 
   _issueOrderAt(px, py, append) {
-    if (!this.selection.length) return;
+    // **黙って何もしない、をやめる**（§78）。
+    // 指示は選択が要るのに、選ばずに押したときは無反応だった ——
+    // 押した側からは「このやり方では指示できない」と区別が付かない。
+    if (!this.selection.length) {
+      this.world.log?.('機体を選んでから指示してください');
+      return;
+    }
 
     const target = this._unitAtScreen(px, py, null);
     if (target && target.side !== this.world.playerSide) {

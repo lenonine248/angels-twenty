@@ -289,6 +289,14 @@ export function createGroundView(gu) {
       }
       break;
     }
+    // 補給施設（§68.3）。**建物なので砲塔も皿も無い。**
+    // 一目で「攻撃してこない目標」と分かる形にする。
+    case 'depot': {
+      shape.add(boxMesh(0.62, 0.26, 0.42, c, 0, 0, 0));            // 倉庫本体
+      shape.add(boxMesh(0.66, 0.05, 0.46, dark, 0, 0.26, 0));      // 屋根
+      shape.add(boxMesh(0.20, 0.18, 0.20, dark, -0.34, 0, 0.26));  // 付属棟
+      break;
+    }
     case 'aaa': {
       shape.add(boxMesh(0.44, 0.16, 0.44, dark));
       const barrel = boxMesh(0.07, 0.07, 0.42, c, 0, 0.20, -0.10);
@@ -336,6 +344,15 @@ export function createGroundView(gu) {
       beacon.renderOrder = 6;
       beacon.name = 'beacon';
       shape.add(beacon);
+      break;
+    }
+    // 空母（§69.3）。甲板と艦橋だけ。滑走路の向きはローカル -Z（機体の機首と同じ）
+    case 'carrier': {
+      shape.add(boxMesh(0.30, 0.055, 1.0, dark, 0, 0.02, 0));           // 船体
+      shape.add(boxMesh(0.34, 0.015, 1.05, 0x3a3f42, 0, 0.075, 0,
+        getPavementMaterial(0x3a3f42)));                                  // 飛行甲板
+      shape.add(boxMesh(0.09, 0.14, 0.24, c, 0.15, 0.09, 0.16));        // 艦橋
+      shape.add(boxMesh(0.035, 0.10, 0.035, dark, 0.15, 0.23, 0.16));   // マスト
       break;
     }
     case 'ship': {

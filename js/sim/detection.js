@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { angleDiff, headingOf, DEG } from './unit.js';
 import { clamp } from '../core/rng.js';
+import { notchQuality, chaffScreen } from './missile.js';
 
 /** 全走査の間隔(秒)。毎フレーム回すには重いので5Hzに落とす。 */
 const SCAN_INTERVAL = 0.2;
@@ -87,6 +88,22 @@ const RWR_RANGE = 60000;
  * 目視(8km)まで詰めれば 0 になる。
  */
 export const RWR_POS_ERROR = 1000;
+
+/**
+ * **妨害を受けている航跡の角度誤差**（§70.6）。
+ *
+ * プレイヤーの案の2つ —— 「一時的に検知できなくする」と
+ * 「RWR同様に位置の精度を落とす」—— のうち**後者を採る**。
+ * 機影が消える方式にすると司令官AIとパイロットAIが目標を見失い、
+ * §53・§54 が扱った問題を意図的に大量発生させることになる。
+ *
+ * **レーダーの角度分解能は一定**なので、誤差はメートルではなく角度で置く。
+ * 同じ妨害でも**遠いほど大きくずれる** —— §70.4.3 で決めた形と同じ理屈。
+ *
+ * 1.5度なら 20km で 524m、10km で 262m。
+ * 妨害が解ければ次の走査で元に戻る（**一時的**）。
+ */
+const JAM_ANGULAR_ERR = 1.5 * (Math.PI / 180);
 /** ルックダウン減衰: 目標が自機より低く、地表からこの高度以下なら探知距離が半減 */
 const LOOKDOWN_AGL = 1000;
 const LOOKDOWN_FACTOR = 0.5;
@@ -125,6 +142,12 @@ export class Contact {
      */
     this.approx = false;
     /**
+     * その誤差が**妨害由来**か（§70.6）。逆探知の誤差と区別して表示するため。
+     * 「電波を拾っているだけ」と「掴んでいるのに妨害されている」は
+     * プレイヤーにとって意味がまるで違う。
+     */
+    this.jammed = false;
+    /**
      * いま持っている座標の誤差(m)。0 なら正確。
      *
      * **いちばん良かった測定値を残す**（§25.3）。一度詰めて掴んだ精度は、
@@ -154,7 +177,7 @@ export class Contact {
     return !this.detected && this.attacked && this.unit.static;
   }
 
-  observe(unit, time, level, exact, dist = 0) {
+  observe(unit, time, level, exact, dist = 0, jamErr = 0) {
     if (!this.detected) this.trackStart = time;      // 追尾開始
     this.detected = true;
     this.ever = true;
@@ -164,14 +187,25 @@ export class Contact {
     if (time - this.trackStart >= IDENT_TRACK_TIME) lv = Math.max(lv, LEVEL.IDENTIFIED);
     this.level = Math.max(this.level, lv);
 
-    this.exactNow = exact;
+    this.exactNow = exact && jamErr <= 0;
     if (exact) {
-      this.pos.copy(unit.pos);
-      this.err = 0;
+      // **妨害されていれば、掴んでいても位置がぼける**（§70.6）。
+      // ずれの向きは機体IDから決まる固定値なので、印がふらつかない
+      // （逆探知の誤差と同じ扱い・§25）。妨害が解けば次の走査で元に戻る。
+      if (jamErr > 0) {
+        if (!this._offset) this._offset = deterministicOffset(unit.id, 1);
+        this._place(unit, jamErr);
+        this.jammed = true;
+      } else {
+        this.pos.copy(unit.pos);
+        this.err = 0;
+        this.jammed = false;
+      }
     } else {
       // 逆探知だけの間は位置がぶれる。ズレの向きは機体IDから決まる固定値で、
       // 大きさだけが距離で縮む。向きまで揺らすと印がふらついて読めない。
       if (!this._offset) this._offset = deterministicOffset(unit.id, 1);
+      this.jammed = false;
       const mag = RWR_POS_ERROR * clamp(dist / RWR_RANGE, 0, 1);
       if (!unit.static) {
         // 動く目標は覚えても古くなる。そのつど置き換える
@@ -296,26 +330,40 @@ export class DetectionSystem {
         const trackable = target.alive || (target.static && map.has(target.id));
         if (!trackable) continue;
 
-        let best = -1, exact = false, near = Infinity;
+        let best = -1, exact = false, near = Infinity, via = null, nearSensor = null;
         for (const s of sensors) {
           const r = evaluate(s, target, terrain, this.stats);
           if (r.level < 0) continue;
           // 誤差は距離で決まるので、**捉えているうちで最も近い**センサーを使う
           const d = s.pos.distanceTo(target.pos);
-          if (d < near) near = d;
-          if (r.level > best) { best = r.level; exact = r.exact; }
-          else if (r.level === best && r.exact) exact = true;
+          if (d < near) { near = d; nearSensor = s; }
+          if (r.level > best) { best = r.level; exact = r.exact; via = r.via; }
+          else if (r.level === best && r.exact) { exact = true; if (r.via) via = r.via; }
           // DETAILED は目視でしか出ず、目視は必ず exact なのでここで打ち切ってよい
           if (best === LEVEL.DETAILED) break;
+        }
+
+        // **妨害されている航跡は位置がぼける**（§70.6）。
+        //
+        // 効くのはレーダーで捉えているときだけ。目視なら電波を使っていないので
+        // ビーム機動もチャフも関係ない。
+        // 強さの式はミサイルの誘導とまったく同じものを使う（`sim/missile.js`）——
+        // 「レーダーが目標を分離できているか」という同じ現象なので、
+        // 2か所に置くと必ずずれる。
+        let jamErr = 0;
+        if (best >= 0 && exact && via === 'radar' && nearSensor && target.alive) {
+          const q = Math.max(notchQuality(nearSensor, target, this.world),
+            chaffScreen(nearSensor, target, this.world));
+          if (q > 0) jamErr = near * JAM_ANGULAR_ERR * q;
         }
 
         const c = map.get(target.id);
         if (best >= 0) {
           if (!target.alive) { map.delete(target.id); continue; }   // 破壊を確認した
-          if (c) c.observe(target, this.time, best, exact, near);
+          if (c) c.observe(target, this.time, best, exact, near, jamErr);
           else {
             const nc = new Contact(target, this.time);
-            nc.observe(target, this.time, best, exact, near);
+            nc.observe(target, this.time, best, exact, near, jamErr);
             map.set(target.id, nc);
           }
         } else if (c) {
@@ -348,22 +396,24 @@ export class DetectionSystem {
 
 /** センサー1基が目標をどこまで見えているか。level=-1 は未探知。 */
 function evaluate(sensor, target, terrain, stats) {
-  let best = -1, exact = false;
+  let best = -1, exact = false, via = null;
 
   const visual = byVisual(sensor, target, terrain, stats);
-  if (visual > best) { best = visual; exact = true; }
+  if (visual > best) { best = visual; exact = true; via = 'visual'; }
 
   if (best < LEVEL.DETAILED) {
     const radar = byRadar(sensor, target, terrain, stats);
-    if (radar > best) { best = radar; exact = true; }
+    if (radar > best) { best = radar; exact = true; via = 'radar'; }
   }
 
   if (best < LEVEL.IDENTIFIED) {
     const rwr = byRwr(sensor, target, terrain, stats);
-    if (rwr > best) { best = rwr; exact = false; }
+    if (rwr > best) { best = rwr; exact = false; via = 'rwr'; }
   }
 
-  return { level: best, exact };
+  // **何で捉えたかを返す**（§70.6）。妨害が効くのはレーダーだけ ——
+  // 目視は電波を使わないので、ビーム機動もチャフも関係ない。
+  return { level: best, exact, via };
 }
 
 /** 目視: 全方位・短距離・地形遮蔽あり。見えれば機種まで分かる。 */
@@ -404,6 +454,16 @@ function byRadar(sensor, target, terrain, stats) {
       range *= GROUND_RADAR_FLOOR + (1 - GROUND_RADAR_FLOOR) * f;
     }
   }
+
+  // **反射断面積**（§68.1）。小さいほど遠くから見つからない。
+  //
+  // 機体レーダー・地上レーダー・早期警戒機のどれにも同じように掛かる ——
+  // ここ1か所で済むのは、探知距離の計算が全部この関数に集まっているから。
+  // **目視には掛からない**（`byVisual`）。近づけば見える、は変わらない。
+  // **逆探知にも掛からない**（`byRwr`）—— 電波を出せば、小さくても見つかる。
+  const rcs = target.spec && target.spec.rcs;
+  if (rcs != null) range *= rcs;
+
   if (range <= 0) return -1;
 
   const dx = target.pos.x - sensor.pos.x;

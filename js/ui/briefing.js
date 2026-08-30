@@ -11,13 +11,14 @@ import { TUTORIALS, getTutorial } from '../data/tutorials.js';
 import { VERSION, VERSION_DATE } from '../core/version.js';
 import { showChangelog } from './changelog.js';
 import { ratingTargets } from '../data/rating.js';
-import { WEAPONS, loadoutSlots, loadoutCost } from '../data/weapons.js';
+import { loadoutCost, loadoutFits } from '../data/weapons.js';
 import { getType } from '../data/aircraft.js';
 import { Terrain, CELLS, MAP_SIZE } from '../world/terrain.js';
 import * as tuning from './tuning.js';
 import { isDebug } from '../core/debug.js';
+import * as custom from '../data/custom.js';
 
-const LOADABLE = ['AAM-S', 'AAM-M', 'AAM-A', 'AGM', 'ARM', 'BOMB', 'TANK'];
+import { loadoutRow, removeOne, pylonLabel, LOADOUT_HINT } from './loadout.js';
 
 export class ScreenManager {
   /**
@@ -90,6 +91,18 @@ export class ScreenManager {
         ready: false,
       },
     ];
+
+    // ステージエディタ（§66）。**デバッグモードのときだけ並べる**（§47.2 と同じ）。
+    // 作りかけの面が一般のプレイヤーの一覧に出ないようにする。
+    if (isDebug()) {
+      modes.push({
+        act: 'editor',
+        name: 'ステージエディタ',
+        sub: '地形・配置・目標を組んで試遊する',
+        state: `自作 ${custom.customStages().length} 件`,
+        ready: true,
+      });
+    }
 
     const cards = modes.map((m) => `
       <div class="mode-card${m.ready ? '' : ' locked'}"
@@ -296,21 +309,16 @@ export class ScreenManager {
     const roster = stage.friendly.aircraft.map((a, i) => {
       const spec = getType(a.type);
       const load = this.loadouts[i];
-      const slots = loadoutSlots(load);
-      const chips = load.length
-        ? load.map((id, k) => `<button class="chip load" data-del="${i}:${k}">${id}<i>×</i></button>`).join('')
-        : '<span class="chip empty">なし</span>';
-      const adds = LOADABLE.map((id) => {
-        const w = WEAPONS[id];
-        const room = slots + w.slots <= spec.hardpoints && (w.cost === 0 || w.cost <= left);
-        return `<button class="addw${room ? '' : ' disabled'}" data-add="${i}:${id}"
-          title="${w.name} / ${w.slots}スロット / コスト${w.cost}">+${id}</button>`;
-      }).join('');
+      const row = loadoutRow({
+        loadout: load, spec, points: left,
+        add: (id) => `data-add="${i}:${id}"`,
+        del: (id) => `data-del="${i}:${id}"`,
+      });
       return `<div class="bf-plane">
         <div class="bf-head"><b>${a.name}</b><span>${spec.name}</span>
-          <span class="bf-slots${slots > spec.hardpoints ? ' bad' : ''}">${slots}/${spec.hardpoints}スロット</span></div>
-        <div class="bf-load">${chips}</div>
-        <div class="bf-add">${adds}</div>
+          <span class="bf-slots${loadoutFits(load, spec) ? '' : ' bad'}">${pylonLabel(load, spec)}</span></div>
+        <div class="bf-load"><span class="ld-hint">${LOADOUT_HINT}</span></div>
+        <div class="bf-add">${row}</div>
       </div>`;
     }).join('');
 
@@ -368,7 +376,10 @@ export class ScreenManager {
 
         <div class="screen-foot">
           <button data-act="back" class="ghost">戻る</button>
-          ${isDebug() ? '<button data-act="tune" class="ghost">難易度調整</button>' : ''}
+          ${isDebug() ? (stage.custom
+            ? '<button data-act="backToEditor" data-id="' + stage.id + '" class="ghost">エディタで編集</button>'
+            : '<button data-act="tune" class="ghost">難易度調整</button>'
+              + '<button data-act="editCopy" class="ghost">複製して編集</button>') : ''}
           <button data-act="launch" class="go"${left < 0 ? ' disabled' : ''}>出撃</button>
         </div>
       </div>
@@ -378,6 +389,10 @@ export class ScreenManager {
   }
 
   showResult(stage, result, stats) {
+    // **ここで覚え直す。** エディタの試遊はブリーフィングを通らないので、
+    // `this.stage` が別のステージのまま残っている（§66.9）。
+    // 「もう一度」がそれを開いてしまう。
+    this.stage = stage;
     const clear = result === 'clear';
     // 検証用ステージ（§47.2）は STAGES に無い。indexOf が -1 を返すので、
     // そのまま +1 すると**先頭のステージが「次の任務」として出てしまう**。
@@ -422,6 +437,9 @@ export class ScreenManager {
         <div class="screen-foot">
           <button data-act="select" class="ghost">ステージモードへ</button>
           <button data-act="review" class="ghost">戦闘を振り返る</button>
+          ${isDebug() && stage.custom
+            ? `<button data-act="backToEditor" data-id="${stage.id}" class="ghost">エディタに戻る</button>`
+            : ''}
           ${isDebug() ? `<button data-act="rerun" class="ghost"
             title="同じ乱数の種で、まったく同じ状況をもう一度">同じ条件で</button>` : ''}
           <button data-act="retry" class="${clear && next ? 'ghost' : 'go'}">${clear ? 'もう一度' : '再挑戦'}</button>
@@ -453,9 +471,9 @@ export class ScreenManager {
       return;
     }
     const del = e.target.closest('[data-del]');
-    if (del) {
-      const [i, k] = del.dataset.del.split(':').map(Number);
-      this.loadouts[i].splice(k, 1);
+    if (del && !del.classList.contains('disabled')) {
+      const [i, id] = del.dataset.del.split(':');
+      this.loadouts[Number(i)] = removeOne(this.loadouts[Number(i)], id);
       this._rememberLoadouts();
       this._renderBriefing();
       return;
@@ -491,6 +509,27 @@ export class ScreenManager {
       case 'tuneCopy': {
         const out = document.getElementById('tnOut');
         if (out) { out.textContent = tuning.snippet(this.stage.id); out.classList.remove('hidden'); }
+        break;
+      }
+      case 'editor':
+        if (isDebug()) this.onEditor?.(null);
+        break;
+      // 試遊から作りかけへ戻る（§66.9）。
+      // **保管庫の側が最新** —— 試遊の直前に保存している。
+      case 'backToEditor': {
+        if (!isDebug()) break;
+        const c = custom.getCustom(act.dataset.id) || this.stage;
+        this.hide();
+        this.onEditor?.(c);
+        break;
+      }
+      // 既存ステージを下敷きにする（§66.2）。**複製してから編集する**ので、
+      // `stages.js` の定義には触らない。
+      case 'editCopy': {
+        if (!isDebug() || !this.stage) break;
+        const copy = custom.duplicate(this.stage);
+        custom.save(copy);
+        this.onEditor?.(copy);
         break;
       }
       case 'changelog': showChangelog(); break;

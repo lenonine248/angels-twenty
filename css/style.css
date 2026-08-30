@@ -394,11 +394,50 @@ button.chip.load:hover { background: rgba(255, 91, 68, 0.25); border-color: var(
 }
 .dt-add .addw:hover { background: rgba(111, 216, 232, 0.2); color: var(--text); }
 .dt-add .addw.disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* 搭載を組む欄（§70.3.3）。兵装ごとに「積む本体 ＋ 降ろす −」の対にする。
+   ブリーフィング・再装備・エディタ・調整パネルの4か所で同じものを使う。 */
+.ldw { display: inline-flex; margin: 0 3px 3px 0; vertical-align: top; }
+.ldw > button {
+  font-family: inherit; font-size: 10px; cursor: pointer;
+  border: 1px solid var(--panel-line);
+  background: rgba(111, 216, 232, 0.07);
+  color: var(--text-dim);
+}
+.ldw-add { padding: 2px 7px; border-right: none; }
+.ldw-del { padding: 2px 6px; }
+/* 積んでいるものは**色で**分ける（§71.3）。積んでいないものは候補として暗いまま。
+   明るさだけで差を付けると、候補が並ぶ中から「積んでいる物」を拾えない —— 
+   琥珀の地色・琥珀の文字・琥珀の枠で、色そのものを変える。 */
+.ldw.has > button {
+  color: var(--amber);
+  background: rgba(255, 182, 72, 0.22);
+  border-color: rgba(255, 182, 72, 0.7);
+}
+.ldw.has > .ldw-add { font-weight: 700; }
+/* 残数は読ませたい情報なので薄めない（§71.3） */
+.ldw-add i { font-style: normal; opacity: 0.95; margin-left: 4px; font-weight: 700; }
+.ldw > button:hover:not(.disabled) { background: rgba(111, 216, 232, 0.2); color: var(--text); }
+/* 積んでいるものは**触っても琥珀のまま**。シアンに戻ると、
+   なぞっている間だけ「積んでいない物」に見える */
+.ldw.has > .ldw-add:hover:not(.disabled) {
+  background: rgba(255, 182, 72, 0.34); color: var(--amber);
+}
+.ldw.has > .ldw-del:hover:not(.disabled) {
+  background: rgba(255, 91, 68, 0.25); border-color: var(--hostile); color: var(--text);
+}
+.ldw > button.disabled { opacity: 0.3; cursor: not-allowed; }
+.ld-hint { color: var(--text-dim); font-size: 10px; margin-left: 6px; }
+/* 複数機で設定が揃っていないとき（§76）。**光らせない**のが要点 */
+.svc-meta.mixed { color: var(--amber); margin-left: 4px; }
+.autow.mix { border-style: dashed; }
 /* 使用兵装の指定・自動使用トグル */
 button.chip.pick {
   font-family: inherit; cursor: pointer; font-size: 10px; padding: 2px 7px;
   background: rgba(111, 216, 232, 0.08); color: var(--text);
 }
+/* 残数の「×2」。`chip.load` と同じ出し方に揃える（§70.3） */
+button.chip.pick i { font-style: normal; opacity: 0.6; margin-left: 4px; }
 button.chip.pick:hover { background: rgba(111, 216, 232, 0.2); }
 button.chip.pick.picked {
   border-color: var(--amber); color: var(--amber); background: rgba(255, 182, 72, 0.2);
@@ -876,6 +915,25 @@ button.go.warn:hover + .dt-warn { display: block; }
 }
 #screens .addw.disabled { opacity: 0.28; cursor: not-allowed; }
 #screens .chip.load { font-size: 10px; padding: 2px 7px; letter-spacing: 0; }
+/* `#screens button`（12px・padding 8px 22px・字間 0.1em）に勝つ必要がある。
+   `.ldw > button` は クラス+要素 なので、id を持つ側に負ける（§70.3.3） */
+/* 積んでいないものは候補として暗いまま —— HUD 側の `.ldw > button` と同じ扱い。
+   `#screens button` の明るい既定に負けていたので、ここでも指定し直す（§71.3） */
+#screens .ldw > button { font-size: 10px; letter-spacing: 0; color: var(--text-dim); }
+#screens .ldw-add { padding: 2px 7px; }
+#screens .ldw-del { padding: 2px 6px; }
+#screens .ldw > button:hover { background: rgba(111, 216, 232, 0.2); }
+#screens .ldw.has > .ldw-add:hover { background: rgba(255, 182, 72, 0.34); color: var(--amber); }
+/* **色と枠まで書き直す**（§71.3）。`background` しか上書きしていなかったので、
+   `color` は詳細度で勝る `#screens button` の指定に負けて `--text-dim` のまま ——
+   ブリーフィングでだけ「積んでいる物が暗い」状態になっていた。 */
+#screens .ldw.has > button {
+  background: rgba(255, 182, 72, 0.22);
+  color: var(--amber);
+  border-color: rgba(255, 182, 72, 0.7);
+}
+#screens .ldw.has > .ldw-add { font-weight: 700; }
+#screens .ldw.has > .ldw-del:hover { background: rgba(255, 91, 68, 0.25); }
 
 /* 戦果 */
 .result { text-align: center; padding-top: 90px; }
@@ -1111,3 +1169,85 @@ button.go.warn:hover + .dt-warn { display: block; }
 }
 .sc-tuned { color: var(--amber); font-size: 10px; letter-spacing: 0.1em; }
 
+
+/* ===== ステージエディタ（§66。デバッグモードのときだけ開く） ===== */
+#editor {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #05090b;
+  overflow: auto;
+  color: var(--text);
+  font-size: 12px;
+}
+.ed-wrap { padding: 12px 16px 20px; max-width: 1180px; margin: 0 auto; }
+.ed-top {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--panel-line); padding-bottom: 10px;
+}
+.ed-brand { color: var(--amber); letter-spacing: 0.28em; font-size: 13px; }
+.ed-id { color: var(--text-dim); font-size: 11px; }
+.ed-spacer { flex: 1; }
+.ed-body { display: flex; gap: 14px; margin-top: 12px; align-items: flex-start; }
+.ed-left { flex: 0 0 auto; }
+#edMap {
+  display: block; border: 1px solid var(--panel-line); cursor: crosshair;
+  image-rendering: pixelated;
+}
+.ed-maphint { margin-top: 5px; color: var(--text-dim); font-size: 10px; }
+.ed-right { flex: 1; min-width: 0; }
+.ed-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.ed-props { margin-top: 10px; }
+.ed-tabs { display: flex; gap: 4px; margin-top: 14px; border-bottom: 1px solid var(--panel-line); }
+.ed-tabbody { margin-top: 10px; min-height: 90px; }
+.ed-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 7px; }
+.ed-row.col { display: block; }
+.ed-row.col textarea { width: 100%; }
+.ed-selname { color: var(--amber); font-size: 12px; letter-spacing: 0.1em; }
+.ed-note, .ed-empty, .ed-empty2 { color: var(--text-dim); font-size: 10px; }
+/* 自軍機の発進方法（§71.5）。座標を持つ／持たないの差に名前を付ける欄 */
+.ed-spawn { color: var(--cyan); font-size: 11px; margin-right: 6px; }
+.ed-row .ed-warn { font-size: 10px; }
+#editor label { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); font-size: 10px; }
+#editor input, #editor select, #editor textarea {
+  background: rgba(111, 216, 232, 0.07);
+  border: 1px solid var(--panel-line);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 5px;
+}
+#editor input[type="number"] { width: 72px; }
+#editor input[type="checkbox"] { width: auto; }
+#editor button {
+  background: rgba(111, 216, 232, 0.08);
+  border: 1px solid var(--panel-line);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+#editor button:hover { background: rgba(111, 216, 232, 0.2); color: var(--text); }
+#editor button.active { border-color: var(--amber); color: var(--amber); background: rgba(255, 182, 72, 0.16); }
+#editor button.go { border-color: var(--amber); color: var(--amber); background: rgba(255, 182, 72, 0.16); }
+#editor button.ghost { opacity: 0.75; }
+#editor button.ed-del { border-color: rgba(255, 91, 68, 0.6); color: #ff8a78; }
+.ed-load { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.ed-load > span { color: var(--text-dim); font-size: 10px; margin-right: 4px; }
+.ed-load.adds { opacity: 0.8; }
+.ed-chip { font-size: 10px !important; padding: 2px 6px !important; }
+.ed-chip i { font-style: normal; opacity: 0.6; margin-left: 3px; }
+.ed-listrow {
+  display: flex; align-items: center; gap: 10px; padding: 5px 0;
+  border-bottom: 1px solid rgba(111, 216, 232, 0.12);
+}
+.ed-listrow.cur { background: rgba(255, 182, 72, 0.07); }
+.ed-listrow b { color: var(--text); font-weight: normal; min-width: 12em; }
+.ed-listrow span { color: var(--text-dim); flex: 1; }
+.ed-listrow i { color: var(--text-dim); font-style: normal; font-size: 10px; }
+.ed-msg { margin-top: 12px; font-size: 11px; line-height: 1.9; }
+.ed-ok { color: var(--cyan); }
+.ed-warn { color: var(--amber); }
+.ed-bad { color: #ff6a54; }
+#edOut { width: 100%; margin-top: 8px; font-size: 10px; }

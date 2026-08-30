@@ -7,9 +7,10 @@
 
 import * as THREE from 'three';
 import { WEAPONS } from '../data/weapons.js';
-import { Missile, Decoy, decoyMatches, NOTCH_TOLERANCE } from './missile.js';
+import { Missile, Decoy, decoyMatches, NOTCH_TOLERANCE, irBrightness } from './missile.js';
 import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.js';
 import { headingOf, angleDiff, DEG } from './unit.js';
+import { bombAimPoint, bombImpactPoint } from './acm.js';
 import { clamp } from '../core/rng.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 
@@ -58,11 +59,8 @@ const MAX_AAM_PER_TARGET = 1;
 const FIRE_COOLDOWN = 3.5;
 const BOMB_COOLDOWN = 0.5;
 
-/**
- * 無誘導爆弾の偏差の取り方（§32.5）。1 で落下時間ぶん完全に先を狙う。
- * 0 にすると「いまの位置を狙う」＝ §32.5 以前の挙動に戻る（A/B 用）。
- */
-const BOMB_LEAD = 1;
+// 偏差の掛け率 `BOMB_LEAD` は `sim/acm.js` へ移した（§71.6）。
+// 進入の狙点と投下の判定が**同じ点**を使う必要があるため、式ごと1か所にまとめてある。
 
 /**
  * ミサイル警報が出る距離。レーダー誘導は逆探知で早く分かるが、赤外線は目視まで気づけない。
@@ -107,6 +105,36 @@ const DECOY_SHOTS = 1;
 const TOF_SPEED_FRAC = 0.8;
 
 /**
+ * **発射時の機首ずれを直すのに使ってよい旋回能力の割合**（§75）。
+ *
+ * 弾は母機の機首方向へ出る。横を向いたまま撃てば、まずその角度を曲がって
+ * 消さなければならず、そのぶんの時間とエネルギーが誘導に回らない。
+ * **取り返せるかどうかは「曲がる角度」と「飛翔時間」の兼ね合い**で決まる。
+ *
+ *     許容ずれ ＝ 旋回率(deg/s) × 飛翔時間(s) × この割合
+ *
+ * `[実測]` 対抗手段なし・3兵装で機首ずれ×距離を掃引し、
+ * **命中がゼロになる点**の `ずれ / (旋回率 × 飛翔時間)` を取ると 0.12〜0.19。
+ * いちばん厳しいセル（AAM-M 12km/45°）に合わせて **0.11**。
+ *
+ * | | 旋回 | 許容の実測 | この式の予測 |
+ * |---|---|---|---|
+ * | AAM-M 5km | 28°/s | 15°は0.33・30°は0 | 17.5° |
+ * | AAM-M 12km | 28°/s | 30°は1.00・45°は0 | 41.9° |
+ * | AAM-S 2km | 55°/s | 15°は0.33・30°は0 | 17.8° |
+ * | AAM-S 6km | 55°/s | **45°でも1.00** | 53.0° |
+ * | AAM-A 8km | 34°/s | 30°は0.67・45°は0 | 34.0° |
+ *
+ * **兵装ごとの係数ではなく、1本の物理で全セルが説明できる。**
+ *
+ * > 最初 0.085 で入れた —— 「45°がまだ通る距離」に**等号で**合わせた値。
+ * > それは分布の**縁**であって切り所ではなく、
+ * > **AAM-S の 6km/45°（実測 1.00）まで拒否**していた。
+ * > 切るなら「当たらなくなる点」で切る。
+ */
+const LAUNCH_TURN_BUDGET = 0.11;
+
+/**
  * 素の当たりやすさ（§38.3）。ここから各項が削っていく。
  * 実測の平らな帯（AAM-M の 8〜16km）が 0.30〜0.40 になるように置いた。
  */
@@ -132,18 +160,25 @@ const NEAR_FULL = 4.6;
  * 実測で 14〜18km は 0.02 ではなく 0.4 前後当たる。
  *
  * 0.62 までは満額、0.85 で 0。発射上限（実効射程×0.85）と揃えてある。
+ *
+ * **ここを 0.80 / 0.74 に締める試みは差し戻した**（§70.4.7）。
+ * 較正そのものは良くなる（予測0.35／実測0.32）が、
+ * **CLEAN SWEEP が 0/18 になる。** 詳細は SPEC §70.4.7。
  */
 const KIN_START = 0.62;
-const KIN_END = 0.85;
+const KIN_END = 0.74;
 
 /**
- * **レーダー誘導が欺瞞をすり抜ける見込み**（§38.3）。
+ * **レーダー誘導が長い飛翔を生き延びる見込み**（§38.3）。
  *
- * §35.2 以降、チャフは**引き付けない**。効くのはビーム欺瞞（`_deceived`）と
- * チャフの壁（`_screened`）で、どちらも**飛翔時間が長いほど機会が増える**。
- * 実測でも、チャフ遮蔽は 12km までは0件、20km では外れの41%を占めた。
+ * **名前の由来だった前提はもう無い**（§70.4.7）。元は
+ * 「チャフとビーム欺瞞は飛翔時間が長いほど抽選の機会が増える」だったが、
+ * §70.4.1 で抽選そのものを無くした（実測: ビーム欺瞞0件・チャフ遮蔽0件／493発）。
  *
- * **デコイの項（引き付け）はレーダー弾には掛けない。** それは赤外線だけの話。
+ * **それでも撤去できなかった。** 外したら AI が遠射に歯止めを失い、
+ * 20〜25km に162発を捨てて **CLEAN SWEEP と ESCORT が 0/18** になった。
+ * この項は名前と違って**距離の歯止めとして働いていた**。
+ * 名前を直すには、同じ強さの歯止めを別の形で用意してからにする。
  */
 const DECEPT_SEC = 45;
 const DECEPT_FLOOR = 0.30;
@@ -154,6 +189,11 @@ const DECEPT_FLOOR = 0.30;
  * 旧式は飛翔時間の関数だった（`1 − tof/20`）が、**実測では距離を通してほぼ一定**
  * — 照射切れ率は 8km で26%、20km で28%。切れる原因は時間ではなく**機動**で、
  * 自分が向きを変えると目標がロックの扇から滑り出る。
+ *
+ * **0.77 → 0.95**（§70.4.7）。side で割り直したら
+ * **撃たれていない側は 288発中0件**、**撃たれている側は 90発中72件**だった。
+ * 「距離を通してほぼ一定」ではなく、**撃たれているかどうかで全部決まる。**
+ * 一定ぶんはここではなく `SARH_HOLD_UNDER_FIRE` が受け持つ。
  */
 const SARH_HOLD = 0.77;
 /**
@@ -170,6 +210,11 @@ const HOLD_FAN_FLOOR = 0.40;
  * 実測: 撃たれている状態で撃った AAM-M は **0/12 命中**。
  * 撃たれていなければ同じ距離で 0.44。回避に入れば扇から出るので当然だが、
  * 式に入っていなかったので AI は「回避しながら中距離弾を撃つ」を選べていた。
+ *
+ * **0.25 → 0.05**（§70.4.7）。測り直したら **90発中0命中**で、
+ * うち72発は自分の回避で照射を切っていた。0.25 は楽観が過ぎた。
+ * §70.4.6 でクランク機動を入れても直らない ——
+ * **17km の弾を20秒支え続けて生き残る方法が無い。**
  */
 const SARH_HOLD_UNDER_FIRE = 0.25;
 /**
@@ -277,9 +322,7 @@ const HEAT_RANGE_CEIL = 1.30;
  * フレアの競り合い（§35.3）。機体の明るさ = 基礎 + 後方 + 温度。
  * 明るいほどフレアは競り負ける。
  */
-const SIG_BASE = 0.25;
-const SIG_REAR = 0.45;
-const SIG_HEAT = 0.30;
+/** 明るさの式そのものは `sim/missile.js` の `irBrightness`（§70.5.1） */
 const FLARE_FLOOR = 0.12;
 
 const IR_ASPECT_START = 0.3;
@@ -314,13 +357,10 @@ export function irLockRange(weapon, aspect, heat = HEAT_TYPICAL) {
  * **推力を切れば隠れられるが、そのぶん速度で負ける** — そこが選択になる。
  */
 export function flareFactor(unit, missile) {
-  // 弾から見て機体の後ろ側にいる割合（1=真後ろ）
-  const dx = unit.pos.x - missile.pos.x, dz = unit.pos.z - missile.pos.z;
-  const rear = 1 - Math.abs(angleDiff(headingOf(dx, dz), unit.heading)) / Math.PI;
-  const heat = unit.heat ?? HEAT_TYPICAL;
-  // 機体自身の明るさ
-  const sig = clamp(SIG_BASE + SIG_REAR * rear + SIG_HEAT * heat, 0, 1);
-  return clamp(1 - sig, FLARE_FLOOR, 1);
+  // **明るさの式は `sim/missile.js` に1つだけ置く**（§70.5.1）。
+  // シーカーの狙点を決めるのも、ここで見積もるのも同じ明るさなので、
+  // 2か所に書くと必ずずれる。
+  return clamp(1 - irBrightness(unit, missile.pos), FLARE_FLOOR, 1);
 }
 
 /** 撃つ側から見た目標のアスペクト。0=正面から / 1=真後ろから */
@@ -481,12 +521,13 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
       const per = (1 - (weapon.decoyResist ?? 0.5)) * decoyFactor(dist) * chanceToUse
         * DECOY_GEOM_TYPICAL;
       p *= Math.pow(1 - per, DECOY_SHOTS);
-    } else {
-      // **レーダー弾はチャフに引き付けられない**（§35.2）。
-      // 効くのはビーム欺瞞とチャフの壁で、どちらも**飛翔時間が長いほど機会が増える**。
-      // 実測: チャフ遮蔽は 12km まで0件、20km では外れの41%。
-      p *= clamp(1 - tof / DECEPT_SEC, DECEPT_FLOOR, 1);
     }
+    // **「欺瞞をすり抜ける見込み」の項は撤去した**（§70.12）。
+    //
+    // 前提（抽選）は §70.4.1 で消えている。距離の歯止めは `KIN_END` を
+    // 0.85 → 0.74 に締めて引き受ける —— **名前と仕事を一致させる。**
+    // 撤去だけして歯止めを足さないと、AI が 20km 超へ撃ち捨てて全滅する
+    // （§70.4.7 の #2 で実測）。**必ず対で動かす。**
 
     // **セミアクティブは、着弾まで照射を保てるかを見る**（§38.2）。
     //
@@ -692,7 +733,20 @@ export class CombatSystem {
 
     for (let i = 0; i < tasks.length; i++) {
       const t = tasks[i];
-      if (!t.target || !t.target.alive || !shooter.loadout.includes(t.weapon)) {
+      // **破壊済みでも「記憶している静止目標」には撃てる**（§71.7）。
+      //
+      // `!t.target.alive` だけで捨てていたので、**兵装を選んでクリックする経路
+      // だけが黙って無効**になっていた。指示は出せたように見えて何も起きない。
+      // しかも兵装未指定の攻撃指示のほうは通る（`sim/aircraft.js` の 'attack' が
+      // 静止目標なら見に行く）ので、同じ相手に同じ操作をして片方だけ効かない。
+      //
+      // 壊れていることをプレイヤーは知らない —— それが §3 の「攻撃したが
+      // 着弾を見ていない」状態の中身で、**無駄弾を撃つ余地はその代償**。
+      // 弾は `_updateGuidance` が記憶座標へ運ぶので、着弾までは成立する。
+      const gone = t.target && !t.target.alive
+        && !(t.target.static
+          && this.world.detection?.contactsFor(shooter.side).has(t.target.id));
+      if (!t.target || gone || !shooter.loadout.includes(t.weapon)) {
         tasks.splice(i, 1); i--; continue;
       }
       const w = WEAPONS[t.weapon];
@@ -823,43 +877,33 @@ export class CombatSystem {
       // **狙うのは「信じている位置」**（§25.4）。誘導しないので、
       // 投下点は掴んでいる座標から計算するほかない。逆探知だけで掴んでいる
       // 目標なら、そのぶんずれたところへ落ちる。
+      //
+      // **動く目標には落下時間ぶん先を狙う**（§32.5）。4000m から 200m/s で
+      // 落とすと落下は約28秒。時速50kmの車両でも400m進むので、
+      // いまの位置を狙うと必ず手前に落ちる。
       const aim = this.world.believedPosOf(shooter.side, target) || target.pos;
-      const h = shooter.pos.y - aim.y;
-      if (h < 60 || h > w.dropAltMax) return false;
-      // 母機の上下速度を含めた落下時間 h = -vy*t + g*t^2/2 を解く
-      const pitch = shooter.pitch || 0;
-      const vy = shooter.speed * Math.sin(pitch);
-      const vh = shooter.speed * Math.cos(pitch);
-      const fallTime = (vy + Math.sqrt(vy * vy + 2 * 9.8 * h)) / 9.8;
-      const throwRange = vh * fallTime;               // 投下点から着弾点までの水平距離
+      const sol = bombAimPoint(shooter, target, aim);
+      if (sol.h < 60 || sol.h > w.dropAltMax) return false;
 
-      // **動く目標には落下時間ぶん先を狙う**（§32.5）。
+      // **落ちる場所そのもので判定する**（§71.6）。
       //
-      // 落下時間は高度だけで決まり、水平距離には依らないので一度で解ける。
-      // 4000m から 200m/s で落とすと落下は約28秒。時速50kmの車両でも
-      // 400m 進むので、いまの位置を狙うと**必ず手前に落ちる**。
+      // 以前は「狙点への方位が機首±16°」＋「狙点までの距離が投射距離±130m」
+      // の2つで見ていた。だが爆弾は**機首方向へ**投げ出されるので、
+      // 偏差が針路の横へ出る真横からの進入では、ずらした点と現在位置が
+      // どちらも同じ窓に収まってしまう（5.6km 先の 400m ＝ わずか4°）。
+      // **偏差を計算しておきながら、判定がそれを見ていなかった。**
       //
-      // これは高度を上げるほど大きくなる**系統誤差**で、
-      // プレイヤーには「対空砲の射程外から落とすと当たらない」としか見えない。
-      // 手前へずれると分かっていても手の打ちようがない ─ 学習できない罰なので取り除く。
-      // 散布界（`bombDispersion`・高度に比例）はそのまま残すので、
-      // **高く入るほど散る**という高度の駆け引きは変わらない。
-      let ax = aim.x, az = aim.z;
-      if (target.speed > 0 && target.heading != null) {
-        const lead = target.speed * fallTime * BOMB_LEAD;
-        ax += Math.sin(target.heading) * lead;
-        az -= Math.cos(target.heading) * lead;
-      }
-      const bdx = ax - shooter.pos.x, bdz = az - shooter.pos.z;
-      const bflat = Math.hypot(bdx, bdz);
-      if (Math.abs(angleDiff(headingOf(bdx, bdz), shooter.heading)) > 16 * DEG) return false;
-      // 爆風半径と同程度の窓で投下する。狭すぎると投下機会を逃し続ける。
-      //
+      // 窓の広さは爆風半径のまま。狭すぎると投下機会を逃し続ける。
       // **「解を跨いだ瞬間に放す」に変えてみたが、測ったら悪化した**
       // （高度3000mで撃破 4/4 → 0/4）。窓に入っている間ずっと投下条件が成立し、
       // 詰めながら1本ずつ落とすぶんが軒並み late になるため。
-      // 窓の中心で放つ形（いまの式）のほうが、結果として散らばりが小さい。
-      return Math.abs(bflat - throwRange) < 130;
+      //
+      // 実際に放たれるのは**窓に入った瞬間＝奥の縁**なので、1本目は爆風半径ぶん
+      // 長めに落ちる（実測 125〜130m）。以前ここには「窓の中心で放つ」と
+      // 書いてあったが、式はそうなっていない —— 0.5秒間隔で続く2本目以降が
+      // 95m ずつ手前へ寄るので、**一連投下として目標を挟む**形になっている。
+      const hit = bombImpactPoint(shooter, sol.throwRange);
+      return Math.hypot(sol.x - hit.x, sol.z - hit.z) < w.blastRadius;
     }
 
     // 実効射程は高度で変わる。撃ち下ろしは終末が濃い空気になるので、
@@ -871,6 +915,21 @@ export class CombatSystem {
     const minR = MIN_RANGE[w.id] ?? MIN_RANGE.default;
     const effRange = effectiveMissileRange(w, (shooter.pos.y + target.pos.y) * 0.5);
     if (dist < minR || dist > effRange * 0.85) return false;
+
+    // **曲がりきれない角度からは撃たない**（§75）。
+    //
+    // これが無いと、包絡線に入った瞬間に**目標を向く前に発射**する。
+    // 誘導方式ごとの扇（下の switch）はシーカーとレーダーの都合で、
+    // 弾が曲がりきれるかとは別の話 —— 実測で AAM-M は
+    // **45°ではどの距離でも命中ゼロ**なのに、ロックの扇は 40°まで許していた。
+    //
+    // 空対空だけに掛ける。対地弾は相手が回避しないので、
+    // 同じ物理でも「外す」の意味が違う（測っていない・§42〜§44 の教訓）。
+    if (w.kind === 'aam') {
+      const tof = dist / Math.max(1, w.speed * TOF_SPEED_FRAC);
+      const budget = w.turnRate * DEG * tof * LAUNCH_TURN_BUDGET;
+      if (offBoresight(shooter, dx, dz, dy) > budget) return false;
+    }
 
     switch (w.guidance) {
       case 'ir': {
@@ -943,6 +1002,14 @@ export class CombatSystem {
     // 「攻撃したが着弾を見ていない」判定のため記録しておく
     this.world.detection?.markAttacked(shooter.side, target);
     this.world.onFire?.(shooter, target, weapon, m);
+
+    // **撃ち切ったら指定を外す**（§70.3）。プレイヤーの機体だけが対象になる
+    // （敵機は `selectedWeapon` を持たない）。
+    //
+    // `onFire` の**後**に出す。先に出すと記録に
+    // 「撃ち切り」→「発射」の順で並び、原因が結果より前に来る。
+    const spent = shooter.clearSpentSelection?.();
+    if (spent) this.world.log?.(`${shooter.name} ${spent} 撃ち切り — 指定を解除`, shooter);
     return m;
   }
 
@@ -1057,29 +1124,20 @@ export class CombatSystem {
     this.world.decoys.push(decoy);
     this.world.onDecoy?.(unit, kind);
 
-    // 飛来中のミサイルを引き付ける。
+    // **ここでは何も抽選しない**（§70.5.1）。
     //
-    // **これはフレアだけの仕組み**（§35.2）。赤外線シーカーは
-    // 「より明るいもの」を追うので、囮に乗り換えるという形になる。
+    // 以前は、飛来中の赤外線弾ごとに「フレアへ乗り換えるか」を1回引いていた。
+    // いまはフレアを空に置くだけで、あとは `Missile._irTrack` が
+    // **視野の中の熱源を明るさで重み付けした点**を狙う ——
+    // フレアは吸い取るのではなく**狙点を引っ張る**。
     //
-    // チャフは引き付けない。**電波を通さない雲＝壁**であって、
-    // レーダーが追いかける偽の目標ではない。
-    // その働きは `Missile._deceived`（真横を向いた機体が紛れる背景）と
-    // `Missile._screened`（背を向けて逃げる機体と追う側の間に立つ壁）にある。
-    if (kind === 'flare') {
-      for (const m of this.world.missiles) {
-        if (!m.alive || m.target !== unit || m.lost) continue;
-        if (!decoyMatches(m.guidance, kind)) continue;
-        const chance = (1 - m.weapon.decoyResist)
-          * decoyFactor(m.pos.distanceTo(unit.pos))
-          * flareFactor(unit, m)
-          * decoyRepeatFactor(m._decoyTries);
-        m._decoyTries++;
-        if (this.world.rng() < chance) {
-          m.seekTarget = decoy;
-          this.world.onDecoyed?.(m, decoy);
-        }
-      }
+    // チャフも同じく引き付けない。**電波を通さない雲＝壁**であって、
+    // レーダーが追いかける偽の目標ではない（§35.2）。その働きは
+    // `Missile._notchQuality`（真横を向いた機体が紛れる背景）と
+    // `Missile._screenQuality`（背を向けて逃げる機体と追う側の間に立つ壁）にある。
+    for (const m of this.world.missiles) {
+      if (!m.alive || m.target !== unit || m.lost) continue;
+      if (decoyMatches(m.guidance, kind)) m._decoyTries++;   // 命中期待度の見積り用
     }
     return true;
   }

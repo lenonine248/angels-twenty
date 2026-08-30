@@ -250,7 +250,11 @@ function labelFor(c) {
   // 誤差の出どころで言い方を変える。逆探知は「いま拾っている」、
   // 見失っているものは「推定」。同じ ± でも意味が違う（§54）。
   if (c.approx && Number.isFinite(c.err)) {
-    base += c.detected ? ` [逆探知 ±${Math.round(c.err)}m]` : ` [推定 ±${Math.round(c.err)}m]`;
+    // **妨害されている航跡は別の言い方にする**（§70.6）。
+    // 「電波を拾っているだけ（逆探知）」と「掴んでいるのに妨害されている」は、
+    // 同じ ± でもプレイヤーの打つ手がまるで違う。
+    const how = !c.detected ? '推定' : (c.jammed ? '妨害' : '逆探知');
+    base += ` [${how} ±${Math.round(c.err)}m]`;
   }
   if (c.unconfirmed) base += ' ?';
   else if (c.state === 'memory') base += ' [記憶]';

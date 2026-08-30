@@ -11,6 +11,7 @@
 export const WEAPONS = {
   'AAM-S': {
     id: 'AAM-S',
+    pylon: 'small',            // 細い空対空弾。小型パイロンに載る
     name: '短距離AAM',
     kind: 'aam',              // 空対空
     guidance: 'ir',           // 赤外線 → フレアに弱い
@@ -31,6 +32,7 @@ export const WEAPONS = {
 
   'AAM-M': {
     id: 'AAM-M',
+    pylon: 'small',            // 同上。**ここまでが小型**（プレイヤーの決め）
     name: '中距離AAM',
     kind: 'aam',
     guidance: 'sarh',         // セミアクティブ → 発射機がレーダー扇内に目標を保持し続ける必要
@@ -44,16 +46,37 @@ export const WEAPONS = {
     decoyResist: 0.35,
     damage: 200,
     rearmSeconds: 20,
+    // シーカーのジンバル限界（±deg・§70.4.2）。ここから外れると
+    // 反射波を拾えず、位置を測り直せなくなる。
+    // **ロックの扇が ±40度なので、それより広く取らないと
+    // 扇の縁で撃った弾が発射直後に死ぬ**（実測: 発射時のずれは中央値34.9度）
+    seekerGimbal: 60,
     desc: '命中まで目標をレーダー扇内に保持し続ける必要がある。その間こちらも逃げられない',
   },
 
   'AAM-A': {
     id: 'AAM-A',
+    pylon: 'medium',            // 大型のアクティブ弾
     name: 'アクティブAAM',
     kind: 'aam',
     guidance: 'arh',          // アクティブレーダー
     slots: 2,
-    cost: 6,
+    // **6 → 4**（§77）。6P は AAM-M 3発ぶんで、その値打ちが無かった。
+    //
+    // `[実測]` CLEAN SWEEP・同じ種18・**同じ6ポイント**で比べる:
+    //
+    // | 搭載 | コスト | クリア | 損失 | 1発の命中率 |
+    // |---|---|---|---|---|
+    // | AAM-M×2 + AAM-S×2 | 4P | 17/18 | 0.6 | 0.394 |
+    // | **AAM-A×1 + AAM-S×2** | **6P** | **16/18** | **1.3** | **0.443** |
+    // | AAM-M×3 + AAM-S×1 | 6P | **18/18** | **0.1** | 0.315 |
+    //
+    // **1発あたりは AAM-A が上なのに、手数が勝つ。** しかも 6P では
+    // 現行の 4P 構成にすら負けていた —— 選ぶ理由が無い値段だった。
+    //
+    // 4P にすると AAM-M×2 と同値で並ぶ（16/18 対 17/18）。
+    // **中型パイロンを1本使う**ぶんは残るので、対地兵装との取り合いは続く。
+    cost: 4,
     range: 20000,
     speed: 1100,
     turnRate: 34,             // 表示・見積り用の目安
@@ -77,6 +100,7 @@ export const WEAPONS = {
 
   'AGM': {
     id: 'AGM',
+    pylon: 'medium',            // 対地。中型が要る
     name: '空対地ミサイル',
     kind: 'agm',
     guidance: 'command',
@@ -114,6 +138,7 @@ export const WEAPONS = {
 
   'ARM': {
     id: 'ARM',
+    pylon: 'medium',            // 同上
     name: '対レーダーミサイル',
     kind: 'agm',
     guidance: 'arm',          // 稼働中のレーダーにのみ誘導。沈黙されると外れる
@@ -145,6 +170,7 @@ export const WEAPONS = {
 
   'BOMB': {
     id: 'BOMB',
+    pylon: 'medium',            // **`slots` は1だが太い。** 重さと太さは別（§70.7）
     name: '無誘導爆弾',
     kind: 'bomb',
     guidance: 'none',
@@ -163,6 +189,7 @@ export const WEAPONS = {
 
   'TANK': {
     id: 'TANK',
+    pylon: 'medium',            // 増槽。中型が要る
     name: '増槽',
     kind: 'support',
     guidance: 'none',
@@ -182,8 +209,41 @@ export const WEAPONS = {
  * 強力なブースターで一気に加速し、上昇するほど抵抗が減って有利になる。
  * → 高空にいる機体がSAM圏内に入ると非常に危険、という関係を作る。
  */
+/**
+ * 赤外線 SAM の弾（§68.2）。**AAM-S とは別に持つ。**
+ *
+ * 見た目は短距離AAM と同じ働きだが、**混ぜると調整できなくなる** ——
+ * AAM-S はプレイヤーが積む兵装で、こちらは地上の脅威。
+ * 片方を触ると必ずもう片方が動く関係にしたくない。
+ *
+ * 地上発射なので上へ撃つぶんだけ AAM-S より強めにしてある
+ * （射程6km・速度900・威力210）。**フレアは同じように効く。**
+ */
+WEAPONS['IR-SAM'] = {
+  id: 'IR-SAM',
+  pylon: 'medium',            // 地上発射なので機体には積まない（既定と揃えるだけ）
+  name: '赤外線SAM',
+  kind: 'sam',
+  guidance: 'ir',             // 赤外線 → フレアに弱い。照射は要らない
+  slots: 0,
+  cost: 0,
+  range: 6000,
+  irHeadRange: 3200,          // 正面〜側方（排気が見えない）のロック距離
+  speed: 900,
+  turnRate: 45,
+  maxG: 26,
+  fireAndForget: true,
+  decoyResist: 0.3,
+  damage: 210,
+  minAlt: 60,
+  maxAlt: 5000,
+  reloadSeconds: 14,
+  desc: '地上発射の赤外線ミサイル。電波を出さないので逆探知に映らない',
+};
+
 WEAPONS['SAM-M'] = {
   id: 'SAM-M',
+  pylon: 'medium',            // 同上
   name: 'SAMミサイル',
   kind: 'sam',
   guidance: 'sarh',           // 発射母体のレーダーが照射し続ける必要がある
@@ -195,12 +255,60 @@ WEAPONS['SAM-M'] = {
   maxG: 20,                   // 最大G（§34.2）。地上発射で大型
   fireAndForget: false,
   decoyResist: 0.55,
+  seekerGimbal: 60,           // ジンバル限界（§70.4.2）。空対空弾と同じ扱い
   damage: 220,
   minAlt: 200,
   maxAlt: Infinity,           // 射高の上限なし（高空ほど遠くから狙われる）
   reloadSeconds: 20,
   desc: '地上発射。高空の目標ほど有利になる',
 };
+
+
+/**
+ * **パイロンの区分**（§70.7）。`small` は空対空の細い弾だけ、`medium` は何でも。
+ *
+ * プレイヤーの案どおり ——「小型はAAM-SとM、中型は全ての兵装」。
+ * これで**搭載量ではなく搭載の中身**で機種を differentiate できる。
+ * F-1 は中型が2本しかないので対地兵装を2つまでしか積めない、という書き方になる。
+ *
+ * **`slots` は残す。** あちらは重さ（抗力と上昇率に効く・`sim/aircraft.js`）で、
+ * こちらは太さ。**同じ数字で2つのことを表さない。**
+ */
+export function pylonOf(id) {
+  const w = getWeapon(id);
+  return w.pylon || 'medium';
+}
+
+/** 機体のパイロン構成を `{ medium, small, total }` に正規化する */
+export function hardpointsOf(spec) {
+  const h = spec && spec.hardpoints;
+  if (h == null) return { medium: 0, small: 0, total: 0 };
+  if (typeof h === 'number') return { medium: h, small: 0, total: h };
+  const m = h.medium || 0, s = h.small || 0;
+  return { medium: m, small: s, total: m + s };
+}
+
+/** 武装を積める機体か（早期警戒機のような非武装を弾く） */
+export function isArmed(spec) {
+  return hardpointsOf(spec).total > 0;
+}
+
+/**
+ * その搭載が機体のパイロンに**収まるか**（§70.7.1）。
+ *
+ * **プレイヤーにどのパイロンへ載せるかは選ばせない。**
+ * 「有効な割り当てが存在するか」だけを見る ——
+ * 大きいものから中型へ詰め、小型の弾は余った中型にも載せられる。
+ * 貪欲で最適解になる（区分が2つで包含関係にあるため）。
+ */
+export function loadoutFits(loadout, spec) {
+  const cap = hardpointsOf(spec);
+  let med = 0;
+  for (const id of loadout) if (pylonOf(id) === 'medium') med++;
+  if (med > cap.medium) return false;
+  const small = loadout.length - med;
+  return small <= cap.small + (cap.medium - med);
+}
 
 export function getWeapon(id) {
   const w = WEAPONS[id];
@@ -223,21 +331,15 @@ export function loadoutFuelBonus(loadout) {
   return 1 + loadout.reduce((n, id) => n + (getWeapon(id).fuelBonus || 0), 0);
 }
 
-/** 標準搭載パターン（ブリーフィング初期値／P8で使う） */
-export const PRESETS = {
-  'F-1': {
-    '制空':     ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'],
-    '制空(高)': ['AAM-A', 'AAM-A'],
-    '長距離':   ['AAM-M', 'AAM-S', 'AAM-S', 'TANK'],
-  },
-  'F-2': {
-    '万能':   ['AAM-M', 'AAM-S', 'AAM-S', 'AGM'],
-    '対地':   ['AGM', 'AGM', 'AAM-S'],
-    'SEAD':   ['ARM', 'ARM', 'AAM-S'],
-  },
-  'A-3': {
-    '爆装':   ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S', 'AAM-S'],
-    '対地':   ['AGM', 'AGM', 'AGM', 'AAM-S'],
-    'SEAD':   ['ARM', 'ARM', 'AGM', 'AAM-S'],
-  },
-};
+/**
+ * **標準搭載パターン（`PRESETS`）は削除した**（§70.7.2）。
+ *
+ * どこからも import されていない死にデータだった。しかも A-3 の
+ * `対地` と `SEAD` は合計7スロットで、**A-3 のハードポイント6を超えていた** ——
+ * 読まれていなかったので誰も気づかなかった。
+ *
+ * §70.7 でパイロンを小/中に分けたので、**制約そのものが変わった**。
+ * 古い前提のまま残しておくと、次に読んだ人が信じてしまう。
+ * 実際に使っている初期搭載は、各ステージ定義の `friendly.aircraft[].loadout`。
+ */
+

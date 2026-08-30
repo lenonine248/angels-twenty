@@ -1,3 +1,4 @@
+import { isArmed } from './weapons.js';
 // 機体データ。すべてメートル・秒・度が基準。
 // 数値は仕様書 §5.1 の値。バランス調整はここだけを触れば済むようにしてある。
 
@@ -20,7 +21,13 @@ export const AIRCRAFT_TYPES = {
     climbRate: 180,       // m/s
     ceiling: 13500,
     hp: 90,
-    hardpoints: 4,
+    // **パイロンは中型2・小型2**（§70.7）。合計は今までと同じ4本だが、
+    // **対地兵装は中型にしか載らない**ので、制空機は2つまでしか持てない。
+    // 「積める量」ではなく「積める中身」で機種を分ける。
+    hardpoints: { medium: 2, small: 2 },
+    // 抗力と上昇率が見る「満載の目安」（`sim/aircraft.js`）。
+    // **太さと重さは別**なので、パイロン構成とは分けて持つ（§70.7）
+    loadCapacity: 4,
     // §61.3 で 40km → 30km。地図が 51.2km 四方なので、40km は
     // **中心に立てば1機で全図を覆っていた**（四隅まで36.2km）。
     // 逆探知は射程×1.5 なので 60km ＝ どこに居ても見つかる状態で、
@@ -46,12 +53,25 @@ export const AIRCRAFT_TYPES = {
       muzzleSpeed: 1000, dispersion: 1.3 * DEG,
       airDmg: [1.4, 3.0], groundDmg: [1.0, 2.2],
     },
-    // 対抗手段はミサイル搭載量に対して多すぎたので半減（A-3のみ据え置き）
-    flares: 4,
-    // **チャフは束で撒くもの**（§46）。実機は数十発を積む。
-    // 1枚あたりの効きは下げてある（`SCREEN_CHANCE_PER_CLOUD`）ので、
-    // 枚数を増やしても「1機あたりミサイル1発ぶん」という総量は変えていない。
-    chaff: 14,
+    // **ミサイル1発ぶん**（§71.8）。制空機・マルチロールは1発、A-3 は2発。
+    //
+    // §70 でフレアもチャフも**抽選ではなくなった**（フレアは狙点を引き、
+    // チャフは誘導の測り直しを遅らせる）ので、「1発ぶん」の意味も変わった。
+    // 積む数の根拠は測り直してある —— 弾数を無制限にして
+    // **1本の弾に対して実際に何枚撒くか**を7面×12種で数えた:
+    //
+    // | | 中央 | 90% | 最大 |
+    // |---|---|---|---|
+    // | フレア（自軍）| 5 | **6** | 8 |
+    // | チャフ（自軍）| 5 | **10** | 16 |
+    //
+    // 90パーセンタイルを1発ぶんとする。効きも確かめた（種12・ESCORT）——
+    // 0枚 6/12 → 4/14（旧）8/12 → **6/10 で 10/12**、無制限でも 9/12。
+    // **チャフ14は余っていた**（無制限にしても結果が良くならない）。
+    //
+    // 古い値は 4/14。フレアは1発ぶんに足りず、チャフは1.4発ぶんあった。
+    flares: 6,
+    chaff: 10,
     // 見た目
     color: 0x8fa4bb,
     shape: { length: 1.0, span: 0.62, sweep: 0.30, fatness: 0.85, twinTail: true },
@@ -78,7 +98,18 @@ export const AIRCRAFT_TYPES = {
     // hp は 110 のまま。100 にして測ったが**数字が1つも動かなかった**
     // （§61.5）—— 当たれば 100 でも 110 でも落ちる。
     hp: 110,
-    hardpoints: 5,
+    // **中型3・小型2**（§71.4）。合計5本は変えていない。
+    //
+    // §70.7 では中型2・小型3 だった。だが**対地兵装を積める本数が F-1 と同じ2つ**で、
+    // 「マルチロール」と名乗りながら対地の器が制空機と変わらない状態だった。
+    // 空対空だけなら小型で足りる（AAM-M も AAM-S も小型）ので、
+    // 小型を減らしても目視外の戦い方は変わらない —— 溢れたぶんは中型に載る。
+    //
+    // 収まり方は `loadoutFits()` が見る（小型は余った中型へ溢れる）。
+    // 既存の搭載はすべて新構成でも収まることを確かめてある
+    // （`ARM×2+AAM-S`／`AAM-M×2+AAM-S×2+TANK`）。
+    hardpoints: { medium: 3, small: 2 },
+    loadCapacity: 5,
     // **3機でいちばん広く見て、いちばん遠くから見つかる**（§61.3）。
     // 掃引面積は F-1 の 1.9倍。逆探知される距離は 51km で最長。
     // 「見つける役だが黙っていられない」という形にしてある。
@@ -100,11 +131,14 @@ export const AIRCRAFT_TYPES = {
       muzzleSpeed: 850, dispersion: 1.7 * DEG,
       airDmg: [1.0, 2.2], groundDmg: [1.0, 2.2],
     },
+    // **F-1 と同じ「ミサイル1発ぶん」**（§71.8）。
+    //
     // **チャフを 14 → 30 にしてみたが、数字が1つも動かなかった**（§61.5）。
     // 実測の消費は最大 7.0発で、14 でも余っている。**枚数は縛りではない。**
     // 増やしても効かない値を「個性」として置かない。
-    flares: 4,
-    chaff: 14,
+    // §71.8 の測り直しでも同じ向きの結果が出て、10 まで削っても悪化しなかった。
+    flares: 6,
+    chaff: 10,
     color: 0x93a08c,
     shape: { length: 0.96, span: 0.70, sweep: 0.22, fatness: 1.0, twinTail: false },
   },
@@ -128,7 +162,10 @@ export const AIRCRAFT_TYPES = {
     // 巡航速度は変わらない。失うのは**一時的に速く逃げる手段**だけ。
     noAfterburner: true,
     hp: 160,
-    hardpoints: 6,
+    // **中型4・小型2**（§70.7）。対地兵装を4つ積める唯一の機体。
+    // 爆装（BOMB×4＋AAM-S×2）がちょうど収まる構成
+    hardpoints: { medium: 4, small: 2 },
+    loadCapacity: 6,
     radarRange: 22000,    // §61.3
     radarFovH: 50,
     radarFovV: 30,
@@ -144,8 +181,12 @@ export const AIRCRAFT_TYPES = {
       muzzleSpeed: 700, dispersion: 1.0 * DEG,
       airDmg: [1.2, 2.6], groundDmg: [1.2, 2.6],
     },
-    flares: 10,
-    chaff: 28,
+    // **ミサイル2発ぶん**（§71.8）。制空機の倍が A-3 の取り柄。
+    // 1発ぶんの根拠は F-1 の注記にある（実測 フレア6・チャフ10）。
+    // 対地任務は敵陣地の上で撃たれ続けるので、**撒き続けられること**が
+    // 速度を持たないこの機体の生き残り方になっている。
+    flares: 12,
+    chaff: 20,
     color: 0x7d7b63,
     shape: { length: 0.92, span: 0.86, sweep: 0.06, fatness: 1.25, twinTail: true },
   },
@@ -159,7 +200,7 @@ export const SUPPORT_TYPES = {
     role: '早期警戒',
     maxSpeed: 200, cruiseSpeed: 160, minSpeed: 90,
     accel: 5, turnRate: 4, climbRate: 50, ceiling: 11000,
-    hp: 220, hardpoints: 0,
+    hp: 220, hardpoints: { medium: 0, small: 0 }, loadCapacity: 0,
     // **アフターバーナーを持たない**（§39）。
     //
     // 陣地の奥を飛ぶうえに逃げ足まで速いと、狙う手段が実質的に無くなる。
@@ -186,11 +227,33 @@ export const ENEMY_TYPES = {
     color: 0xa87a5a,
     shape: { length: 0.94, span: 0.58, sweep: 0.34, fatness: 0.9, twinTail: false },
   },
+  /**
+   * ステルス戦闘機（§68.1）。**基本性能は F-2 相当、レーダーにほとんど映らない。**
+   *
+   * `rcs: 0.3` は探知距離に掛かる。F-1(30km) からは **9km**、
+   * F-2(34km) からは **10.2km** でしか見えない —— 目視(8km)のすぐ外。
+   * **AAM-M(20km) の射程では捉えられない**ので、目視外の撃ち合いが成立しない。
+   *
+   * **弱点は電波。** 自分がレーダーを出せば、その1.5倍（39km）から
+   * 逆探知される。`rcs` は `byRadar` にしか掛からない（§68.1）ので、
+   * **黙っていないと意味がない**機体になっている。
+   * ステージ側で `radarMode: 'off'` を指定すると、より厄介になる。
+   */
+  'J-13': {
+    ...AIRCRAFT_TYPES['F-2'],
+    id: 'J-13', name: 'J-13 ステルス戦闘機',
+    rcs: 0.3,
+    radarRange: 26000, radarFovH: 60,
+    color: 0x4a4d55,
+    shape: { length: 1.02, span: 0.66, sweep: 0.38, fatness: 0.8, twinTail: true },
+  },
+
   'B-9': {
     ...AIRCRAFT_TYPES['A-3'],
     id: 'B-9', name: 'B-9 爆撃機', role: '爆撃',
     maxSpeed: 210, cruiseSpeed: 165, minSpeed: 90,
-    turnRate: 5, climbRate: 60, hp: 260, hardpoints: 8,
+    turnRate: 5, climbRate: 60, hp: 260,
+    hardpoints: { medium: 6, small: 2 }, loadCapacity: 8,
     radarRange: 18000, fuelSeconds: 1500,
     color: 0x8a6f5c,
     shape: { length: 1.35, span: 1.25, sweep: 0.10, fatness: 1.5, twinTail: false },
@@ -220,7 +283,7 @@ export function getType(id) {
  */
 export function defaultEnemyLoadout(type) {
   const spec = getType(type);
-  if (!spec || spec.hardpoints === 0) return [];
+  if (!spec || !isArmed(spec)) return [];
   if (spec.role === '爆撃') return ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S'];
   if (spec.role === '対地') return ['AGM', 'AGM', 'AAM-S'];
   return ['AAM-M', 'AAM-S', 'AAM-S'];
