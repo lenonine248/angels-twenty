@@ -16,6 +16,7 @@ import { getType } from '../data/aircraft.js';
 import { Terrain, CELLS, MAP_SIZE } from '../world/terrain.js';
 import * as tuning from './tuning.js';
 import { isDebug } from '../core/debug.js';
+import { inline, block } from './markup.js';
 import * as custom from '../data/custom.js';
 
 import { loadoutRow, removeOne, pylonLabel, LOADOUT_HINT } from './loadout.js';
@@ -213,7 +214,7 @@ export class ScreenManager {
     this.stage = t;
     const done = this.progress.tutorial.includes(t.id);
     const steps = t.steps.map((s, i) =>
-      `<li><span class="tb-no">${i + 1}</span>${s.text}</li>`).join('');
+      `<li><span class="tb-no">${i + 1}</span>${inline(s.text)}</li>`).join('');
 
     this._show(`
       <div class="screen-inner briefing tutorial-brief">
@@ -228,8 +229,8 @@ export class ScreenManager {
         <div class="bf-body">
           <div class="bf-left">
             <div class="bf-section">この回で覚えること</div>
-            <p class="bf-text">${t.brief.replace(/\n/g, '<br>')}</p>
-            ${t.hint ? `<div class="bf-section">補足</div><p class="bf-hint">${t.hint}</p>` : ''}
+            <p class="bf-text">${block(t.brief)}</p>
+            ${t.hint ? `<div class="bf-section">補足</div><p class="bf-hint">${block(t.hint)}</p>` : ''}
             <div class="bf-section">手順</div>
             <ol class="tb-steps">${steps}</ol>
           </div>
@@ -327,7 +328,7 @@ export class ScreenManager {
     const tuned = tuning.isTuned(stage.id) ? '<span class="tn-flag">調整中</span>' : '';
 
     const objectives = stage.objectives.map((o) =>
-      `<li class="${o.fail ? 'obj-fail' : ''}">${o.label}${o.fail ? '（失敗条件）' : ''}</li>`).join('');
+      `<li class="${o.fail ? 'obj-fail' : ''}">${inline(o.label)}${o.fail ? '（失敗条件）' : ''}</li>`).join('');
 
     // 評価基準は出撃前に見せる。終わってから明かすのでは狙いようがない。
     // ただしブリーフィングは元から縦に詰まっていて、表を足すと 720px の画面で
@@ -354,11 +355,11 @@ export class ScreenManager {
         <div class="bf-body">
           <div class="bf-left">
             <div class="bf-section">任務</div>
-            <p class="bf-text">${stage.brief.replace(/\n/g, '<br>')}</p>
+            <p class="bf-text">${block(stage.brief)}</p>
             <div class="bf-section">目標</div>
             <ul class="bf-obj">${objectives}</ul>
             <div class="bf-section">助言</div>
-            <p class="bf-hint">${stage.hint || ''}</p>
+            <p class="bf-hint">${block(stage.hint || '')}</p>
           </div>
           <div class="bf-right">
             <div class="bf-section">戦域図</div>

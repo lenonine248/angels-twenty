@@ -44,7 +44,8 @@ const CEILING_BUTTON_MIN = 10500;
  * 2か所に書くと、片方だけ増えたときに気づけない。
  */
 const RADAR = [
-  ['auto', '自動', '交戦・誘導中と、相手のレーダー圏内でだけ出す'],
+  ['auto', '自動', '敵機を1機も掴んでいないときは探すために出す。'
+    + '掴んだら黙って詰める。交戦・誘導中と、相手のレーダー圏内では出したまま'],
   ['on', '常時ON', '常に出す。遠くまで見えるが、遠くから見つかる'],
   ['off', '常時OFF', '出さない。目視と逆探知だけになり、AAM-M と AAM-A が撃てない'],
 ];
@@ -348,6 +349,10 @@ export class Hud {
       // **設定も一緒に出す**（§76）。押した先の処理はもともと選択全体を
       // 回していたのに、**ボタンが単機のときしか描かれていなかった**ので、
       // 4機に同じ指定をするには1機ずつ選び直すしかなかった。
+      //
+      // **並びは単機のパネルに合わせる**（§79.1）。設定 → AI → 高度 の順。
+      // 単機では設定が AI の**上**にあるのに、ここでは下に置いていたので、
+      // 1機だけ選ぶ／2機選ぶを行き来するたびに同じボタンが上下に飛んでいた。
       const key = 'multi' + sel.map((u) => u.id).join(',') + '|'
         + [common(sel, (u) => u.radarMode), common(sel, (u) => u.abMode || 'normal'),
           common(sel, (u) => u.fireThreshold), common(sel, (u) => !!u.autoDecoy),
@@ -358,9 +363,9 @@ export class Hud {
         this.detail.innerHTML = `
           <div class="dt-multi">${sel.length} 機を選択中</div>
           <div class="dt-multi-sub">${sel.map((u) => u.name).join(', ')}</div>
+          ${this._groupSettings(sel)}
           ${this._modeButtons(sel[0])}
-          ${this._altButtons(sel[0])}
-          ${this._groupSettings(sel)}`;
+          ${this._altButtons(sel[0])}`;
       }
       return;
     }
@@ -626,17 +631,20 @@ export class Hud {
       return `<button class="autow${cls}" ${data} title="${tip}">${
         val === null ? `${on.split(' ')[0]} 混在` : (val ? on : off)}</button>`;
     };
+    // **並びも単機のパネルに合わせる**（§79.1）。あちらは
+    // 「機銃・誘導中も回避・デコイ」→「自動発射＋レーダー」→「AB」の3行なので、
+    // ここも同じ順・同じ行の組み方にする。**選択の数で位置が動かないのが狙い**
+    // なので、行の中身だけ揃えても足りない。
     const toggles = tri(common(sel, (u) => u.autoWeapons.GUN !== false),
       '機銃 自動', '機銃 停止', 'data-auto="GUN"', 'AIが機銃を自動で使うか')
-      + tri(common(sel, (u) => !!u.autoDecoy),
-        'デコイ 自動', 'デコイ 停止', 'data-decoy="1"', '飛来ミサイルにフレア／チャフを自動で撒くか')
       + tri(common(sel, (u) => !!u.evadeWhileGuiding),
-        '誘導中も回避', '誘導を優先', 'data-guard="1"', 'AAM-M誘導中に撃たれたら、回避するか誘導を続けるか');
+        '誘導中も回避', '誘導を優先', 'data-guard="1"', 'AAM-M誘導中に撃たれたら、回避するか誘導を続けるか')
+      + tri(common(sel, (u) => !!u.autoDecoy),
+        'デコイ 自動', 'デコイ 停止', 'data-decoy="1"', '飛来ミサイルにフレア／チャフを自動で撒くか');
 
     return `<div class="dt-add">${toggles}</div>
-      <div class="dt-add">${radar}</div>
-      ${ab ? `<div class="dt-add">${ab}</div>` : ''}
-      <div class="dt-add">${thr}</div>`;
+      <div class="dt-add"><span class="dt-group">${thr}</span>${radar}</div>
+      ${ab ? `<div class="dt-add">${ab}</div>` : ''}`;
   }
 
   _modeButtons(u) {

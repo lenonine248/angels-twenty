@@ -12,6 +12,8 @@
 //   段落
 //   **強調** / `コード` / [文字](リンク)
 
+import { escapeHtml, inline } from './markup.js';
+
 const SOURCE = 'CHANGELOG.md';
 
 let cache = null;      // パース済みの版一覧
@@ -156,16 +158,7 @@ export function parseChangelog(text) {
 }
 
 // ---------------------------------------------------------------- 整形
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"]/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-}
-
-/** **強調** / `コード` / [文字](リンク) だけを変換する */
-function inline(s) {
-  return escapeHtml(s)
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')     // リンクは文字だけ残す
-    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>');
-}
+//
+// 記法の変換そのものは `ui/markup.js` にある（§79.6）。
+// **ここにしか無かったので、ブリーフィングとチュートリアルの文では
+// `**強調**` が星印のまま画面に出ていた。**

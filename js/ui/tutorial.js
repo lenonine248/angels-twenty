@@ -23,6 +23,8 @@
 //
 // ctx = { world, commands, loop, rig, elapsed }
 
+import { block } from './markup.js';
+
 const DONE_FLASH = 1.1;         // 「達成」表示を出しておく秒数（実時間）
 
 export class TutorialRunner {
@@ -106,7 +108,17 @@ export class TutorialRunner {
     // 画面を操作してほしい手順に入ったら時間を止める。
     // 止めるのは**入った瞬間の一度だけ**。毎フレーム止めると、
     // プレイヤーが自分で再開しても即座に止め返されて操作を奪うことになる。
-    if (s.pause && this._pausedFor !== this.index) {
+    //
+    // **押させたいものが画面に出るまでは止めない**（§79.2）。
+    // 「増槽を投棄する」は離陸を指示した直後に始まるが、投棄のボタンは
+    // 飛んでいる機体のパネルにしかない（地上では整備の欄になる）。
+    // 入った瞬間に止めていたので、**滑走路の上で凍って投棄できず**、
+    // 自分で再開しない限り先へ進めなかった。
+    //
+    // 枠を出せない＝まだ押せない、なので判定は `_updateHighlight` と共有する。
+    const target = this._highlightTarget();
+    if (s.pause && this._pausedFor !== this.index
+        && (!s.highlight || target)) {
       this._pausedFor = this.index;
       ctx.loop?.setPaused(true);
     }
@@ -171,18 +183,31 @@ export class TutorialRunner {
   _updateHighlight() {
     const hi = this._hi;
     if (!hi) return;
-    const s = this._pending ? null : this.current;
-    const sel = s && s.highlight;
-    if (!sel) { hi.classList.add('hidden'); return; }
-    const el = document.querySelector(sel);
+    const el = this._highlightTarget();
     if (!el) { hi.classList.add('hidden'); return; }
     const r = el.getBoundingClientRect();
-    if (!r.width || !r.height) { hi.classList.add('hidden'); return; }
     hi.style.left = `${r.left - 4}px`;
     hi.style.top = `${r.top - 4}px`;
     hi.style.width = `${r.width + 8}px`;
     hi.style.height = `${r.height + 8}px`;
     hi.classList.remove('hidden');
+  }
+
+  /**
+   * いまの手順が指している要素。**画面に出ていなければ null**。
+   *
+   * 枠を出す先であると同時に「もう押せる状態か」の判定でもある（§79.2）。
+   * 出ていない場所を指したまま時間を止めると、止めたせいで
+   * その場所が出てこない、という行き止まりになる。
+   */
+  _highlightTarget() {
+    const s = this._pending ? null : this.current;
+    const sel = s && s.highlight;
+    if (!sel) return null;
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return (r.width && r.height) ? el : null;
   }
 
   _render(force) {
@@ -213,8 +238,8 @@ export class TutorialRunner {
           <span class="tut-count">手順 ${no} / ${n}</span>
           <button class="tut-restart" data-tut="restart" title="最初の手順からやり直す">やり直す</button>
         </div>
-        <div class="tut-step">${done ? '✔ ' : ''}${s.text}</div>
-        ${!done && s.note ? `<div class="tut-note">${s.note}</div>` : ''}
+        <div class="tut-step">${done ? '✔ ' : ''}${block(s.text)}</div>
+        ${!done && s.note ? `<div class="tut-note">${block(s.note)}</div>` : ''}
       </div>`;
   }
 }
