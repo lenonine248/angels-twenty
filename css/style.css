@@ -1052,6 +1052,8 @@ button.go.warn:hover + .dt-warn { display: block; }
 .rv-res.clear { color: #7ec87e; }
 .rv-res.fail { color: #ff5f5f; }
 .rv-meta { font-size: 11px; color: var(--text-dim); }
+/* 失敗の理由（§23.6）。結末の隣に小さく置く */
+.rv-why { font-size: 11px; color: var(--hostile); opacity: 0.85; }
 .rv-close {
   margin-left: auto; font-family: inherit; font-size: 11px; padding: 4px 14px; cursor: pointer;
   color: var(--text); background: rgba(111, 216, 232, 0.1); border: 1px solid var(--panel-line);

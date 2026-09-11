@@ -114,6 +114,11 @@
       if (record) b.recorder?.event('fire', now(), { unit: sh, target: tg, weapon: wp.id, pos: sh.pos });
       if (trace) events.push(`${at()} ${sh.name} ${wp.id} -> ${tg.name} ${km(sh, tg)} alt${Math.round(sh.pos.y)}`);
     };
+    // **チャフ／フレアも録る**（§23.9）。`onFire` と同じで、
+    // ここを書かないと**ベンチで録った記録にだけデコイが無い**
+    w.onDecoy = (unit, kind) => {
+      if (record) b.recorder?.event('decoy', now(), { unit, pos: unit.pos, kind });
+    };
     w.onMissileHit = (m, tg, dist) => {
       hits++;
       if (record) {

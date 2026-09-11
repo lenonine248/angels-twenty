@@ -54,6 +54,62 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
             return None
         return self.rfile.read(length)
 
+    def do_GET(self):
+        """`/replays/index.json` だけ横取りして、その場で一覧を組み立てる。"""
+        if self.path.split("?")[0] == "/replays/index.json":
+            self._replay_index()
+            return
+        super().do_GET()
+
+    def _replay_index(self):
+        """replays/ にある記録の一覧を返す（タイトルの「リプレイ」がこれを読む）。
+
+        **静的なマニフェストは置かない。** リプレイを足したり消したりしたときに
+        古くなり、「一覧に出ているのに開けない」が起きる。
+        記録そのものに面・結果・種が入っている（`recorder.toJSON`）ので、
+        毎回ここから読み直せば**ずれようがない。**
+        """
+        out = []
+        d = os.path.join(self._root(), REPLAY_DIR)
+        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            if not name.endswith(".json") or name == "index.json":
+                continue
+            try:
+                with open(os.path.join(d, name), encoding="utf-8") as f:
+                    rec = json.load(f)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue                       # 壊れた記録は黙って飛ばす
+            stage = rec.get("stage") or {}
+            stats = rec.get("stats") or {}
+            # **結末の書き方が2通りある。**
+            # ゲーム本体は文字列（"clear"/"fail"）、ベンチは
+            # {state, reason, sec} の入れ物で書く（`tools/bench.js`）。
+            # どちらも開けるように、ここで1つの形へ均す。
+            res = rec.get("result")
+            if isinstance(res, dict):
+                state, reason = res.get("state") or "", res.get("reason") or ""
+                sec = res.get("sec")
+            else:
+                state, reason, sec = res or "", "", None
+            out.append({
+                "file": name,
+                "stage": stage.get("name") or name,
+                "title": stage.get("title") or "",
+                "result": "clear" if state == "clear" else "fail",
+                "reason": reason,
+                "seed": rec.get("seed"),
+                "version": rec.get("version") or "",
+                "sec": stats.get("sec") if stats.get("sec") is not None else sec,
+                "kills": stats.get("kills"),
+                "losses": stats.get("losses"),
+            })
+        body = json.dumps(out, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         """/replay/ はリプレイの保存、/telemetry はプレイ記録の追記。"""
         if self.path.startswith("/replay/"):

@@ -164,6 +164,46 @@ export class ScreenManager {
   }
 
   /**
+   * 保存した記録の一覧（§23.5）。
+   *
+   * **開発サーバが `replays/` を読んで組み立てたものを並べる**ので、
+   * ファイルを選ぶ手間が要らない。一覧が取れないとき（公開版など）は
+   * 呼ばれないので、従来どおりファイルを開く。
+   */
+  showReplayList(items) {
+    // **いまの版の記録を先に出す。** 古い版の記録も開けるが、
+    // 混ざったまま並ぶと「いまの動き」を見たいときに探すことになる
+    const now = items.filter((r) => r.version === VERSION);
+    const old = items.filter((r) => r.version !== VERSION);
+    const card = (r) => {
+      const ok = r.result === 'clear';
+      const sec = r.sec != null ? `${Math.round(r.sec)}秒` : '';
+      const kl = r.kills != null ? `撃墜 ${r.kills} / 損失 ${r.losses}` : '';
+      const ver = r.version && r.version !== VERSION ? r.version : '';
+      return `<div class="stage-card${ok ? ' cleared' : ''}" data-replay="${r.file}">
+        <div class="sc-no">${ok ? 'CLEAR' : 'FAILED'}${ver ? ` · ${ver}` : ''}</div>
+        <div class="sc-name">${r.stage}</div>
+        <div class="sc-title">${ok ? (r.title || '') : (r.reason || r.title || '')}</div>
+        <div class="sc-state">${[sec, kl].filter(Boolean).join(' · ')}</div>
+      </div>`;
+    };
+
+    this._show(`
+      <div class="screen-inner">
+        <h1 class="game-title">ANGELS TWENTY</h1>
+        <div class="screen-sub">REPLAY — 保存した記録</div>
+        <div class="stage-grid">${now.map(card).join('')}</div>
+        ${old.length ? `<div class="screen-sub">古い版の記録</div>
+        <div class="stage-grid">${old.map(card).join('')}</div>` : ''}
+        <div class="screen-foot list">
+          <span>${items.length} 件（<code>replays/</code> にあるもの）</span>
+          <button data-act="title" class="ghost">モード選択へ</button>
+          <button data-act="replayFile" class="ghost">ファイルを開く</button>
+        </div>
+      </div>`);
+  }
+
+  /**
    * チュートリアル選択（仕様 §19）。
    * 中身は P12 で入れる。ここが空のあいだはタイトルから入れない。
    */
@@ -470,6 +510,9 @@ export class ScreenManager {
     const tut = e.target.closest('[data-tutorial]');
     if (tut) { this.showTutorialBriefing(getTutorial(tut.dataset.tutorial)); return; }
 
+    const rep = e.target.closest('[data-replay]');
+    if (rep) { this.onPickReplay?.(rep.dataset.replay); return; }
+
     const add = e.target.closest('[data-add]');
     if (add && !add.classList.contains('disabled')) {
       const [i, id] = add.dataset.add.split(':');
@@ -576,6 +619,10 @@ export class ScreenManager {
       // タイトルから、保存した記録を開く（§23.5）
       case 'openReplay':
         this.onOpenReplay?.();
+        break;
+      // 一覧からファイル選択へ逃がす（一覧に無い記録を開きたいとき）
+      case 'replayFile':
+        this.onPickReplayFile?.();
         break;
       // **1回では消さない**（§80.6）。押し間違いで全部消えるボタンが、
       // 「モード選択へ」の隣に無防備に並んでいた。

@@ -33,8 +33,17 @@ export class ContactRenderer {
   }
 
   update(camera, terrain, size, time) {
-    const contacts = this.detection.contactsFor(this.side);
+    this.sync(this.detection.contactsFor(this.side), camera, terrain, size, time);
+  }
 
+  /**
+   * コンタクトの入れ物を受け取って印を合わせる。
+   *
+   * **リプレイはここを直接呼ぶ**（§23.9）。記録から組み立てたコンタクトでも
+   * 戦闘とまったく同じ印になる —— **見た目の規則を2か所に書かない。**
+   * `detection` は要らないので、リプレイ側は `null` を渡して構わない。
+   */
+  sync(contacts, camera, terrain, size, time) {
     for (const [id, m] of this.markers) {
       if (!contacts.has(id)) {
         this.group.remove(m);

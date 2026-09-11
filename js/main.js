@@ -16,12 +16,13 @@ import { GameLoop, formatTime } from './core/loop.js';
 import { makeRng } from './core/rng.js';
 import { CloudField } from './world/clouds.js';
 import { CloudView } from './world/cloudview.js';
+import { buildObjectiveMarkers, scaleObjectiveLabels } from './world/objectives.js';
 import { loadProgress, markCleared, markRating, resetProgress, saveSettings } from './core/save.js';
 import { evaluate, isBetterRank, RANKS } from './data/rating.js';
 import { AudioManager } from './core/audio.js';
 import * as telemetry from './core/telemetry.js';
 import { VERSION } from './core/version.js';
-import { Recorder, pickRecordingFile } from './core/recorder.js';
+import { Recorder, pickRecordingFile, parseRecording } from './core/recorder.js';
 import { Aircraft } from './sim/aircraft.js';
 import { GroundUnit, findFlatSpot } from './sim/ground.js';
 import { Airbase, pickRunwayHeading, flattenRunway } from './sim/airbase.js';
@@ -154,21 +155,59 @@ async function boot() {
   };
   // タイトルから、保存した記録を開く（§23.5）。
   // 戻り先はタイトル。戦果画面から開いたときと戻り先が違うので、来た場所を覚える。
-  screens.onOpenReplay = async () => {
-    let data = null;
-    try {
-      data = await pickRecordingFile();
-    } catch (err) {
-      screens.showTitle();
-      pushLog(`記録を読み込めません: ${err.message}`);
-      window.alert(`記録を読み込めません
-${err.message}`);
-      return;
-    }
+  /** 読み込んだ記録を振り返り画面へ渡す。3か所から来るので1つにまとめてある */
+  const openRecording = (data) => {
     if (!data) return;
     viewingFrom = 'title';
     viewingData = data;
     review.open(data);
+  };
+  const replayError = (err) => {
+    screens.showTitle();
+    pushLog(`記録を読み込めません: ${err.message}`);
+    window.alert(`記録を読み込めません
+${err.message}`);
+  };
+
+  /**
+   * タイトルの「リプレイ」。
+   *
+   * **開発サーバなら `replays/` の一覧を出す**（§23.5）——
+   * 記録が十数件あるとファイル選択では中身が分からない。
+   * 一覧が取れない環境（公開版）では**従来どおりファイルを開く**ので、
+   * 遊ぶ側の手順は変わらない。
+   */
+  screens.onOpenReplay = async () => {
+    try {
+      const res = await fetch('replays/index.json');
+      if (res.ok) {
+        const list = await res.json();
+        if (Array.isArray(list) && list.length) { screens.showReplayList(list); return; }
+      }
+    } catch { /* 一覧が無い環境。ファイル選択へ落とす */ }
+    screens.onPickReplayFile();
+  };
+
+  /**
+   * 一覧から1件選んだ。
+   *
+   * **ファイルから開くときと同じ検査を通す**（`parseRecording`）——
+   * 素の `JSON.parse` で読むと、形式の合わない記録が
+   * **理由なく空の画面で開く**（§23.5 で弾くと決めてある）。
+   */
+  screens.onPickReplay = async (file) => {
+    try {
+      const res = await fetch('replays/' + encodeURIComponent(file));
+      if (!res.ok) throw new Error(`${file} を開けません (${res.status})`);
+      openRecording(parseRecording(await res.text()));
+    } catch (err) { replayError(err); }
+  };
+
+  /** 一覧を使わずファイルから開く */
+  screens.onPickReplayFile = async () => {
+    try {
+      openRecording(await pickRecordingFile());
+    } catch (err) { replayError(err); }
   };
   // 同じ種で戦い直す（§24.3）。搭載も同じものを使う
   screens.onRerun = () => {
@@ -607,7 +646,12 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   };
   // `onDecoyed` は §70.5.1 で鳴らなくなった。フレアはシーカーを奪うのではなく
   // 狙点を引っ張るので、「効いた／効かなかった」という瞬間が存在しない。
-  world.onDecoy = (unit) => audio.flare(unit.pos);
+  world.onDecoy = (unit, kind) => {
+    // **撒いた事実を記録する**（§23.9）。無いと再生で
+    // 「なぜミサイルが外れたのか」が画面から消える
+    world.recorder?.event('decoy', loop.simTime, { unit, pos: unit.pos, kind });
+    audio.flare(unit.pos);
+  };
   // 増槽の投棄（§32.2）。自分の機体のときだけ知らせる
   world.onTankDropped = (unit) => {
     if (unit.side === world.playerSide) world.log(`${unit.name} 増槽を投棄`);
@@ -1643,74 +1687,6 @@ function hideWindInfo() {
 
 // ================================================================ その他
 
-/**
- * 到達目標（objectives の reach）を戦場に描く。
- *
- * ブリーフィングの地図には出しているが、戦闘中は何も出ていなかった。
- * 「どこまで護衛するのか」が画面から読めないと、輸送機を自分で誘導したときに
- * どこへ向ければいいのか分からなくなる（実際に分からなくなった）。
- */
-function buildObjectiveMarkers(stage, terrain) {
-  const out = [];
-  for (const o of stage.objectives || []) {
-    if (o.type !== 'reach') continue;
-    const radius = o.radius || 3000;
-    const ground = Math.max(0, terrain.heightAt(o.x, o.z));
-    const group = new THREE.Group();
-    group.name = `objective-${o.id}`;
-    group.position.set(o.x, ground, o.z);
-
-    // 地表の円と、そこから立ち上がる柱。上空からでも横からでも見つかるように。
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(radius * 0.94, radius, 64),
-      new THREE.MeshBasicMaterial({
-        color: 0xffb648, transparent: true, opacity: 0.5,
-        side: THREE.DoubleSide, depthTest: false,
-      }),
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 30;
-    ring.renderOrder = 4;
-    group.add(ring);
-
-    const pillar = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 6000, 0)]),
-      new THREE.LineBasicMaterial({
-        color: 0xffb648, transparent: true, opacity: 0.28, depthTest: false,
-      }),
-    );
-    pillar.renderOrder = 4;
-    group.add(pillar);
-
-    // ラベルは画面上で一定の大きさにする（毎フレーム scaleObjectiveLabels で合わせる）。
-    // ワールド単位で固定すると、寄れば画面いっぱい、引けば粒になる。
-    const label = makeLabelSprite('到達地点', '#ffb648');
-    label.name = 'objLabel';
-    label.position.y = 6200;
-    label.renderOrder = 8;
-    group.add(label);
-
-    out.push(group);
-  }
-  return out;
-}
-
-/** 到達目標のラベルを画面上で一定の大きさに保つ（他のラベルと同じ方式） */
-const OBJ_LABEL_PX = 16;
-function scaleObjectiveLabels(markers, camera) {
-  if (!markers) return;
-  for (const g of markers) {
-    const label = g.getObjectByName('objLabel');
-    if (!label) continue;
-    label.getWorldPosition(_labelPos);
-    const dist = camera.position.distanceTo(_labelPos);
-    const mpp = 2 * dist * Math.tan((camera.fov * Math.PI / 180) / 2) / window.innerHeight;
-    const h = OBJ_LABEL_PX * mpp;
-    label.scale.set(h * (label.material.userData.aspect || 4), h, 1);
-  }
-}
-const _labelPos = new THREE.Vector3();
 
 function buildMapBoundary() {
   const y = 60;

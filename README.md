@@ -1,6 +1,6 @@
 # ANGELS TWENTY
 
-**Beta 2.91**（2026-09-10）
+**Beta 2.92**（2026-09-12）
 
 **▶ [ブラウザで遊ぶ](https://lenonine248.github.io/angels-twenty/)**
 

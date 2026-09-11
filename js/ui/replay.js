@@ -16,6 +16,12 @@
 
 import * as THREE from 'three';
 import { Terrain } from '../world/terrain.js';
+import { CloudField } from '../world/clouds.js';
+import { CloudView } from '../world/cloudview.js';
+import { makeRng } from '../core/rng.js';
+import { ContactRenderer } from '../world/contacts.js';
+import { buildObjectiveMarkers, scaleObjectiveLabels } from '../world/objectives.js';
+import { contactStride, CFLAG } from '../core/recorder.js';
 import {
   createAircraftView, syncAircraftView, aircraftDisplayLength,
   createGroundView, syncGroundView, groundDisplayScale,
@@ -32,6 +38,10 @@ const MAX_ROLL = 1.1;
 /** 方位の変化率(rad/s)をこの値で割ってバンクにする */
 const ROLL_PER_RATE = 0.55;
 /** 接地とみなす対地高度(m) */
+/** 撒いたものが消えるまで(秒)と、落ちる速さ(m/s)。`effects.js` の見た目に合わせる */
+const DECOY_LIFE = 6;
+const DECOY_FALL = 25;
+
 const GROUND_AGL = 30;
 
 /**
@@ -121,11 +131,35 @@ export class ReplayPlayer {
     this.scene.setTerrain(this.terrain);
     this.scene.add(this.terrain.buildMesh());
 
+    // 雲（§23.7）。**戦闘と同じ種・同じ式**なので同じ形が出る ——
+    // 記録に形を持たせる必要はない（`0x5c10d` は `main.js` と同じ混ぜ方）。
+    this.clouds = null;
+    this.cloudView = null;
+    const weather = data.stage.weather;
+    if (weather && data.seed != null) {
+      this.clouds = new CloudField(weather, makeRng(data.seed ^ 0x5c10d));
+      if (this.clouds.active) this.cloudView = new CloudView(this.clouds, this.scene.world);
+      else this.clouds = null;
+    }
+
+    // 到達目標（§23.9）。**戦闘と同じ関数**を呼ぶので見た目も揃う
+    this.markers = buildObjectiveMarkers({ objectives: data.stage.objectives || [] }, this.terrain);
+    for (const m of this.markers) this.scene.add(m);
+
+    // そのとき見えていたもの（§23.9）。**印の描き方は戦闘と同じ実装**を使う。
+    // **最初のサンプルで判断しない** —— 開始時はまだ何も捉えていないので、
+    // 「コンタクトが無い記録」と区別が付かない
+    this.contactView = new ContactRenderer(this.scene.world, null, null);
+    this._cstride = contactStride(data.v || 1);
+
+    this._buildDecoys();
+
     // 名簿から表示物を作る。位置はこのあと毎フレーム入れ替える。
     this.units = [];
     for (const u of data.units) {
       const ghost = {
         id: u.id, name: u.name, side: u.side, kind: u.kind,
+        typeId: u.type,
         pos: new THREE.Vector3(), heading: 0, pitch: 0, roll: 0,
         alive: false, onGround: false, view: null,
         spec: u.kind === 'aircraft' ? safeType(u.type) : safeGround(u.type),
@@ -135,6 +169,7 @@ export class ReplayPlayer {
       this.scene.add(ghost.view);
       this.units.push(ghost);
     }
+    this._byId = new Map(this.units.map((u) => [u.id, u]));
 
     this._buildTracers();
 
@@ -172,6 +207,13 @@ export class ReplayPlayer {
     this.flashPoints = null;
     this.data = null;
     this.terrain = null;
+    this.cloudView?.dispose();
+    this.cloudView = null;
+    this.clouds = null;
+    this.markers = [];
+    this.contactView = null;
+    this.decoys = [];
+    this.decoyPool = [];
     if (this.onClose) this.onClose();
   }
 
@@ -247,6 +289,13 @@ export class ReplayPlayer {
    * 間隔(0.5秒)のあいだは補間する。補間しないと 2Hz のコマ送りになる。
    */
   _apply(t) {
+    // 雲は**時刻から直に**決める（`setElapsed`）。足し込みだと、
+    // つまみで飛んだときに位置がずれる。**`_apply` の先頭に置く** ——
+    // このあと機体が雲の向こうかを見るので、先に雲を今の時刻へ動かす
+    if (this.clouds) {
+      this.clouds.setElapsed(t);
+      this.cloudView.update(this.scene.camera, null);   // カーソルの穴は開けない
+    }
     const cur = this._stateAt(t);
     // 姿勢はこの少しあとの状態との差から作る
     const AHEAD = 0.35;
@@ -274,7 +323,11 @@ export class ReplayPlayer {
         } else {
           u.pitch = 0; u.roll = 0;
         }
-        syncAircraftView(u, this.terrain, size, this.followId === u.id, true);
+        // カメラから見て雲の向こうにいるか（§88.12）。**当たり判定と同じ式**。
+        // 記録に足す必要はない —— 雲もカメラもこちらで持っている
+        const occluded = !!(this.clouds
+          && this.clouds.blocks(this.scene.camera.position, u.pos));
+        syncAircraftView(u, this.terrain, size, this.followId === u.id, true, occluded);
       } else {
         syncGroundView(u, groundDisplayScale(this.scene.rig.distance, this.scene.camera,
           u.spec.size || 120), true);
@@ -282,6 +335,9 @@ export class ReplayPlayer {
     }
 
     this._applyTracers(t);
+    this._applyContacts(t, size);
+    this._applyDecoys(t, size);
+    scaleObjectiveLabels(this.markers, this.scene.camera);
 
     // 追尾中の機体へカメラを寄せる
     if (this.followId != null) {
@@ -292,6 +348,110 @@ export class ReplayPlayer {
         this.scene.rig.focusAltTarget = Math.min(7000, Math.max(400, s.y - ground));
       }
     }
+  }
+
+  // ------------------------------------------------------------ 見えていたもの
+
+  /**
+   * その時刻に自軍が捉えていたコンタクトを組み立てて、戦闘と同じ印を出す（§23.9）。
+   *
+   * **位置だけ補間する。** 段階や旗は前のサンプルのものを使う ——
+   * 「識別できた瞬間」を間で薄めると、いつ分かったのかが読めなくなる。
+   */
+  _applyContacts(t, size) {
+    if (!this.contactView) return;
+    const S = this.data.samples;
+    const st = this._cstride;
+    let lo = 0, hi = S.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (S[mid].t <= t) lo = mid; else hi = mid - 1;
+    }
+    const a = S[lo], b = S[Math.min(S.length - 1, lo + 1)];
+    const span = b.t - a.t;
+    const k = span > 0 ? clamp((t - a.t) / span, 0, 1) : 0;
+
+    const bpos = new Map();
+    for (let i = 0; i + st <= (b.c || []).length; i += st) {
+      bpos.set(b.c[i], st >= 9 ? [b.c[i + 1], b.c[i + 2], b.c[i + 3]] : [b.c[i + 1], 0, b.c[i + 2]]);
+    }
+
+    const out = new Map();
+    const ac = a.c || [];
+    for (let i = 0; i + st <= ac.length; i += st) {
+      const id = ac[i];
+      const ghost = this._byId.get(id);
+      if (!ghost) continue;                    // 名簿に無い（記録が古い）
+      let x, y, z, heading = 0, speed = 0, level = 0, err = -1, flags = 0;
+      if (st >= 9) {
+        x = ac[i + 1]; y = ac[i + 2]; z = ac[i + 3];
+        heading = (ac[i + 4] * Math.PI) / 180;
+        speed = ac[i + 5]; level = ac[i + 6]; err = ac[i + 7]; flags = ac[i + 8];
+      } else {
+        // v1 は x/z と段階しか無い。高度線も誤差の円も出せないが、開ける
+        x = ac[i + 1]; y = 0; z = ac[i + 2];
+        level = ac[i + 3]; flags = ac[i + 4] ? CFLAG.DETECTED : 0;
+      }
+      const nb = bpos.get(id);
+      if (nb) { x += (nb[0] - x) * k; y += (nb[1] - y) * k; z += (nb[2] - z) * k; }
+
+      const detected = !!(flags & CFLAG.DETECTED);
+      out.set(id, {
+        pos: new THREE.Vector3(x, y, z),
+        state: detected ? 'contact' : (flags & CFLAG.MEMORY ? 'memory' : 'lost'),
+        level,
+        err: err >= 0 ? err : Infinity,
+        detected,
+        approx: !!(flags & CFLAG.APPROX),
+        jammed: !!(flags & CFLAG.JAMMED),
+        unconfirmed: !!(flags & CFLAG.UNCONFIRMED),
+        speed,
+        heading,
+        unit: ghost,
+      });
+    }
+    this.contactView.sync(out, this.scene.camera, this.terrain, size, t);
+  }
+
+  // ------------------------------------------------------------ チャフ・フレア
+
+  /** 撒いた出来事を拾っておく（§23.9）*/
+  _buildDecoys() {
+    this.decoys = (this.data.events || [])
+      .filter((e) => e.type === 'decoy' && e.x != null)
+      .map((e) => ({ t: e.t, x: e.x, y: e.y, z: e.z, flare: e.k === 'flare' }));
+    this.decoyPool = [];
+  }
+
+  /**
+   * 撒かれたものを出す。**戦闘と同じ色・同じ消え方**（`effects.js` の `_syncDecoys`）。
+   *
+   * 玉は**使い回す** —— 1戦で数百個撒かれるので、毎フレーム作ると落ちる。
+   */
+  _applyDecoys(t, size) {
+    if (!this.decoys || !this.decoys.length) return;
+    let n = 0;
+    for (const d of this.decoys) {
+      const age = t - d.t;
+      if (age < 0 || age > DECOY_LIFE) continue;
+      let v = this.decoyPool[n];
+      if (!v) {
+        v = new THREE.Mesh(
+          new THREE.SphereGeometry(1, 5, 3),
+          new THREE.MeshBasicMaterial({ transparent: true, depthTest: false }),
+        );
+        v.renderOrder = 5;
+        this.scene.add(v);
+        this.decoyPool[n] = v;
+      }
+      v.visible = true;
+      v.position.set(d.x, d.y - age * DECOY_FALL, d.z);   // 撒かれたものは落ちる
+      v.scale.setScalar(size * 0.16);
+      v.material.color.setHex(d.flare ? 0xffd070 : 0xcfd6dc);
+      v.material.opacity = Math.max(0, 1 - age / DECOY_LIFE);
+      n++;
+    }
+    for (let i = n; i < this.decoyPool.length; i++) this.decoyPool[i].visible = false;
   }
 
   // ------------------------------------------------------------ 兵装の描画

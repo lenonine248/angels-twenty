@@ -14,7 +14,7 @@
 // どちらかが最後まで分からない。
 
 import { Terrain, MAP_SIZE, CELLS } from '../world/terrain.js';
-import { downloadRecording, pickRecordingFile } from '../core/recorder.js';
+import { downloadRecording, pickRecordingFile, resultOf } from '../core/recorder.js';
 
 /** 出来事の見た目 */
 const EVENT_STYLE = {
@@ -147,12 +147,14 @@ export class ReviewScreen {
         class="rv-unit ${this.focusId === u.id ? 'on' : ''} side-${u.side}">${u.name}</button>`).join('');
 
     const st = d.stats || {};
+    const res = resultOf(d);
     this.root.innerHTML = `
       <div class="rv-wrap">
         <div class="rv-head">
           <span class="rv-title">REVIEW — ${d.stage.name}<small>${d.stage.title || ''}</small></span>
-          <span class="rv-res ${d.result === 'clear' ? 'clear' : 'fail'}">
-            ${d.result === 'clear' ? 'MISSION COMPLETE' : 'MISSION FAILED'}</span>
+          <span class="rv-res ${res.clear ? 'clear' : 'fail'}">
+            ${res.clear ? 'MISSION COMPLETE' : 'MISSION FAILED'}</span>
+          ${res.reason ? `<span class="rv-why">${res.reason}</span>` : ''}
           <span class="rv-meta">撃墜 ${st.kills ?? '-'} / 喪失 ${st.losses ?? '-'} / ${fmt(st.sec ?? 0)}${
             d.seed != null ? ` / 種 ${d.seed}` : ''}</span>
           <button data-rv="close" class="rv-close">閉じる</button>

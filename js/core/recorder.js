@@ -23,8 +23,31 @@ import { VERSION } from './version.js';
 /** サンプリング間隔(秒) */
 export const SAMPLE_DT = 0.5;
 
-/** 記録の形式版。読み込み側が古い記録を弾くために使う */
-export const FORMAT = 1;
+/**
+ * 記録の形式版。読み込み側が古い記録を弾くために使う。
+ *
+ * | | |
+ * |---|---|
+ * | 1 | 最初の形 |
+ * | **2** | **天候・到達目標・チャフ／フレアを足し、コンタクトを厚くした**（§23.9）|
+ *
+ * **足しただけなので v1 も開ける。** 変わったのはコンタクト1件の長さだけで、
+ * そこは `v` を見て読み分ける（`contactStride`）。
+ * 古い記録は新しい要素が空のまま開く —— 弾くよりそのほうが役に立つ。
+ */
+export const FORMAT = 2;
+
+/** コンタクト1件が何個の数値で書かれているか（形式版ごと）*/
+export function contactStride(v) { return v >= 2 ? 9 : 5; }
+
+/** コンタクトの旗（`flags`）*/
+export const CFLAG = {
+  DETECTED: 1,      // いま探知している
+  APPROX: 2,        // 位置が粗い（逆探知など）
+  JAMMED: 4,        // 掴んでいるが妨害されている
+  UNCONFIRMED: 8,   // 攻撃したが生死を確認していない
+  MEMORY: 16,       // 静止目標の記憶（探知は切れている）
+};
 
 export class Recorder {
   constructor(stage, world, seed) {
@@ -86,16 +109,29 @@ export class Recorder {
     // そのとき自軍に見えていたもの。座標は**表示上の位置**を使う。
     // 逆探知は ±1km ずれた位置しか分からないので、真の座標を入れると
     // 「見えていたもの」にならない。
+    //
+    // **v2 で厚くした**（§23.9）。3D再生でも戦闘と同じ印を出すには、
+    // 2D地図が使う x/z だけでは足りない —— 高度線に y、
+    // 誤差の円に `err`、点滅と枠に状態、ラベルに速度と方位が要る。
     const c = [];
     const det = w.detection;
     if (det) {
       for (const [, ct] of det.contactsFor(w.playerSide)) {
         if (ct.unit && ct.unit.side === w.playerSide) continue;
+        let flags = 0;
+        if (ct.detected) flags |= CFLAG.DETECTED;
+        if (ct.approx) flags |= CFLAG.APPROX;
+        if (ct.jammed) flags |= CFLAG.JAMMED;
+        if (ct.unconfirmed) flags |= CFLAG.UNCONFIRMED;
+        if (ct.state === 'memory') flags |= CFLAG.MEMORY;
         c.push(
           ct.unit ? ct.unit.id : 0,
-          Math.round(ct.pos.x), Math.round(ct.pos.z),
+          Math.round(ct.pos.x), Math.round(ct.pos.y), Math.round(ct.pos.z),
+          Math.round(((ct.heading || 0) * 180) / Math.PI),
+          Math.round(ct.speed || 0),
           ct.level | 0,
-          ct.detected ? 1 : 0,
+          Number.isFinite(ct.err) ? Math.round(ct.err) : -1,
+          flags,
         );
       }
     }
@@ -105,7 +141,7 @@ export class Recorder {
 
   /**
    * 出来事。位置は起きた場所を丸めて持つ。
-   * @param {string} type 'fire' | 'hit' | 'kill' | 'loss' | 'withdraw' | 'order'
+   * @param {string} type 'fire' | 'hit' | 'kill' | 'loss' | 'withdraw' | 'order' | 'decoy'
    */
   event(type, time, o = {}) {
     if (!this.enabled) return;
@@ -115,12 +151,25 @@ export class Recorder {
     if (o.pos) { e.x = Math.round(o.pos.x); e.y = Math.round(o.pos.y); e.z = Math.round(o.pos.z); }
     if (o.weapon) e.w = o.weapon;
     if (o.cause) e.cause = o.cause;
+    if (o.kind) e.k = o.kind;            // チャフ／フレアの別（§23.9）
     if (o.label) e.label = o.label;
     this.events.push(e);
   }
 
+  /**
+   * 結末を書き留める。
+   *
+   * **書き方が2通りあった。** ゲーム本体は `'clear'` / `'fail'` の文字列、
+   * `tools/bench.js` は `{ state, reason, sec }` の入れ物を渡していた。
+   * 読む側（振り返り画面）は文字列しか見ていなかったので、
+   * **ベンチで録った記録はクリアでも MISSION FAILED と出ていた。**
+   *
+   * **形を決めるのはここ1か所にする。** 受け取りは両方許して、
+   * 残すのは `{ state, reason }` に均す。読むときは `resultOf()` を通す。
+   */
   finish(result, stats) {
-    this.result = result;
+    const o = result && typeof result === 'object' ? result : { state: result };
+    this.result = { state: o.state === 'clear' ? 'clear' : 'fail', reason: o.reason || '' };
     this.stats = stats || null;
   }
 
@@ -137,6 +186,16 @@ export class Recorder {
         // 地形は「シード＋パラメータ」から同じ形が再現できる（§2）。
         // 画像を持たずに済むので、記録がそのぶん軽くなる。
         terrain: { ...this.stage.terrain },
+        // 雲も同じ —— 種と `weather` があれば同じ形が出る（§88）。
+        // **これが無いと、リプレイだけ雲の無い空になる** ——
+        // 6面で雲が探知と射撃を変えているので、
+        // 見ている側には「なぜ撃たないのか」が分からなくなる
+        weather: this.stage.weather ? { ...this.stage.weather } : null,
+        // 到達目標（§23.9）。**護衛の行き先が画面に無いと、
+        // 編隊がどこへ向かっているのかが読めない。** 描くのに要る値だけ持つ
+        objectives: (this.stage.objectives || [])
+          .filter((o) => o.type === 'reach')
+          .map((o) => ({ id: o.id, type: o.type, x: o.x, z: o.z, radius: o.radius || 3000 })),
       },
       dt: SAMPLE_DT,
       units: this.units,
@@ -154,6 +213,19 @@ export class Recorder {
 }
 
 // ---------------------------------------------------------------- 受け渡し
+
+/**
+ * 記録の結末を読む（§23.6）。**古い記録も開ける。**
+ *
+ * 残っているファイルには3通りの書き方が混ざっている ——
+ * 文字列 / `{state, reason, sec}` / いまの `{state, reason}`。
+ * **読む側がそれぞれ判定を書くと、また片方を見落とす**ので、ここを通す。
+ */
+export function resultOf(data) {
+  const r = data && data.result;
+  const o = r && typeof r === 'object' ? r : { state: r };
+  return { clear: o.state === 'clear', reason: o.reason || '' };
+}
 
 /** 記録をファイルへ落とす */
 export function downloadRecording(rec, filename) {
@@ -205,8 +277,11 @@ export function parseRecording(text) {
   } catch (e) {
     throw new Error('記録として読めません（JSON ではありません）');
   }
-  if (!data || data.v !== FORMAT) {
-    throw new Error(`対応していない記録の形式です（この版は v${FORMAT}）`);
+  // **古い記録は弾かない。** 形式版は足し算で上がってきたので、
+  // v1 は新しい要素が空のまま開ける（§23.9）。
+  // 弾くのは**この版より新しい**記録だけ —— こちらが知らない形が入っている
+  if (!data || !(data.v >= 1) || data.v > FORMAT) {
+    throw new Error(`対応していない記録の形式です（この版は v${FORMAT} まで）`);
   }
   if (!Array.isArray(data.samples) || !Array.isArray(data.units)) {
     throw new Error('記録の中身が足りません');
