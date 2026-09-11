@@ -14,6 +14,8 @@ import { ContactRenderer } from './world/contacts.js';
 import { Effects } from './world/effects.js';
 import { GameLoop, formatTime } from './core/loop.js';
 import { makeRng } from './core/rng.js';
+import { CloudField } from './world/clouds.js';
+import { CloudView } from './world/cloudview.js';
 import { loadProgress, markCleared, markRating, resetProgress, saveSettings } from './core/save.js';
 import { evaluate, isBetterRank, RANKS } from './data/rating.js';
 import { AudioManager } from './core/audio.js';
@@ -59,6 +61,8 @@ let screens = null;
 let loop = null;
 let commands = null;
 let hud = null;
+/** 雲の見た目（§88.9）。戦闘ごとに作り直す */
+let cloudView = null;
 let minimap = null;
 /** 直近に終わった戦闘の記録（§23）。戦果画面の「振り返り」が使う */
 let lastRecording = null;
@@ -262,6 +266,9 @@ ${err.message}`);
 function fixedUpdate(dt) {
   if (!battle) return;
   const { world, detection, combat, pilotAI, mission } = battle;
+  // 雲を風で流す（§88.15）。**いちばん先に置く** ——
+  // このステップの探知も射撃も、同じ位置の雲を見る
+  world.clouds?.advance(dt);
   for (const u of world.units) u.update(dt, world);
   detection.update(dt);
   pilotAI.update(dt);
@@ -308,11 +315,18 @@ function render(alpha, realDt) {
     }
 
     const size = aircraftDisplayLength(scene.rig.distance, scene.camera);
+    // 雲の濃さはカメラの高さで決まる（§88.9）
+    cloudView?.update(scene.camera, commands.mouseNdc);
+    const cloudy = world.clouds && world.clouds.active;
     for (const u of world.units) {
       const mine = u.side === world.playerSide;
       const visible = mine || contacts.showsBody(u);
-      if (u.kind === 'aircraft') syncAircraftView(u, terrain, size, commands.isSelected(u), visible);
-      else syncGroundView(u, groundDisplayScale(scene.rig.distance, scene.camera, u.spec.size), visible);
+      if (u.kind === 'aircraft') {
+        // カメラから見て雲の向こうにいるか。**当たり判定と同じ式**を使う
+        const hidden = cloudy && visible
+          && world.clouds.blocks(scene.camera.position, u.pos);
+        syncAircraftView(u, terrain, size, commands.isSelected(u), visible, hidden);
+      } else syncGroundView(u, groundDisplayScale(scene.rig.distance, scene.camera, u.spec.size), visible);
     }
     contacts.update(scene.camera, terrain, size, battle.detection.time);
     scaleObjectiveLabels(battle.objectiveMarkers, scene.camera);
@@ -488,6 +502,12 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     // ミッションの個性も消える。**地図は同じ、戦闘の綾は毎回違う**（§24.2）。
     rng: makeRng(battleSeed),
     /**
+     * 雲（§88）。**地形と同じで、戦闘の種から作る** ——
+     * 1戦ごとに形が変わり、同じ種なら同じ雲になる。
+     * `stage.weather` を書かなければ空（`active` が false）。
+     */
+    clouds: new CloudField(stage.weather, makeRng(battleSeed ^ 0x5c10d)),
+    /**
      * ログを1行出す。**第2引数にユニットを渡すと、自軍のときだけ出る**（§71.2）。
      *
      * 「敵機が着陸した」「敵機が燃料切れで帰投する」といった**相手の内部事情**が
@@ -616,6 +636,8 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   };
 
   const contacts = new ContactRenderer(scene.world, world.detection, SIDE.BLUE);
+  cloudView?.dispose();
+  cloudView = new CloudView(world.clouds, scene.world);
 
   // UI をこの戦闘に繋ぎ替える
   if (!commands) {
@@ -627,9 +649,90 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     scene.world.add(commands.paths.object);
   }
   if (!hud) hud = new Hud({ world, commands });
-  else { hud.world = world; hud.commands = commands; }
+  else hud.setWorld(world, commands);      // キャッシュごと繋ぎ替える（§80.1）
 
   minimap = new Minimap(el('minimap'), terrain, scene.rig, world, commands, stage);
+
+  /**
+   * 雲の形を切り替える（§88.12・**デバッグ限定**）。
+   *
+   *   AT.cloudLook('deck')    横に広く薄い板 → 層に見える
+   *   AT.cloudLook('puffy')   ふっくらした塊（既定）
+   *   AT.cloudLook('broad')   少数の巨大な塊
+   *
+   * **見た目と当たり判定は同じ形**なので、これは遊びも変える。
+   * どれにするか決まったら `CLOUD_SHAPE` の既定を差し替えて、
+   * 18種のベンチを取り直す。
+   */
+  /**
+   * 雲の見え方を確かめる（§88.13・デバッグ限定）。
+   *
+   *   AT.cloudPeek()        いまの値を見る
+   *   AT.cloudPeek(0.25)    カーソルの穴を**狭く**する（カメラ距離に対する割合）
+   *   AT.cloudPeek(null, 900, 4200)   カメラ手前の透過（完全に透ける / 元へ戻る）
+   *
+   * **半径そのものは渡せない** —— 毎フレーム距離から計算し直すので上書きされる。
+   */
+  AT.cloudPeek = (frac, near0, near1) => {
+    const sh = cloudView && cloudView._shader;
+    if (!sh) return 'シェーダ未コンパイル（1フレーム描いてから）';
+    if (frac != null) cloudView.cursorFrac = frac;
+    if (near0 != null) sh.uniforms.uNear.value.set(near0, near1 ?? near0 * 4);
+    return { 割合: cloudView.cursorFrac, いまの半径: Math.round(sh.uniforms.uCursorR.value),
+      手前: sh.uniforms.uNear.value.toArray(),
+      カーソル: sh.uniforms.uCursor.value.toArray().map(Math.round) };
+  };
+
+  /**
+   * 雲の濃さを調整する（§88.9・デバッグ限定）。
+   *
+   *   AT.cloudDensity()          いまの値を見る
+   *   AT.cloudDensity(0.85, 0.8) 層と同じ高さ / 遥か上から見下ろしたとき
+   */
+  AT.cloudDensity = (near, far) => {
+    if (!cloudView || !cloudView.mesh) return '雲のあるステージで';
+    if (near != null) cloudView.opacityNear = near;
+    if (far != null) cloudView.opacityFar = far;
+    return { 層と同高度: cloudView.opacityNear, 遥か上から: cloudView.opacityFar,
+      いまの濃さ: Number(cloudView.mat.opacity.toFixed(3)) };
+  };
+
+  /** 雲を作り直す（デバッグ限定）。`over` で `weather` の一部を差し替える */
+  const rebuildClouds = (over) => {
+    if (!isDebug() || !stage.weather) return null;
+    world.clouds = new CloudField({ ...stage.weather, ...over }, makeRng(battleSeed ^ 0x5c10d));
+    cloudView?.dispose();
+    cloudView = new CloudView(world.clouds, scene.world);
+    return world.clouds;
+  };
+
+  AT.cloudLook = (shape) => {
+    const c = rebuildClouds({ shape });
+    if (!c) return '雲のあるステージをデバッグモードで';
+    return `${c.shape}: 塊 ${c.blobs.length}`;
+  };
+
+  /**
+   * 風を変えて雲を作り直す（§88.15・デバッグ限定）。
+   *
+   *   AT.cloudWind()          いまの風を見る
+   *   AT.cloudWind(270)       西風（**吹いてくる方位**）
+   *   AT.cloudWind(270, 25)   速さも変える
+   *   AT.cloudWind(0, 0)      無風に戻す
+   *
+   * **撒く範囲が風向きで決まる**ので、向きを変えたら作り直す必要がある。
+   */
+  AT.cloudWind = (deg, speed) => {
+    const now = world.clouds;
+    if (deg == null && speed == null) {
+      if (!now || !now.active) return '雲のあるステージで';
+      return { 風向: `${Math.round(now.windDeg)}°（吹いてくる方位）`, 風速: `${now.windSpeed} m/s`,
+        流れた量: `${Math.round(Math.hypot(now.offset.x, now.offset.z))} m`, 塊: now.blobs.length };
+    }
+    const c = rebuildClouds({ wind: { deg: deg ?? now?.windDeg, speed: speed ?? now?.windSpeed } });
+    if (!c) return '雲のあるステージをデバッグモードで';
+    return `風 ${Math.round(c.windDeg)}° / ${c.windSpeed} m/s: 塊 ${c.blobs.length}`;
+  };
 
   logLines.length = 0;
   objectivesKey = null;
@@ -876,6 +979,13 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
       heading: Math.PI * 0.35,
     }));
     u.aiMode = s.aiMode || 'TRANSIT';
+    // **支援機はプレイヤーの指揮下に置かない**（§80.4）。
+    //
+    // ESCORT の輸送機は「守る対象」であって、動かす駒ではない。
+    // 選べてしまうと、進路を変えたり降ろしたりして
+    // **護衛そのものが成立しなくなる**（離脱地点へ行かせなければ終わらない面）。
+    // ステージ側で `commandable: true` と書けば従来どおり操作できる。
+    u.commandable = s.commandable === true;
     if (s.moveTo) {
       const alt = Math.max(0, terrain.heightAt(s.moveTo.x, s.moveTo.z)) + (s.moveTo.alt || 4000);
       u.setOrder({ type: 'move', x: s.moveTo.x, z: s.moveTo.z, alt });
@@ -1340,16 +1450,50 @@ class Minimap {
     bctx.putImageData(terrain.buildMinimapImage(bctx), 0, 0);
     this.ctx.imageSmoothingEnabled = false;
 
+    // **いまのミニマップを canvas 側に持たせる。**
+    // 手続きは1度しか束ねないが、Minimap は戦闘ごとに作り直されるので、
+    // 手続きが `this` を捕まえると**前の戦闘のミニマップを掴んだまま**になる
+    canvas._minimap = this;
     if (!canvas._bound) {
       canvas._bound = true;
       canvas.addEventListener('mousedown', (e) => {
+        const me = canvas._minimap;
+        // 風の印の上では**視点を飛ばさない**。読もうとして押しただけで
+        // 地図の隅へ飛ばされるのでは、なぞって読む道具にならない
+        if (me && me.windBadge && me._onWindBadge(e)) return;
         const r = canvas.getBoundingClientRect();
-        this.rig.lookAtPoint(
+        me.rig.lookAtPoint(
           ((e.clientX - r.left) / r.width) * MAP_SIZE,
           ((e.clientY - r.top) / r.height) * MAP_SIZE,
         );
       });
+      // 風の印をなぞると方位と風速を出す（§88.15・プレイヤーの案）
+      canvas.addEventListener('mousemove', (e) => {
+        const me = canvas._minimap;
+        if (!me) return;
+        const on = !!(me.windBadge && me._onWindBadge(e));
+        me.windHover = on;
+        canvas.style.cursor = on ? 'help' : '';
+        if (on) showWindInfo(me.world.clouds, e.clientX, e.clientY);
+        else hideWindInfo();
+      });
+      canvas.addEventListener('mouseleave', () => {
+        const me = canvas._minimap;
+        if (me) me.windHover = false;
+        canvas.style.cursor = '';
+        hideWindInfo();
+      });
     }
+  }
+
+  /** カーソルが風の印の上か。**描いた座標系（canvas の画素）で比べる** */
+  _onWindBadge(e) {
+    const b = this.windBadge;
+    if (!b) return false;
+    const r = this.canvas.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * this.canvas.width;
+    const y = ((e.clientY - r.top) / r.height) * this.canvas.height;
+    return Math.hypot(x - b.x, y - b.y) <= b.r;
   }
 
   draw() {
@@ -1360,7 +1504,7 @@ class Minimap {
     for (const u of this.world.units) {
       if (!u.alive || u.side !== this.world.playerSide) continue;
       const x = (u.pos.x / MAP_SIZE) * W, y = (u.pos.z / MAP_SIZE) * H;
-      ctx.fillStyle = u.kind === 'aircraft' ? '#5aa9ff' : '#8fd0ff';
+      ctx.fillStyle = u.kind === 'aircraft' ? '#3d9bff' : '#4fc3ff';   // §80.9
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
       if (this.commands.isSelected(u)) {
         ctx.strokeStyle = '#ffb648';
@@ -1374,7 +1518,7 @@ class Minimap {
       for (const [, c] of det.contactsFor(this.world.playerSide)) {
         const x = (c.pos.x / MAP_SIZE) * W, y = (c.pos.z / MAP_SIZE) * H;
         ctx.globalAlpha = c.state === 'contact' ? 1 : c.state === 'memory' ? 0.55 : 0.7;
-        ctx.fillStyle = c.level >= 1 ? '#ff5b44' : '#e8e8e8';
+        ctx.fillStyle = c.level >= 1 ? '#ff4536' : '#e8e8e8';          // §80.9
         if (c.unit.static) {
           ctx.fillRect(x - 2, y - 2, 4, 4);
           if (c.state === 'memory') {
@@ -1419,10 +1563,82 @@ class Minimap {
     ctx.fill();
     ctx.restore();
 
+    // 風（§88.15）。**雲がどちらへ流れるか**を地図の向きのまま出す。
+    // 数字ではなく矢印なのは、**読むのではなく見て分かる**ため ——
+    // 数字（方位と風速）は**なぞったときだけ**出す（プレイヤーの案）。
+    const cl = this.world.clouds;
+    this.windBadge = null;
+    if (cl && cl.active && cl.windSpeed > 0) {
+      const bx = W - 22, by = H - 22, br = 14;
+      // **描いた場所をそのまま当たり判定にする** —— 別に書くとずれる
+      this.windBadge = { x: bx, y: by, r: br };
+      const lit = this.windHover;
+      ctx.save();
+      ctx.translate(bx, by);
+      ctx.fillStyle = lit ? 'rgba(10, 24, 30, 0.92)' : 'rgba(8, 16, 22, 0.6)';
+      ctx.beginPath(); ctx.arc(0, 0, br, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = lit ? 'rgba(111, 216, 232, 0.9)' : 'rgba(111, 216, 232, 0.4)';
+      ctx.lineWidth = 1; ctx.stroke();
+      // 流れていく向き＝風向＋180。地図は北が上なので、そのまま回せばよい
+      ctx.rotate((cl.windDeg + 180) * Math.PI / 180);
+      ctx.strokeStyle = lit ? '#d8f4fb' : '#9fd8ea';
+      ctx.fillStyle = lit ? '#d8f4fb' : '#9fd8ea';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(0, 8); ctx.lineTo(0, -4); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, -10); ctx.lineTo(-4.5, -2.5); ctx.lineTo(4.5, -2.5);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    } else if (this.windHover) {
+      this.windHover = false;
+      hideWindInfo();
+    }
+
     ctx.strokeStyle = 'rgba(111, 216, 232, 0.35)';
     ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
   }
+}
+
+/** 8方位の呼び名。**方位を地図の向きへ読み替える手間**を省くために出す */
+const COMPASS8 = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+function compass8(deg) {
+  return COMPASS8[Math.round((((deg % 360) + 360) % 360) / 45) % 8];
+}
+
+/**
+ * ミニマップの風の印をなぞったときに出す数字（§88.15・プレイヤーの案）。
+ *
+ * 矢印は**どちらへ流れるか**しか言わない。方位と風速はここで補う ——
+ * **常時は出さない。** 常に画面にある数字は読まれなくなるし、
+ * 知りたくなるのは「あとどれくらいで切れ目が来るか」を考える一瞬だけ。
+ *
+ * **10分でどれだけ動くか**も併せて出す。m/s のままでは
+ * 「切れ目が目標の上に来るまで」を見積もるのに遠い。
+ */
+function showWindInfo(cl, px, py) {
+  const box = el('hoverInfo');
+  if (!box || !cl || !cl.active || !cl.windSpeed) return;
+  const deg = Math.round(cl.windDeg);
+  const km = (cl.windSpeed * 600 / 1000).toFixed(1);
+  box.innerHTML = `風 ${String(deg).padStart(3, '0')}°（${compass8(deg)}）から ${cl.windSpeed} m/s`
+    + `<br><span class="hi-dist">雲は ${compass8(deg + 180)} へ 10分で ${km}km</span>`;
+  box.dataset.wind = '1';
+  box.classList.remove('hidden');
+  // 印は画面の右端にあるので、**そのまま右下に出すとはみ出す。**
+  // 幅を測ってから、収まらない側は反対へ回す
+  const left = px + 16 + box.offsetWidth > window.innerWidth ? px - 16 - box.offsetWidth : px + 16;
+  const top = py + 16 + box.offsetHeight > window.innerHeight ? py - 16 - box.offsetHeight : py + 16;
+  box.style.left = `${Math.max(4, left)}px`;
+  box.style.top = `${Math.max(4, top)}px`;
+}
+
+/** 風の欄を閉じる。**ユニットの欄まで閉じない**ように出どころを見る */
+function hideWindInfo() {
+  const box = el('hoverInfo');
+  if (!box || box.dataset.wind !== '1') return;
+  delete box.dataset.wind;
+  box.classList.add('hidden');
 }
 
 // ================================================================ その他

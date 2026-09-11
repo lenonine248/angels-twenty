@@ -124,6 +124,11 @@
     };
 
     while (b.mission.state === 'active' && steps < MAX_SEC * 30) {
+      // **雲を風で流す**（§88.15）。`main.js` の `fixedUpdate` と同じ順番・同じ位置。
+      // ここはゲーム本体の刻みを写した別の実装なので、
+      // **向こうに足したものはこちらにも足す** —— 忘れると、
+      // ベンチだけ雲が止まったまま測ることになる
+      w.clouds?.advance(DT);
       for (const u of w.units) if (u.alive) u.update(DT, w);
       w.detection.update(DT);
       b.pilotAI.update(DT);

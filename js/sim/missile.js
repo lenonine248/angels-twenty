@@ -10,7 +10,9 @@
 import * as THREE from 'three';
 import { clamp } from '../core/rng.js';
 import { missileDragFactor, turnFactor } from '../core/atmosphere.js';
-import { angleDiff, headingOf } from './unit.js';
+import { angleDiff, headingOf, radarElevation } from './unit.js';
+import { opticalSight, radarReach } from './sight.js';
+import { CLOUD_AS_BACKGROUND } from '../world/clouds.js';
 
 /**
  * 直撃と判定する距離(m)。**目標の大きさを足して使う**（`hitRadii`）。
@@ -827,9 +829,14 @@ export class Missile {
       wsum += w;
     };
 
-    consider(t.pos, irBrightness(t, this.pos));
+    // **雲は赤外線を通さない**（§88.3）。機体もフレアも、
+    // 雲を挟んだ側にあれば見えない —— シーカーは光学と同じ扱い。
+    if (opticalSight(world, this.pos, t.pos, 8, 300)) {
+      consider(t.pos, irBrightness(t, this.pos));
+    }
     for (const d of world.decoys) {
       if (!d.alive || d.kind !== 'flare' || d.side !== t.side) continue;
+      if (!opticalSight(world, this.pos, d.pos, 8, 300)) continue;
       consider(d.pos, flareBrightness(d) * resist);
     }
 
@@ -1217,7 +1224,12 @@ export function notchQuality(src, t, world) {
   // 3. 紛れる背景。地面か、チャフの雲か（§35.2）
   const ground = Math.max(0, world.terrain.heightAt(t.pos.x, t.pos.z));
   const byGround = clamp(1 - (t.pos.y - ground) / CLUTTER_MAX_AGL, 0, 1);
-  const cover = clamp(byGround + CHAFF_AS_BACKGROUND * chaffCover(world, t), 0, 1);
+  // **雲もチャフと同じ「紛れる背景」**（§88.3.2）。
+  // もともと同じものを表していた（電波を通さない雲）ので、項が1つ増えるだけ。
+  // 撒くのではなくそこにある代わりに、少し濃い。
+  const inCloud = world.clouds && world.clouds.contains(t.pos) ? 1 : 0;
+  const cover = clamp(byGround + CHAFF_AS_BACKGROUND * chaffCover(world, t)
+    + CLOUD_AS_BACKGROUND * inCloud, 0, 1);
   if (cover <= 0) return 0;
 
   // **積をそのまま妨害の強さとして返す**（§70.4.1）。
@@ -1300,7 +1312,11 @@ function illuminates(launcher, target, world, lock = false) {
   // 地上発射（SAM）は全方位レーダー。沈黙すれば誘導が切れる。
   if (launcher.kind !== 'aircraft') {
     if (!launcher.radarRange) return false;
-    if (launcher.pos.distanceTo(target.pos) > launcher.radarRange) return false;
+    // **雲を通ったぶんだけ実効射程が縮む**（§88.3.1）。
+    // 探知と同じ式を使う —— 「見つけられる距離」と「誘導し続けられる距離」が
+    // ずれると、掴んだのに誘導できない（またはその逆）が起きる。
+    const reach = radarReach(world, launcher.radarRange, launcher.pos, target.pos);
+    if (launcher.pos.distanceTo(target.pos) > reach) return false;
     return world.terrain.hasLineOfSight(launcher.pos, target.pos, 8, 400);
   }
 
@@ -1309,8 +1325,9 @@ function illuminates(launcher, target, world, lock = false) {
   const dy = target.pos.y - launcher.pos.y;
   const flat = Math.hypot(dx, dz);
   const dist = Math.hypot(flat, dy);
-  // 切っていれば誘導できない（§26.4）
-  if (dist > (launcher.radarRange || 0)) return false;
+  // 切っていれば誘導できない（§26.4）。
+  // 雲を通ったぶんは縮む（§88.3.1・上の地上発射と同じ式）
+  if (dist > radarReach(world, launcher.radarRange || 0, launcher.pos, target.pos)) return false;
 
   if (!launcher.spec.omniRadar) {
     const bearing = Math.atan2(dx, -dz);
@@ -1324,7 +1341,11 @@ function illuminates(launcher, target, world, lock = false) {
       ? (launcher.spec.radarLockFovV ?? launcher.spec.radarFovV ?? 30)
       : (launcher.spec.radarFovV || 30);
     if (Math.abs(diff) > fovH * (Math.PI / 180)) return false;
-    if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > fovV * (Math.PI / 180)) return false;
+    // `combat.js` の `inRadarFan`・`detection.js` の `byRadar` と**同じ式**（§83）。
+    // ここが3か所目。**機首基準にするなら、縦のクランク**（`sim/aircraft.js`）
+    // **とセットでないと成立しない** —— 片方だけ入れたとき、
+    // AAM-M の照射切れが 5件 → 63件になった（§82）。
+    if (Math.abs(radarElevation(launcher, dy, flat)) > fovV * (Math.PI / 180)) return false;
   }
   return world.terrain.hasLineOfSight(launcher.pos, target.pos, 8, 400);
 }

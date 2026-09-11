@@ -64,6 +64,9 @@
   /** 手で1ステップ進める（描画を回さない） */
   function step(b) {
     const w = b.world;
+    // 雲を風で流す（§88.15）。**本体の刻みに足したものはここにも足す** ——
+    // このループはゲーム本体の写しなので、忘れると雲だけ止まったまま測る
+    w.clouds?.advance(DT);
     for (const u of w.units) if (u.alive) u.update(DT, w);
     for (const m of w.missiles) if (m.alive) m.update(DT, w);
     // **弾はここで進めない。** `combat.update` が進めて掃除まで行う。

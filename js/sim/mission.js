@@ -141,7 +141,11 @@ export class Mission {
   }
 
   registerReinforcement(airbase, config) {
-    this.reinforce.push({ airbase, config, timer: config.every, spawned: 0 });
+    // `after: 'detected'` を書くと、**こちらが敵に見つかるまで時計が動かない**（§80.5）
+    this.reinforce.push({
+      airbase, config, timer: config.every, spawned: 0,
+      armed: config.after !== 'detected',
+    });
   }
 
   update(dt) {
@@ -202,6 +206,17 @@ export class Mission {
    *
    * 飛行場を潰すか、送る数を出し切れば、そのタグは外れる。
    */
+  /** その陣営が、こちらの機体を1機でも掴んでいるか（§80.5） */
+  _spotted(side) {
+    const d = this.world.detection;
+    if (!d) return false;
+    for (const [, c] of d.contactsFor(side)) {
+      const t = c.unit;
+      if (t && t.alive && t.kind === 'aircraft' && t.side === this.world.playerSide) return true;
+    }
+    return false;
+  }
+
   _pendingTags() {
     const set = new Set();
     for (const r of this.reinforce) {
@@ -241,6 +256,17 @@ export class Mission {
     for (const r of this.reinforce) {
       if (!r.airbase.alive) continue;              // 飛行場を潰せば増援は止まる
       if (r.spawned >= r.config.max) continue;
+      // **見つかってから上げる**（§80.5）。
+      //
+      // 迎撃機を時計だけで上げると、こちらがまだ自陣にいるうちから
+      // 敵が湧いている。「侵入を察知して緊急発進した」という筋にするなら、
+      // 起算はそちらが**こちらを掴んだ瞬間**であるべき。
+      // 一度動き出した時計は止めない —— 隠れ直せば湧かなくなる、では
+      // **見つからないように往復するのが最適手**になってしまう。
+      if (!r.armed) {
+        if (!this._spotted(r.airbase.side)) continue;
+        r.armed = true;
+      }
       r.timer -= dt;
       if (r.timer > 0) continue;
       r.timer = r.config.every;

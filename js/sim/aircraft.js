@@ -429,6 +429,42 @@ export class Aircraft extends Unit {
   }
 
   /**
+   * 誘導中、目標が**縦の扇**から出ないところまでしか高度を変えない（§83）。
+   *
+   * 横のクランク（`CRANK_FRACTION`）の上下版。扇いっぱいまで使うと、
+   * 目標が少し上下するだけで切れるので、ここも**6割まで**にして余裕を残す。
+   *
+   * `_integrate` の上昇率の式と**対にしてある**:
+   *
+   * ```
+   * vs    = altErr > 0 ? altErr * 0.9 : altErr * 0.35
+   * pitch = atan2(vs, speed)
+   * ```
+   *
+   * 上下角の許される幅から上昇率を出し、そこから高度指示へ逆算する。
+   * 片方だけ動かすと、押さえたつもりの角度が押さえられていない。
+   *
+   * @param {number} wanted 空戦機動が選んだ高度
+   * @param {number} dx,dz  目標までの水平のずれ
+   * @param {number} aimY   目標の高度
+   */
+  _holdInVerticalFan(wanted, dx, dz, aimY) {
+    const vFov = this.spec.radarLockFovV ?? this.spec.radarFovV ?? 30;
+    const band = Math.max(4, vFov * CRANK_FRACTION) * DEG;
+    const flat = Math.max(1, Math.hypot(dx, dz));
+    // 水平線から見た目標の仰角。機首をこの ±band に収めれば扇の内側に残る
+    const el = Math.atan2(aimY - this.pos.y, flat);
+    const spd = Math.max(60, this.speed);
+    const LIM = 1.2;                    // tan が暴れないように ±69度で止める
+    const vsOf = (a) => spd * Math.tan(clamp(a, -LIM, LIM));
+    // 上昇率 → 高度指示（`_integrate` の逆算）
+    const altOf = (vs) => this.pos.y + (vs > 0 ? vs / 0.9 : vs / 0.35);
+    const a1 = altOf(vsOf(el + band));
+    const a2 = altOf(vsOf(el - band));
+    return clamp(wanted, Math.min(a1, a2), Math.max(a1, a2));
+  }
+
+  /**
    * 目標を見失った（または撃破を確認した）ときに指示を解く。
    *
    * `_advanceOrder` は待ち行列と `move` しか面倒を見ないので、
@@ -436,7 +472,14 @@ export class Aircraft extends Unit {
    */
   _releaseTarget(world, order, lost) {
     if (this.queue.length > 0) this.order = this.queue.shift();
-    else this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, alt: this.desiredAlt, radius: 2500 };
+    // **護衛は交戦が終わったら護る相手へ戻る**（§80.2.2）。
+    //
+    // その場の待機旋回に落とすと、次に司令AIが考えるまでの
+    // 0.5〜0.8秒（練度による）は**護衛対象から離れた場所で回っている。**
+    // 撃墜のたびに起きるので、「交戦が終わるとぼんやりする」と見える。
+    else if (this.aiMode === 'ESCORT' && this.escortTarget && this.escortTarget.alive) {
+      this.order = { type: 'follow', target: this.escortTarget, slot: (this.formationSlot ?? 0) + 1 };
+    } else this.order = { type: 'orbit', x: this.pos.x, z: this.pos.z, alt: this.desiredAlt, radius: 2500 };
     this.acmMode = null;
     this.cranking = false;
     // プレイヤーが出した指示を解くときは黙って消さない。
@@ -855,6 +898,16 @@ export class Aircraft extends Unit {
             this.acmMode = null;
             this.cranking = false;
             desiredAlt = aim.y;
+            // **見えていなくても、誘導している弾があるなら扇には残す**（§83）。
+            //
+            // 「覚えている高度へ素直に向かう」は、2km 上から見ていれば
+            // **そのまま 45度の降下**になる。目標のほうは水平にいるので、
+            // 下を向いたぶんだけ縦の扇から出て、照射が切れる。
+            // 実測では、縦のクランクを入れたあとに残った照射切れ 16件のうち
+            // **11件がこの枝**だった（残り5件は回避中で、そちらは別の判断）。
+            if (this._guidingSarhAt(t, world)) {
+              desiredAlt = this._holdInVerticalFan(desiredAlt, dx, dz, aim.y);
+            }
             break;
           }
           const m = attackManeuver(this, t, world);
@@ -879,6 +932,19 @@ export class Aircraft extends Unit {
             const off = angleDiff(headingOf(dx, dz), this.heading);
             desiredHeading = headingOf(dx, dz) + (off >= 0 ? -crank : crank);
             this.cranking = true;
+
+            // **上下も同じように押さえる**（§83）。
+            //
+            // 扇は機体に付いているので、上昇・降下すれば帯も傾く。
+            // ところが押さえていたのは**方位だけ**で、
+            // 縦は空戦機動の決めた高度がそのまま通っていた。
+            // 機動が 30度の降下を選べば、正面の目標でも縦の扇（±20度）から出る。
+            //
+            // やることは横のクランクと同じ —— **扇の6割までしか振らない。**
+            // 違うのは、直接向けるのではなく `desiredAlt` を通すところ。
+            // 上下角は `_integrate` が `atan2(上昇率, 速度)` で決めるので、
+            // **許される上昇率へ逆算して高度指示を挟む**（そこの式と対にしてある）。
+            desiredAlt = this._holdInVerticalFan(desiredAlt, dx, dz, aim.y);
           } else {
             this.cranking = false;
           }
@@ -1451,10 +1517,13 @@ export class Aircraft extends Unit {
       this.beaming = false;
       this.running = true;
       const jink = JINK_AMPLITUDE * Math.sin((this._runFor / JINK_PERIOD) * Math.PI * 2);
+      const runHeading = this._crankHeading(world, bearing + Math.PI + jink);
       return {
         // 誘導中なら扇の内側までしか背を向けない（§70.4.6）
-        heading: this._crankHeading(world, bearing + Math.PI + jink),
-        alt: this.pos.y,               // 高度は捨てない（薄い空気のほうが速い）
+        heading: runHeading,
+        // 高度は捨てない（薄い空気のほうが速い）。
+        // 支えると決めたなら縦も扇に残す（§84）
+        alt: this._holdEvadeVerticalFan(world, this.pos.y),
         speed: this.spec.maxSpeed,
       };
     }
@@ -1509,9 +1578,34 @@ export class Aircraft extends Unit {
     // 浅い降下では振り切れない（実測で生存率がはっきり落ちた）。
     // 段差にしないことだけが要点で、深さそのものは元の設計どおり深く取る。
     const dive = clamp(1 - tti / 9, 0, 1);
-    const alt = this.pos.y - dive * 4000;
+    // **支えると決めたなら、縦も扇に残す**（§84）。
+    //
+    // `_crankHeading` は横だけを扇の内側へ留めていた。
+    // ところがこの枝は最大 4,000m の降下を命じるので、
+    // **横で払った代償が縦で無駄になっていた**（実測: 支えているフレームの
+    // 68.7% が縦の扇の外）。諦める判断（`_tti > CRANK_SUPPORT_SEC`）は
+    // `_crankHeading` が持っていて、`cranking` がその答えになっている。
+    const alt = this._holdEvadeVerticalFan(world, this.pos.y - dive * 4000);
 
     return { heading, alt, speed };
+  }
+
+  /**
+   * 回避中でも、**弾を支えると決めたときだけ**縦を扇に残す（§84）。
+   *
+   * 支えるかどうかの判断は `_crankHeading` が済ませてある ——
+   * 20秒先の弾のために身を晒さない（`CRANK_SUPPORT_SEC`）、という線は
+   * §70.4.6 で引いた。**その答え（`cranking`）に乗るだけで、線は動かさない。**
+   *
+   * 支えないと決めた場面（遠い弾・目標を失った）では素通しする。
+   * そこは「弾を捨ててでも生き延びる」が正しい。
+   */
+  _holdEvadeVerticalFan(world, alt) {
+    if (!this.cranking) return alt;
+    const mine = this._mySarh(world);
+    const t = mine && mine.target;
+    if (!t || !t.pos) return alt;
+    return this._holdInVerticalFan(alt, t.pos.x - this.pos.x, t.pos.z - this.pos.z, t.pos.y);
   }
 
   /**

@@ -9,9 +9,10 @@ import * as THREE from 'three';
 import { WEAPONS } from '../data/weapons.js';
 import { Missile, Decoy, decoyMatches, NOTCH_TOLERANCE, irBrightness } from './missile.js';
 import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.js';
-import { headingOf, angleDiff, DEG } from './unit.js';
+import { headingOf, angleDiff, radarElevation, DEG } from './unit.js';
 import { bombAimPoint, bombImpactPoint } from './acm.js';
 import { clamp } from '../core/rng.js';
+import { opticalSight } from './sight.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 
 // 機銃は実体弾（sim/bullet.js）。拡散・弾速・弾数は機種ごと（data/aircraft.js の gunSpec）。
@@ -605,6 +606,42 @@ export class CombatSystem {
   }
 
   /**
+   * その目標へ**もう向かっている見込みの合計**（§85）。
+   *
+   * ```
+   * Σ（味方の空対空弾のうち alive かつ !lost）  pk × 威力
+   * ```
+   *
+   * **`MAX_AAM_PER_TARGET` は自分の弾しか数えない**（§28.13 で意図的にそうした ——
+   * 陣営で数えると4機編隊の3番機・4番機が永久に撃てなくなる）。
+   * そのため**2機が独立に1発ずつ撃つ**のはどちらの上限にも掛からず、
+   * 実測では **撃墜53件に対して無駄弾73発**（1撃墜あたり1.4発）だった。
+   * 弾が1発も無駄にならなかった撃墜は 53件中3件しかない。
+   *
+   * **数ではなく期待損害で見る**ので、上限を決め打ちしなくてよい:
+   *
+   * | 場面 | |
+   * |---|---|
+   * | 戦闘機（耐久90〜110）に見込みの高い1発 | 足りている → 撃たない |
+   * | 爆撃機（耐久260）に1発 | 200 < 260 → **撃つ**（実際2発要る） |
+   * | 見込みの低い遠射 | 積み上がりが小さい → **撃つ** |
+   * | 1発目が誘導を失った | `lost` で外れる → **すぐ撃てる** |
+   *
+   * `pk` は**発射時の値のまま**で減衰させない。まずこれで足りるかを見る ——
+   * 足りなければ「古い弾が枠を占める」という形で症状に出るので、そこで決める。
+   */
+  committedDamage(side, target) {
+    let sum = 0;
+    for (const m of this.world.missiles) {
+      if (!m.alive || m.lost) continue;
+      if (m.side !== side || m.target !== target) continue;
+      if (!m.weapon || m.weapon.kind !== 'aam') continue;
+      sum += (m.pk ?? 1) * (m.weapon.damage || 0);
+    }
+    return sum;
+  }
+
+  /**
    * その陣営がこの目標を狙うときの、狙点のずれ(m)。
    * 正確に見えていれば 0（§25.4）。
    */
@@ -708,6 +745,15 @@ export class CombatSystem {
 
     // 同じ空対空兵装を同じ目標へ重ねて撃たない（MAX_AAM_PER_TARGET）
     if (this.guidingCount(shooter, target, weapon) >= MAX_AAM_PER_TARGET) return;
+
+    // **編隊ぶんも数える**（§85）。上の規則は自分の弾しか見ないので、
+    // 2機が独立に1発ずつ撃つのは素通しになる。
+    // **落とし切るのに足りているなら、もう撃たない。**
+    //
+    // プレイヤーの射撃指示（`_runFireTasks`）には掛けない ——
+    // 出した指示は守る（§60.3）。自動で撃つときだけの節約。
+    if (weapon.kind === 'aam' && target.kind === 'aircraft'
+      && this.committedDamage(shooter.side, target) >= target.hp) return;
 
     // 命中が見込めないうちは撃たない（乱射してミサイルを空にしないため）。
     //
@@ -816,6 +862,9 @@ export class CombatSystem {
     if (!this.inEnvelope(shooter, target, w)) return this._envelopeReason(shooter, target, w);
 
     if (this.guidingCount(shooter, target, w) >= MAX_AAM_PER_TARGET) return `${w.id} 誘導中`;
+    // 編隊のほかの機体が既に落とし切るぶんを撃っている（§85）
+    if (w.kind === 'aam' && target.kind === 'aircraft'
+      && this.committedDamage(shooter.side, target) >= target.hp) return '味方が誘導中';
     if (shooter.fireCooldown > 0) return `再装填 ${shooter.fireCooldown.toFixed(1)}秒`;
 
     if (w.kind !== 'bomb') {
@@ -846,8 +895,9 @@ export class CombatSystem {
     if (w.guidance === 'arm' && !target.emitting) return '電波なし';
     const off = offBoresight(shooter, dx, dz, dy) / DEG;
     if (w.guidance === 'sarh' || w.guidance === 'arh') {
-      if (!inRadarFan(shooter, dx, dz, dy, flat, w.guidance === 'sarh')) {
-        return `${w.guidance === 'sarh' ? 'ロックの扇' : '扇'}の外 ${Math.round(off)}度`;
+      const lock = w.guidance === 'sarh';
+      if (!inRadarFan(shooter, dx, dz, dy, flat, lock)) {
+        return fanMiss(shooter, dx, dz, dy, flat, lock);
       }
     } else if (off > 45) {
       return `射角外 ${Math.round(off)}度`;
@@ -868,7 +918,10 @@ export class CombatSystem {
     const losPoint = target.kind === 'aircraft'
       ? target.pos
       : _v4.set(target.pos.x, target.pos.y + 40, target.pos.z);
-    const los = () => terrain.hasLineOfSight(shooter.pos, losPoint, 8, 300);
+    // **赤外線の弾は雲でも切れる**（§88.3）。電波と弾道はそのまま通す。
+    const los = () => (w.guidance === 'ir'
+      ? opticalSight(this.world, shooter.pos, losPoint, 8, 300)
+      : terrain.hasLineOfSight(shooter.pos, losPoint, 8, 300));
 
     if (w.kind === 'bomb') {
       // 無誘導爆弾は弾道解で投下点を決める。
@@ -996,6 +1049,15 @@ export class CombatSystem {
     if (weapon.kind === 'agm' && weapon.guidance !== 'arm' && weapon.fireAndForget) {
       const believed = this.world.believedPosOf(shooter.side, target);
       if (believed) m.seekTarget = { pos: believed.clone(), alive: true, speed: 0, isPoint: true };
+    }
+    // **撃った時点の見込みを弾に持たせる**（§85）。
+    //
+    // 「その目標にはもう充分な弾が向かっている」を数えるのに使う。
+    // ここで計算するのは、`_autoFire` の判断とは別の経路（プレイヤーの
+    // 射撃指示）からも撃たれるため —— **どこから撃っても必ず付く**ようにする。
+    // `estimateHitChance` は発射のたびに1回だけなので、二重に呼んでも安い。
+    if (weapon.kind === 'aam' && target.kind === 'aircraft') {
+      m.pk = estimateHitChance(shooter, target, weapon, this.aimErrorOf(shooter, target));
     }
     this.world.missiles.push(m);
 
@@ -1184,6 +1246,28 @@ function inRadarFan(shooter, dx, dz, dy, flat, lock = false) {
   const fovH = lock ? (spec.radarLockFovH ?? spec.radarFovH ?? 60) : (spec.radarFovH || 60);
   const fovV = lock ? (spec.radarLockFovV ?? spec.radarFovV ?? 30) : (spec.radarFovV || 30);
   if (Math.abs(angleDiff(headingOf(dx, dz), shooter.heading)) > fovH * DEG) return false;
-  if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > fovV * DEG) return false;
+  // 上下も**機首から**（§83）。3か所とも `radarElevation` を通す —— 式が
+  // 割れると、撃てた弾が次のフレームで誘導を失う、という食い違いが起きる。
+  if (Math.abs(radarElevation(shooter, dy, flat)) > fovV * DEG) return false;
   return true;
+}
+
+/**
+ * 扇のどちら側で落ちたかを言葉にする（§80.3）。
+ *
+ * **「扇の外 12度」では、何と比べて12度なのかが分からない。**
+ * 左右と上下では上限が違う（ロックなら 40度 と 20度）ので、
+ * **落ちた軸と、その軸の上限**を出す。
+ */
+function fanMiss(shooter, dx, dz, dy, flat, lock) {
+  const spec = shooter.spec;
+  const fovH = lock ? (spec.radarLockFovH ?? spec.radarFovH ?? 60) : (spec.radarFovH || 60);
+  const fovV = lock ? (spec.radarLockFovV ?? spec.radarFovV ?? 30) : (spec.radarFovV || 30);
+  const range = shooter.radarRange != null ? shooter.radarRange : (spec && spec.radarRange) || 0;
+  if (range <= 0) return 'レーダー沈黙';
+  if (Math.hypot(flat, dy) > range) return `レーダー範囲外 ${Math.round(Math.hypot(flat, dy) / 100) / 10}km`;
+  const yaw = Math.abs(angleDiff(headingOf(dx, dz), shooter.heading)) / DEG;
+  if (yaw > fovH) return `左右の扇の外 ${Math.round(yaw)}度（上限${fovH}度）`;
+  const el = Math.abs(radarElevation(shooter, dy, flat)) / DEG;
+  return `上下の扇の外 ${Math.round(el)}度（上限${fovV}度）`;
 }

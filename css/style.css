@@ -713,6 +713,8 @@ button.chip.pick.picked {
 button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 
 .ur-fm { color: var(--cyan); }
+/* 指揮下にない機体（護衛対象など・§80.4）。押しても選べない理由を出す */
+.ur-ward { color: var(--text-dim); font-style: italic; }
 .ur-why { color: var(--amber); font-size: 10px; margin-left: 4px; }
 .ur-brk { color: var(--amber); }
 .fm-tag.hot { color: var(--amber); border-color: var(--amber); }
@@ -842,6 +844,10 @@ button.go.warn:hover + .dt-warn { display: block; }
  * （実際、ステージ選択では中央、チュートリアルでは右端に出ていた）。
  * 説明・主ボタン・副ボタンの3枠に固定して、同じボタンが同じ場所に来るようにする。
  */
+/* 押し間違いで消えると困る操作の確認（§80.6） */
+.foot-warn { color: var(--warn, #ffb648); }
+#screens .screen-foot button[data-act="resetYes"] { color: #ff6a54; border-color: #ff6a54; }
+
 .screen-foot.list {
   display: grid;
   grid-template-columns: 1fr auto 1fr;

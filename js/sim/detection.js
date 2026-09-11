@@ -10,9 +10,10 @@
 // 静止目標は一度探知すれば恒久的に記憶され、破壊確認には再視認が必要になる。
 
 import * as THREE from 'three';
-import { angleDiff, headingOf, DEG } from './unit.js';
+import { angleDiff, headingOf, radarElevation, DEG } from './unit.js';
 import { clamp } from '../core/rng.js';
 import { notchQuality, chaffScreen } from './missile.js';
+import { opticalSight, radarSight, radarReach } from './sight.js';
 
 /** 全走査の間隔(秒)。毎フレーム回すには重いので5Hzに落とす。 */
 const SCAN_INTERVAL = 0.2;
@@ -332,7 +333,7 @@ export class DetectionSystem {
 
         let best = -1, exact = false, near = Infinity, via = null, nearSensor = null;
         for (const s of sensors) {
-          const r = evaluate(s, target, terrain, this.stats);
+          const r = evaluate(s, target, this.world, this.stats);
           if (r.level < 0) continue;
           // 誤差は距離で決まるので、**捉えているうちで最も近い**センサーを使う
           const d = s.pos.distanceTo(target.pos);
@@ -395,19 +396,19 @@ export class DetectionSystem {
 // -------------------------------------------------------------- センサー判定
 
 /** センサー1基が目標をどこまで見えているか。level=-1 は未探知。 */
-function evaluate(sensor, target, terrain, stats) {
+function evaluate(sensor, target, world, stats) {
   let best = -1, exact = false, via = null;
 
-  const visual = byVisual(sensor, target, terrain, stats);
+  const visual = byVisual(sensor, target, world, stats);
   if (visual > best) { best = visual; exact = true; via = 'visual'; }
 
   if (best < LEVEL.DETAILED) {
-    const radar = byRadar(sensor, target, terrain, stats);
+    const radar = byRadar(sensor, target, world, stats);
     if (radar > best) { best = radar; exact = true; via = 'radar'; }
   }
 
   if (best < LEVEL.IDENTIFIED) {
-    const rwr = byRwr(sensor, target, terrain, stats);
+    const rwr = byRwr(sensor, target, world, stats);
     if (rwr > best) { best = rwr; exact = false; via = 'rwr'; }
   }
 
@@ -417,14 +418,15 @@ function evaluate(sensor, target, terrain, stats) {
 }
 
 /** 目視: 全方位・短距離・地形遮蔽あり。見えれば機種まで分かる。 */
-function byVisual(sensor, target, terrain, stats) {
+function byVisual(sensor, target, world, stats) {
   const range = sensor.kind === 'aircraft'
     ? (sensor.spec.visualRange || 0)
     : GROUND_VISUAL_RANGE;
   if (range <= 0) return -1;
   if (sensor.pos.distanceTo(target.pos) > range) return -1;
   stats.losChecks++;
-  if (!terrain.hasLineOfSight(sensor.pos, target.pos, 8, LOS_STEP)) return -1;
+  // **雲は目視を切る**（§88.3）。地形と同じ扱いで、量ではなく二値
+  if (!opticalSight(world, sensor.pos, target.pos, 8, LOS_STEP)) return -1;
   return LEVEL.DETAILED;
 }
 
@@ -432,7 +434,8 @@ function byVisual(sensor, target, terrain, stats) {
  * レーダー: 空中目標のみ。
  * 機体レーダーは機首方向の扇形、地上レーダー／AWACSは全方位。
  */
-function byRadar(sensor, target, terrain, stats) {
+function byRadar(sensor, target, world, stats) {
+  const terrain = world.terrain;
   if (target.kind !== 'aircraft') return -1;      // 地上目標はレーダーに映らない
   if (target.onGround) return -1;                 // 駐機・滑走中の機体も地上物扱い
 
@@ -464,6 +467,12 @@ function byRadar(sensor, target, terrain, stats) {
   const rcs = target.spec && target.spec.rcs;
   if (rcs != null) range *= rcs;
 
+  // **雲を通ったぶんだけ縮む**（§88.3.1）。遮断ではなく減衰 ——
+  // 層を横切るだけなら1割ほど、層の中を飛べば半分まで落ちる。
+  // **地上レーダーにも同じく掛かる**ので、
+  // 「低空で地面に紛れる」に加えて「雲の上に隔てられる」隠れ方ができる。
+  range = radarReach(world, range, sensor.pos, target.pos);
+
   if (range <= 0) return -1;
 
   const dx = target.pos.x - sensor.pos.x;
@@ -480,7 +489,9 @@ function byRadar(sensor, target, terrain, stats) {
 
   if (fovH !== null) {
     if (Math.abs(angleDiff(headingOf(dx, dz), sensor.heading)) > fovH) return -1;
-    if (Math.abs(Math.atan2(dy, Math.max(1, flat))) > fovV) return -1;
+    // 上下も**機首から**（§83）。走査は機体に付いているので、
+    // 上昇・降下すれば帯もそのぶん傾く。
+    if (Math.abs(radarElevation(sensor, dy, flat)) > fovV) return -1;
   }
 
   stats.losChecks++;
@@ -493,7 +504,8 @@ function byRadar(sensor, target, terrain, stats) {
  * 電波逆探知(RWR): レーダーを放射中の地上・水上目標を遠距離から捕捉する。
  * 種別は分かるが位置は粗い。沈黙されれば消える。
  */
-function byRwr(sensor, target, terrain, stats) {
+function byRwr(sensor, target, world, stats) {
+  const terrain = world.terrain;
   if (sensor.kind !== 'aircraft') return -1;       // 逆探知装置は機体側
   if (!target.emitting) return -1;
 
@@ -506,7 +518,10 @@ function byRwr(sensor, target, terrain, stats) {
   if (range <= 0) return -1;
   if (sensor.pos.distanceTo(target.pos) > range) return -1;
   stats.losChecks++;
-  if (!terrain.hasLineOfSight(sensor.pos, target.pos, 8, LOS_STEP)) return -1;
+  // **逆探知は雲で弱らない**（§88.3.3）。レーダーは往復、逆探知は片道で
+  // 効きが桁で違う。ここを弱めると「黙っていれば雲の中は安全」になり、
+  // 電波を出す判断（§26.5）の重みが消える。
+  if (!radarSight(world, sensor.pos, target.pos, 8, LOS_STEP)) return -1;
 
   // 航空機は「そこで何かが電波を出している」までしか分からない（§26.7）。
   // 逆探知は全方位なので、ここで機種まで分かると**機首を向けて探す**という

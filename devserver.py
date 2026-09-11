@@ -114,7 +114,20 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8187
+    # ポートの決め方（優先順）:
+    #   1. 引数        … 人が手で立てるとき `python devserver.py 9000`
+    #   2. 環境変数 PORT … ツール側が空きポートを割り当てて渡してくる
+    #   3. 既定 8187
+    #
+    # **2 を足したのは、8187 を決め打ちにしていたせい。**
+    # 前のサーバーが残っているとポートが埋まって起動できず、
+    # そのたびに「誰が掴んでいるか」を調べることになっていた。
+    # このサーバーは静的ファイルを配るだけで、
+    # **特定のポートである必要がどこにも無い**（OAuth の戻り先も webhook も無い）。
+    if len(sys.argv) > 1:
+        port = int(sys.argv[1])
+    else:
+        port = int(os.environ.get("PORT") or 8187)
     root = os.path.dirname(os.path.abspath(__file__))
     handler = functools.partial(NoCacheHandler, directory=root)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)

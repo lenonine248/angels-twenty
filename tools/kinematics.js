@@ -153,6 +153,9 @@
     let minDist = Infinity;
     let warned = null;                          // 目標が気づいた時刻(秒)
     while (m.alive && steps < MAX_SEC * 30) {
+      // 雲を風で流す（§88.15）。**本体の刻みに足したものはここにも足す** ——
+      // このループはゲーム本体の写しなので、忘れると雲だけ止まったまま測る
+      w.clouds?.advance(DT);
       for (const u of w.units) if (u.alive) u.update(DT, w);
       w.detection.update(DT);
       b.combat.update(DT);

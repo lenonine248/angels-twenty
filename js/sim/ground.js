@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { Unit, headingOf, RWR_SIGNATURE_FACTOR } from './unit.js';
 import { getGroundType, weaponsOf } from '../data/ground.js';
 import { WEAPONS } from '../data/weapons.js';
+import { opticalSight } from './sight.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 import { clamp } from '../core/rng.js';
 import { Bullet, aimPointOf } from './bullet.js';
@@ -347,7 +348,8 @@ export class GroundUnit extends Unit {
       if (agl < w.minAlt || agl > w.maxAlt) continue;
       const d = this.pos.distanceTo(u.pos);
       if (d > w.range || d >= bestD) continue;
-      if (!world.terrain.hasLineOfSight(this.pos, u.pos, 8, 300)) continue;
+      // 赤外線SAM は自分の目で見る（§68.2）。**雲で切れる**（§88.3）
+      if (!opticalSight(world, this.pos, u.pos, 8, 300)) continue;
       bestD = d; best = u;
     }
     if (!best) return;
@@ -372,7 +374,8 @@ export class GroundUnit extends Unit {
       // 地上発射は飛翔のほとんどが上空なので、目標高度を重めに見る。
       const eff = effectiveMissileRange(sam, this.pos.y * 0.3 + u.pos.y * 0.7);
       if (d > eff * 0.8) continue;
-      if (!world.terrain.hasLineOfSight(this.pos, u.pos, 8, 300)) continue;
+      // 対空砲も自分の目で見る（§8）。**雲で切れる**（§88.3）
+      if (!opticalSight(world, this.pos, u.pos, 8, 300)) continue;
 
       if (d < bestD) { bestD = d; best = u; }
     }
@@ -410,7 +413,7 @@ export class GroundUnit extends Unit {
       }
       const d = this.pos.distanceTo(u.pos);
       if (d > w.range || d >= bestD) continue;
-      if (!world.terrain.hasLineOfSight(this.pos, u.pos, 8, 200)) continue;
+      if (!opticalSight(world, this.pos, u.pos, 8, 200)) continue;   // §88.3
       bestD = d; target = u;
     }
     if (!target) return;

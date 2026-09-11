@@ -128,8 +128,41 @@ function getMaterial(color) {
   return materialCache.get(color);
 }
 
-const RING_COLOR = { blue: 0x6fd8e8, red: 0xff5b44 };
-const ALT_LINE_COLOR = { blue: 0x4a8fa8, red: 0x8a4a3a };
+/**
+ * 陣営の色（§80.9）。**青＝自軍／赤＝敵**（Tacview に倣う）。
+ *
+ * 機体の塗装は機種ごとに決めてある（F-1 の青灰、A-3 の枯草色、J-7 の赤茶）。
+ * **どれも彩度が低く、俯瞰の引きの画では地形と混ざって陣営が読めない。**
+ * かといって塗装を捨てると、今度は機種の見分けが付かなくなる。
+ *
+ * **塗装を残したまま陣営色へ寄せる。** 混ぜてから彩度を持ち上げるので、
+ * 「青系の3機種」「赤系の3機種」として**陣営が先に読めて、機種も残る**。
+ */
+/**
+ * 雲に隠れた機体の縁（§88.9）。
+ * 陣営色ではなく**注意の色**にする —— 「隠れている」は状態であって所属ではない。
+ */
+const OUTLINE_COLOR = 0xffd070;
+const OUTLINE_SCALE = 1.35;
+
+const SIDE_COLOR = { blue: 0x3d9bff, red: 0xff4536 };
+const SIDE_MIX = 0.45;             // 塗装を陣営色へ寄せる割合
+const SIDE_SAT = 1.35;             // 寄せたあとに持ち上げる彩度
+
+export function sideTint(color, side) {
+  const target = SIDE_COLOR[side];
+  if (target == null) return color;
+  const c = new THREE.Color(color).lerp(new THREE.Color(target), SIDE_MIX);
+  const hsl = { h: 0, s: 0, l: 0 };
+  c.getHSL(hsl);
+  c.setHSL(hsl.h, Math.min(1, hsl.s * SIDE_SAT), hsl.l);
+  return c.getHex();
+}
+
+// 印は塗装より強く出す。**機体が小さく写る引きの画では、
+// 陣営を伝えているのは実質こちら**（リング・高度線・接地点）。
+const RING_COLOR = { blue: 0x4fc3ff, red: 0xff5340 };
+const ALT_LINE_COLOR = { blue: 0x3d9bff, red: 0xff4536 };
 
 /**
  * 機体の表示オブジェクトを作る。
@@ -141,7 +174,8 @@ export function createAircraftView(ac) {
   const group = new THREE.Group();
   group.name = `unit-${ac.id}`;
 
-  const body = new THREE.Mesh(getJetGeometry(spec.shape, spec.id), getMaterial(spec.color));
+  const body = new THREE.Mesh(getJetGeometry(spec.shape, spec.id),
+    getMaterial(sideTint(spec.color, ac.side)));
   body.name = 'body';
   group.add(body);
 
@@ -150,7 +184,7 @@ export function createAircraftView(ac) {
     new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -1, 0),
   ]);
   const altLine = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({
-    color: ALT_LINE_COLOR[ac.side] ?? 0x888888, transparent: true, opacity: 0.45,
+    color: ALT_LINE_COLOR[ac.side] ?? 0x888888, transparent: true, opacity: 0.7,
   }));
   altLine.name = 'altLine';
   group.add(altLine);
@@ -160,7 +194,7 @@ export function createAircraftView(ac) {
     new THREE.RingGeometry(0.30, 0.42, 16),
     new THREE.MeshBasicMaterial({
       color: RING_COLOR[ac.side] ?? 0x888888,
-      transparent: true, opacity: 0.55, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.8, side: THREE.DoubleSide,
     }),
   );
   spot.rotation.x = -Math.PI / 2;
@@ -179,6 +213,30 @@ export function createAircraftView(ac) {
   ring.visible = false;
   group.add(ring);
 
+  // 雲に隠れたときの**アウトライン**（§88.9）。
+  //
+  // 最初は接地点に輪を出したが、**輪では機体の向きも大きさも分からない**
+  // （プレイヤーの指摘）。同じ形をひと回り大きく、裏面だけ描いて縁を作る ——
+  // **機影がそのまま浮くので、何がどこを向いているかまで読める。**
+  //
+  // `body` の子にしてあるので、姿勢と表示倍率は勝手に付いてくる。
+  // 材質を共有していない（機体は色ごとに共有キャッシュ）ので、
+  // ここを触っても同じ色の他機に影響しない。
+  const outline = new THREE.Mesh(getJetGeometry(spec.shape, spec.id),
+    new THREE.MeshBasicMaterial({
+      color: OUTLINE_COLOR,
+      side: THREE.BackSide,     // 裏面だけ → 縁として残る
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,         // 雲の向こうでも見える
+      depthWrite: false,
+    }));
+  outline.name = 'cloudOutline';
+  outline.scale.setScalar(OUTLINE_SCALE);
+  outline.renderOrder = 4;
+  outline.visible = false;
+  body.add(outline);
+
   group.userData.unit = ac;
   ac.view = group;
   return group;
@@ -191,7 +249,7 @@ export function createAircraftView(ac) {
  * @param {number} size 機体の表示全長(m)。aircraftDisplayLength() で求める。
  * @param {boolean} selected
  */
-export function syncAircraftView(ac, terrain, size, selected, visible = true) {
+export function syncAircraftView(ac, terrain, size, selected, visible = true, occluded = false) {
   const g = ac.view;
   if (!g) return;
   g.visible = ac.alive && visible;
@@ -228,6 +286,11 @@ export function syncAircraftView(ac, terrain, size, selected, visible = true) {
     ring.position.y = -agl;
     ring.scale.setScalar(size * 1.1);
   }
+
+  // **雲に隠れていたらアウトラインを出す**（§88.9）。
+  // 完全に消さない —— 隠れている事実は伝えつつ、指揮はできるようにする。
+  const outline = g.getObjectByName('cloudOutline');
+  if (outline) outline.visible = !!occluded;
 }
 
 /** 機体モデルの最下点（単位空間）。機種ごとに一度だけ測って覚える。 */
@@ -266,7 +329,7 @@ export function createGroundView(gu) {
 
   const shape = new THREE.Group();
   shape.name = 'shape';
-  const c = spec.color;
+  const c = sideTint(spec.color, gu.side);                 // 陣営色を混ぜる（§80.9）
   const dark = new THREE.Color(c).multiplyScalar(0.65).getHex();
 
   switch (spec.category) {
@@ -378,7 +441,7 @@ export function createGroundView(gu) {
     new THREE.RingGeometry(0.55, 0.68, 20),
     new THREE.MeshBasicMaterial({
       color: RING_COLOR[gu.side] ?? 0x888888,
-      transparent: true, opacity: 0.5, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.78, side: THREE.DoubleSide,
     }),
   );
   spot.rotation.x = -Math.PI / 2;

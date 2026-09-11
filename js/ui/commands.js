@@ -59,7 +59,16 @@ export class CommandController {
       }
     });
 
+    /** 画面上のカーソル（NDC）。雲を透かすのに使う（§88.13） */
+    this.mouseNdc = new THREE.Vector2(0, 0);
+
     window.addEventListener('mousemove', (e) => {
+      // 雲を透かす位置に使う（§88.13）。地形へレイを飛ばすのは重いので、
+      // **画面上の位置だけ**覚えて、必要な側が層の平面と交差させる
+      this.mouseNdc.set(
+        (e.clientX / window.innerWidth) * 2 - 1,
+        -(e.clientY / window.innerHeight) * 2 + 1,
+      );
       if (this._dragStart) {
         this._dragNow = { x: e.clientX, y: e.clientY };
         this._updateSelBox();
@@ -116,6 +125,10 @@ export class CommandController {
   _updateHoverInfo(px, py) {
     const box = document.getElementById('hoverInfo');
     if (!box) return;
+    // **箱は1つ、持ち主も1つ。** ミニマップの風（§88.15）が出しているあいだは触らない ——
+    // この手続きは `window` の mousemove から呼ばれるので、
+    // ミニマップの上でも走り、**出した直後の欄をその場で閉じてしまう**
+    if (box.dataset.wind === '1') return;
     if (!this.hoverUnit && this.hoverMissile) { this._showMissileInfo(box, px, py); return; }
     const u = this.hoverUnit;
     if (!u) { box.classList.add('hidden'); return; }
@@ -213,8 +226,9 @@ export class CommandController {
 
   _clickSelect(px, py, additive) {
     const u = this._unitAtScreen(px, py, this.world.playerSide);
-    // 指示できるのは航空機だけ（飛行場はロースター/パネルから操作する）
-    if (u && u.kind === 'aircraft') {
+    // 指示できるのは航空機だけ（飛行場はロースター/パネルから操作する）。
+    // **指揮下にない機体（輸送機など）も選べない**（§80.4）
+    if (u && u.kind === 'aircraft' && u.commandable !== false) {
       if (additive) this.toggle(u);
       else this.select([u]);
       return;
@@ -238,6 +252,7 @@ export class CommandController {
     const hit = [];
     for (const u of this.world.units) {
       if (!u.alive || u.side !== this.world.playerSide || u.kind !== 'aircraft') continue;
+      if (u.commandable === false) continue;               // 指揮下にない（§80.4）
       const s = this._project(u.pos);
       if (!s) continue;
       if (s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1) hit.push(u);
@@ -254,7 +269,8 @@ export class CommandController {
 
   _cycleSelect(dir) {
     const mine = this.world.units.filter(
-      (u) => u.alive && u.side === this.world.playerSide && u.kind === 'aircraft');
+      (u) => u.alive && u.side === this.world.playerSide && u.kind === 'aircraft'
+        && u.commandable !== false);                       // 指揮下にない（§80.4）
     if (!mine.length) return;
     const cur = this.selection.length === 1 ? mine.indexOf(this.selection[0]) : -1;
     const next = ((cur + dir) % mine.length + mine.length) % mine.length;

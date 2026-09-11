@@ -19,7 +19,7 @@ import { CATEGORY_LABEL } from '../data/ground.js';
 import { categoryOf } from '../data/aircraft.js';
 
 const COLOR_UNKNOWN = new THREE.Color(0xe8e8e8);
-const COLOR_HOSTILE = new THREE.Color(0xff5b44);
+const COLOR_HOSTILE = new THREE.Color(0xff4536);      // §80.9 で陣営色に揃えた
 const LABEL_PX = 15;
 
 export class ContactRenderer {

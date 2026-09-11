@@ -1,6 +1,6 @@
 # ANGELS TWENTY
 
-**Beta 2.82**（2026-08-31）
+**Beta 2.91**（2026-09-10）
 
 **▶ [ブラウザで遊ぶ](https://lenonine248.github.io/angels-twenty/)**
 
@@ -43,13 +43,14 @@ Windows では `start_server.bat` をダブルクリックしても起動する�
 | P5 | 飛行場（離着陸・補給・兵装積み替え・整備スロット・兵装コストプール） | **実装済み** |
 | P6 | 地上ユニットの交戦（SAM の撃ち上げ・AAA 弾幕・ARM への沈黙対応） | **実装済み** |
 | P7 | AIモード7種・編隊・レーダー扇の分担・目標の重複回避 | **実装済み** |
-| P8 | 全6ステージ・ブリーフィング・勝敗判定・セーブ | **実装済み** |
+| P8 | 全ステージ・ブリーフィング・勝敗判定・セーブ | **実装済み** |
 | P9 | 音響（Web Audio の手続き生成）・粒子演出・バランス調整 | **実装済み** |
 | P10 | モード構成（チュートリアル／ステージモード／キャンペーン） | **実装済み** |
 | P11 | クリア評価（迅速・節約・練度の3軸と総合ランク） | **実装済み** |
 | P12 | チュートリアル14本（基本6 ＋ 兵装8） | **実装済み** |
 
-全フェーズ完了。そのあと Beta 2.3〜2.22 で次を足した。
+全フェーズ完了。そのあと足したものを版ごとに並べる（**2.30 以降は
+[CHANGELOG.md](CHANGELOG.md) を見る** —— ここに二重に書くとずれるため）。
 
 | 版 | 内容 |
 |---|---|
@@ -80,6 +81,7 @@ Windows では `start_server.bat` をダブルクリックしても起動する�
 | 2.27 | 終末の回避をコーナー速度で（旋回半径を3分の1に） |
 | 2.28 | 対抗手段の作り直し（ビーム＝紛れる先／チャフ＝壁）・新しい第1ミッション |
 | 2.29 | 機体の温度（フレアの効き・赤外線のロック距離が推力で変わる） |
+| **2.30〜** | [CHANGELOG.md](CHANGELOG.md)（ゲーム内でも読める）。ステージは8面へ。司令官AI・ステージエディタ・調整パネル・雲などが入っている |
 
 実測したバランス値と調整箇所は [docs/STATUS.md](docs/STATUS.md) にまとめてある。
 
@@ -157,12 +159,16 @@ angels_twenty/
     core/audio.js          BGM / SE の手続き生成（Web Audio・音源ファイル不要）
     core/telemetry.js      プレイ記録（難易度調整の一次資料）
     core/recorder.js       戦闘の記録（振り返り・受け渡し用）
-    data/stages.js         全6ステージの定義
+    core/debug.js          デバッグモードの切替（公開版では既定で切）
+    data/stages.js         全8ステージ＋デバッグ限定の検証面
+    data/custom.js         自作ステージの保管庫（ステージエディタの保存先）
     data/rating.js         クリア評価（3軸 ◎○△ と総合ランク）
-    data/tutorials.js      チュートリアル6本の定義（手順・地形・配置）
+    data/tutorials.js      チュートリアル14本の定義（手順・地形・配置）
     sim/mission.js         目標判定・勝敗・増援
     ui/briefing.js         モード選択・ステージ選択・ブリーフィング・戦果画面
     world/terrain.js       地形生成・高度問い合わせ・視線判定
+    world/clouds.js        雲の判定（光と赤外線は遮断・電波は減衰）
+    world/cloudview.js     雲の描画（繋がった塊を継ぎ目なく見せる）
     world/scene.js         Three.jsセットアップ・カメラリグ
     world/models.js        ローポリ機体・地上ユニットモデル、ラベル
     world/contacts.js      探知コンタクトの3D表示（菱形シンボル・記憶枠）
@@ -170,6 +176,7 @@ angels_twenty/
     sim/missile.js         ミサイル実体・シーカー・デコイ
     sim/combat.js          兵装選択と発射・機銃・脅威割り当て
     sim/unit.js            ユニット基底
+    sim/sight.js           視線の判定を1か所に（光学／電波／減衰）
     sim/aircraft.js        飛行モデル・指示処理
     sim/acm.js             空戦機動（追尾曲線・エネルギー管理・防御機動）
     sim/bullet.js          機銃の実体弾（拡散と弾速で当たりを決める）
@@ -180,15 +187,24 @@ angels_twenty/
     data/weapons.js        兵装データ（コスト・スロット）
     data/ground.js         地上・水上ユニットデータ
     ai/pilot.js            AIモード（哨戒/追撃/連携/回避/護衛/対地）
+    ai/commander.js        司令官AI（1機では決められないことだけを決める）
     ai/formation.js        編隊（1〜4機・リーダー追従）
     ui/commands.js         選択・指示・地形レイキャスト・経路表示
     ui/hud.js              ロースター・選択機詳細
+    ui/loadout.js          搭載を組む欄（4か所で使い回す）
+    ui/markup.js           文章の簡易記法（ブリーフィング等の共通処理）
     ui/changelog.js        更新履歴の表示（CHANGELOG.md を読んで組み立てる）
+    ui/tuning.js           ステージの調整パネル（詰めるための道具）
+    ui/editor.js           ステージエディタ（作るための道具）
     ui/actions.js          「今これをした」の通知口（チュートリアルの手順判定用）
     ui/tutorial.js         チュートリアルの進行と手順パネル
     ui/review.js           振り返り画面（記録を地図に開く）
     ui/replay.js           3Dリプレイ再生（記録を3Dへ流す）
   tools/bench.js           バランス検証用のバッチ実行（コンソールから読み込む）
+  tools/kinematics.js      ミサイルの素の性能を測る
+  tools/calib.js           命中期待度の較正
+  tools/aaa.js             対空砲の検証
+  tools/tasking.js         司令官AIの任務の組み立てを測る
   tools/difficulty.js      ステージ定義からの難易度見積り
   tools/_tut_harness.js    チュートリアルを手順どおり通して確かめる（同上）
   tools/playlog.py         プレイ記録(playlog.jsonl)を読む

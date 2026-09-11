@@ -58,6 +58,9 @@ export class ScreenManager {
    * モードはここに並べるだけで増やせる形にしてある。
    * キャンペーンを実装するときはカードを1枚足すだけで済む。
    */
+  /** 「進行状況をリセット」を1回押した状態か（§80.6） */
+  _resetArmed = false;
+
   showTitle() {
     const cleared = this.progress.cleared.length;
     const done = this.progress.tutorial.length;
@@ -149,9 +152,13 @@ export class ScreenManager {
         <div class="screen-sub">STAGE MODE — ステージモード</div>
         <div class="stage-grid">${cards}</div>
         <div class="screen-foot list">
-          <span>クリアすると次のミッションが解禁されます</span>
-          <button data-act="title" class="ghost">モード選択へ</button>
-          <button data-act="reset" class="ghost">進行状況をリセット</button>
+          ${this._resetArmed
+    ? `<span class="foot-warn">クリア状況と最高評価をすべて消します。戻せません</span>
+             <button data-act="resetNo" class="ghost">やめる</button>
+             <button data-act="resetYes">消す</button>`
+    : `<span>クリアすると次のミッションが解禁されます</span>
+             <button data-act="title" class="ghost">モード選択へ</button>
+             <button data-act="reset" class="ghost">進行状況をリセット</button>`}
         </div>
       </div>`);
   }
@@ -570,7 +577,18 @@ export class ScreenManager {
       case 'openReplay':
         this.onOpenReplay?.();
         break;
+      // **1回では消さない**（§80.6）。押し間違いで全部消えるボタンが、
+      // 「モード選択へ」の隣に無防備に並んでいた。
       case 'reset':
+        this._resetArmed = true;
+        this.showStageSelect();
+        break;
+      case 'resetNo':
+        this._resetArmed = false;
+        this.showStageSelect();
+        break;
+      case 'resetYes':
+        this._resetArmed = false;
         if (this.onReset) this.onReset();
         this._lastLoadouts.clear();
         this.showStageSelect();

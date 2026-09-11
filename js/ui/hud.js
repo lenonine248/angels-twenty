@@ -88,6 +88,12 @@ export class Hud {
       if (!row) return;
       const u = this.world.units.find((x) => x.id === Number(row.dataset.id));
       if (!u) return;
+      // **指揮下にない機体は選ばず、視点だけ寄せる**（§80.4）。
+      // 一覧からは消さない —— 護衛対象の残り耐久と位置は見られないと困る。
+      if (u.commandable === false) {
+        this.world.rig?.lookAtPoint(u.pos.x, u.pos.z);
+        return;
+      }
       if (e.ctrlKey || e.shiftKey) this.commands.toggle(u);
       else this.commands.select([u]);
       if (e.detail === 2) this.commands.centerOnSelection();
@@ -264,6 +270,27 @@ export class Hud {
     notify('loadout', { unit: u, plan });
   }
 
+  /**
+   * 別の戦闘に繋ぎ替える（§80.1）。
+   *
+   * **描き直しの判定に使っているキャッシュを捨てる。**
+   * HUD は使い回されるのに `_rosterKey` / `_detailKey` はそのまま残っていた。
+   * ユニットIDは戦闘ごとに1から振り直される（`resetUnitIds`）ので、
+   * **機数と状態が同じ面を続けて始めると、キーまで一致してしまう** ——
+   * 一致すれば描き直さないので、**前のミッションの一覧がそのまま残る。**
+   * 機体を1つ選ぶと（選択状態がキーに入っているので）直る、という形だった。
+   *
+   * `commands.setWorld` と対にして、UI 側の持ち物はここで全部落とす。
+   */
+  setWorld(world, commands) {
+    this.world = world;
+    if (commands) this.commands = commands;
+    this._rosterKey = null;
+    this._detailKey = null;
+    this._d = {};
+    this._accum = 99;          // 次のフレームで必ず描く
+  }
+
   // -------------------------------------------------------------- ロースター
 
   _renderRoster() {
@@ -323,10 +350,13 @@ export class Hud {
     // 出しているのが普通なので、**沈黙のときだけ**出す。
     const rdr = u.alive && !u.onGround && !u.radarActive
       ? ' · <span class="ur-silent">沈黙</span>' : '';
+    // 指揮下にない機体は、押しても選べない理由を書いておく（§80.4）
+    const ward = u.commandable === false
+      ? ' · <span class="ur-ward">指揮下にない</span>' : '';
     return `<div class="unit-row${sel}${dead}${threat}" data-id="${u.id}">
       <div class="ur-top"><span class="ur-name">${u.name}</span><span class="ur-state">${state}</span></div>
       <div class="ur-meta"></div>
-      <div class="ur-sub">${mode}${fm}${rdr}</div>
+      <div class="ur-sub">${mode}${fm}${rdr}${ward}</div>
       <div class="ur-bars">
         <div class="bar fuel"><i></i></div>
         <div class="bar hp"><i></i></div>

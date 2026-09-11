@@ -40,6 +40,9 @@ export const STAGES = [
     hint: '互いに中距離AAMを持つ。先に撃ったほうが有利だが、撃たれたら逃げる判断も要る。'
       + '短距離AAMは後方からなら8km、正面からは4kmまでしか掴めない。',
     terrain: { seed: 40404, mountainAmount: 0.5, coast: 'none', valleyDepth: 0.6, rivers: 1, baseAltitude: 300 },
+    // **雲は入れない**（§88.15）。初陣は素の空戦を教える面 ——
+    // 低い層を敷くと所要が 90秒 → 137秒、損失 0.2 → 0.5 になった（実測）
+
     // **上限は広く取る**（§41.2）。点を気にしないなら厚く積んでクリアできる余地。
     weaponPoints: 24,
     friendly: {
@@ -122,6 +125,10 @@ export const STAGES = [
       + '敵は輸送機を狙って迎撃機を上げてくる。輸送機は自衛できない。',
     hint: '護衛モードにしておくと、輸送機に近づく敵だけを迎撃して戻ってくる。',
     terrain: { seed: 20202, mountainAmount: 1.1, coast: 'none', valleyDepth: 1.1, rivers: 3, baseAltitude: 450 },
+    // 雲（§88.15）。**交戦高度に重ねる** —— 護衛は「見つけられたくない側」なので、
+    // 層の中を通れば輸送機が捉えられにくい。層を交戦高度の下に置くと
+    // **18種すべて指紋が一致した**（誰も通らないので何も起きない）
+    weather: { cloud: 'few', base: 4200, top: 5600 },
     // 護衛は「守りながら戦う」ぶん、同数では足りない。
     // 3機目を足して敵と同数にし、ここでは護衛モードの使い方を覚えてもらう。
     //
@@ -170,9 +177,9 @@ export const STAGES = [
       aircraft: [
         { type: 'J-7', name: 'BANDIT 1', x: 34000, z: 18000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
         { type: 'J-7', name: 'BANDIT 2', x: 36000, z: 20000, agl: 5500, aiMode: 'PURSUIT', tags: ['cap'] },
-        { type: 'J-7', name: 'BANDIT 3', x: 40000, z: 14000, agl: 6000, aiMode: 'PURSUIT', tags: ['cap'] },
         // **4機目は撤去した**（§45.1）。プリセットを厚くしたぶんを敵で戻していたが、
         // 初心者向けの面としては相手が多すぎた。搭載を素直に戻したので数も戻す。
+        // **3機目もテストプレイで撤去**（§80.8）—— 2番目の面としてはまだ重かった。
       ],
       ground: [],
     },
@@ -197,6 +204,10 @@ export const STAGES = [
       + '敵は爆撃機を伴っている。護衛の迎撃機を排除してから爆撃機を落とせ。',
     hint: 'まずは編隊（Gキー）を組み、連携モードでレーダーの扇を広く張ると早く見つけられる。',
     terrain: { seed: 10101, mountainAmount: 0.8, coast: 'none', valleyDepth: 0.8, rivers: 2, baseAltitude: 380 },
+    // 雲（§88.15）。**交戦高度の下に置く。**
+    // 迎撃は「見つける側」なので、層を交戦高度へ上げると不利になる
+    // （実測: 17/18 → 15/18・損失 0.7→0.8）。下に置けばクリアは動かない
+    weather: { cloud: 'few', base: 2400, top: 3600 },
     // 上限 26P は**全ハードポイント（13本）を AAM-M で埋めるとちょうど**。
     // 積み切ってもクリアはできるが、それだと節約の評価は捨てることになる。
     weaponPoints: 26,
@@ -283,6 +294,11 @@ export const STAGES = [
       + '沈黙されると誘導が切れる。低空侵入で地形に隠れる手もある。',
     hint: 'SAMは高空にいる機体ほど遠くから狙う。低空で山陰を進めば探知も交戦も遅らせられる。',
     terrain: { seed: 30303, mountainAmount: 1.3, coast: 'none', valleyDepth: 1.2, rivers: 2, baseAltitude: 500 },
+    // 雲（§88.15）。**交戦高度と地上防空のあいだに敷く。**
+    // 対空砲と赤外線SAMは自分の目で見るので**層の上は撃てない** ——
+    // こちらの ARM は電波源へ、AGM も電波誘導なので雲を無視する。
+    // 実測: 損失 1.7 → 1.0・所要 −18%
+    weather: { cloud: 'scattered', base: 2200, top: 3600 },
     weaponPoints: 44,
     friendly: {
       base: { x: 9000, z: 42000 },
@@ -320,47 +336,6 @@ export const STAGES = [
 
   // ------------------------------------------------------------------ 5
   {
-    id: 's4',
-    name: 'DAWN BLADE',
-    title: '暁の刃',
-    brief: '敵飛行場を破壊し、航空戦力の再生産を止める。\n'
-      + '飛行場は破壊するまで迎撃機を上げ続ける。長居すれば不利になる。',
-    hint: '進出距離が長い。増槽(TANK)を積むか、帰投のタイミングを早めに考えること。',
-    terrain: { seed: 40404, mountainAmount: 1.0, coast: 'e', valleyDepth: 1.0, rivers: 3, baseAltitude: 420 },
-    weaponPoints: 36,
-    friendly: {
-      base: { x: 8000, z: 40000 },
-      startAirborne: false,
-      aircraft: [
-        // §57 のテストプレイで組み直した。**対地目標は山の陰**にあるので、
-        // 近くまで行くか横から回り込む必要がある。ARM で先に防空を剥がす。
-        { type: 'A-3', name: 'ANVIL 1', loadout: ['ARM', 'ARM', 'AAM-S', 'AAM-S'] },
-        { type: 'A-3', name: 'ANVIL 2', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S', 'AAM-S'] },
-        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
-        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
-      ],
-    },
-    enemy: {
-      base: { x: 40000, z: 20000, tags: ['target'], known: true, reinforce: { every: 170, max: 4, type: 'J-7' } },
-      aircraft: [
-        { type: 'J-7', name: 'BANDIT 1', x: 37000, z: 22000, agl: 5200, aiMode: 'PATROL', tags: ['cap'] },
-        { type: 'J-7', name: 'BANDIT 2', x: 42000, z: 18000, agl: 5200, aiMode: 'PATROL', tags: ['cap'] },
-      ],
-      ground: [
-        { type: 'SAM', name: 'SAM陣地', x: 36000, z: 21000, tags: [], known: true },
-        { type: 'AAA', name: '対空砲', x: 39500, z: 20500, tags: [] },
-      ],
-    },
-    // 評価基準（§18）。既定搭載で16P。進出38kmの往復に時間を取られる
-    rating: { time: [360, 600], points: [16, 20], losses: [0, 1] },
-    objectives: [
-      { id: 'kill-base', type: 'destroyAll', tag: 'target', label: '敵飛行場を破壊する' },
-      { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
-    ],
-  },
-
-  // ------------------------------------------------------------------ 6
-  {
     id: 's5',
     name: 'COASTAL WALL',
     title: '沿岸の壁',
@@ -368,6 +343,8 @@ export const STAGES = [
       + '同時に、沿岸のレーダーサイトを守り抜くこと。これを失えば防空網が崩れる。',
     hint: '艦船は近接防空を持つ。低空で近づくと危険。対地ミサイルで距離を取って撃つのが安全。',
     terrain: { seed: 50505, mountainAmount: 0.9, coast: 'e', valleyDepth: 0.9, rivers: 2, baseAltitude: 400 },
+    // 雲（§88.15）。s3 と同じ狙い（上陸部隊の対空を層で隔てる）
+    weather: { cloud: 'scattered', base: 2200, top: 3600 },
     weaponPoints: 56,
     friendly: {
       base: { x: 10000, z: 30000 },
@@ -412,6 +389,52 @@ export const STAGES = [
     ],
   },
 
+
+  // ------------------------------------------------------------------ 6
+  {
+    id: 's4',
+    name: 'DAWN BLADE',
+    title: '暁の刃',
+    brief: '敵飛行場を破壊し、航空戦力の再生産を止める。\n'
+      + '飛行場は破壊するまで迎撃機を上げ続ける。長居すれば不利になる。',
+    hint: '進出距離が長い。増槽(TANK)を積むか、帰投のタイミングを早めに考えること。',
+    terrain: { seed: 40404, mountainAmount: 1.0, coast: 'e', valleyDepth: 1.0, rivers: 3, baseAltitude: 420 },
+    // 雲（§88.15）。飛行場の対空砲を層で隔てる。実測: 13/18 → 14/18・損失 2.6 → 1.8
+    weather: { cloud: 'scattered', base: 2400, top: 3800 },
+    weaponPoints: 36,
+    friendly: {
+      base: { x: 8000, z: 40000 },
+      startAirborne: false,
+      aircraft: [
+        // §57 のテストプレイで組み直した。**対地目標は山の陰**にあるので、
+        // 近くまで行くか横から回り込む必要がある。ARM で先に防空を剥がす。
+        { type: 'A-3', name: 'ANVIL 1', loadout: ['ARM', 'ARM', 'AAM-S', 'AAM-S'] },
+        { type: 'A-3', name: 'ANVIL 2', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'VIPER 1', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
+        { type: 'F-1', name: 'VIPER 2', loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'TANK'] },
+      ],
+    },
+    enemy: {
+      // `after: 'detected'` —— **こちらを掴んでから**迎撃機を上げ始める（§80.5）。
+      // 進出38kmの面なので、時計だけで上げると自陣を出る前から湧いていた。
+      base: { x: 40000, z: 20000, tags: ['target'], known: true,
+        reinforce: { every: 170, max: 4, type: 'J-7', after: 'detected' } },
+      aircraft: [
+        { type: 'J-7', name: 'BANDIT 1', x: 37000, z: 22000, agl: 5200, aiMode: 'PATROL', tags: ['cap'] },
+        { type: 'J-7', name: 'BANDIT 2', x: 42000, z: 18000, agl: 5200, aiMode: 'PATROL', tags: ['cap'] },
+      ],
+      ground: [
+        { type: 'SAM', name: 'SAM陣地', x: 36000, z: 21000, tags: [], known: true },
+        { type: 'AAA', name: '対空砲', x: 39500, z: 20500, tags: [] },
+      ],
+    },
+    // 評価基準（§18）。既定搭載で16P。進出38kmの往復に時間を取られる
+    rating: { time: [360, 600], points: [16, 20], losses: [0, 1] },
+    objectives: [
+      { id: 'kill-base', type: 'destroyAll', tag: 'target', label: '敵飛行場を破壊する' },
+      { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
+    ],
+  },
 
   // ------------------------------------------------------------------ 7
   //
@@ -475,6 +498,11 @@ export const STAGES = [
     hint: '守っているだけでは終わらない。敵飛行場は北東 40km。'
       + '自軍のSAM陣地は施設のすべてを覆えない —— 出れば南が空く。',
     terrain: { seed: 70707, mountainAmount: 0.7, coast: 'none', valleyDepth: 0.7, rivers: 2, baseAltitude: 400 },
+    // **雲は入れない**（§88.15）。唯一の防空面で、唯一悪化した ——
+    // `scattered` で 4/18 → 2/18、`few` に落としても 2/18 のまま（実測）。
+    // **量の問題ではない。** 襲われる側は「見つける」のが仕事なので、
+    // 視界を削る要素は一方的に不利に働く
+
     // 上限 40P。**対地兵装を積んで元を断ちに行く余地**を残した高さ
     weaponPoints: 40,
     friendly: {
@@ -569,6 +597,8 @@ export const STAGES = [
       + '敵は全戦力を投入してくる。損害を抑えながら段階的に削るしかない。',
     hint: '早期警戒機を先に落とせば、敵の探知網が大きく弱まり低空侵入が効くようになる。',
     terrain: { seed: 60606, mountainAmount: 1.2, coast: 'e', valleyDepth: 1.1, rivers: 3, baseAltitude: 460 },
+    // 雲（§88.15）。対地の面と同じ敷き方。実測: 0/18 → 1/18・損失 4.0 → 3.8
+    weather: { cloud: 'scattered', base: 2400, top: 3800 },
     // **一度は補給して出直す前提**の面（§57）。上限はそのぶん高く取る。
     weaponPoints: 85,
     friendly: {
@@ -583,7 +613,8 @@ export const STAGES = [
       ],
     },
     enemy: {
-      base: { x: 42000, z: 18000, tags: ['target'], known: true, reinforce: { every: 210, max: 4, type: 'J-7' } },
+      base: { x: 42000, z: 18000, tags: ['target'], known: true,
+        reinforce: { every: 210, max: 4, type: 'J-7', after: 'detected' } },
       base2: { x: 38000, z: 36000, tags: ['target'], known: true },
       aircraft: [
         { type: 'E-8', name: 'SENTRY', x: 45000, z: 27000, agl: 8500, aiMode: 'EVADE', tags: ['awacs'] },
@@ -731,6 +762,65 @@ export const DEBUG_STAGES = [
     rating: { time: [9999, 9999], points: [0, 0], losses: [0, 99] },
     objectives: [
       { id: 'watch', type: 'survive', seconds: 900, label: '15分間、敵の来襲を観察する' },
+    ],
+  },
+
+  // ------------------------------------------------------------------
+  //
+  // **雲の検証用**（§88）。
+  //
+  // 層を 3,000〜4,700m に置いて、**上・中・下に1機ずつ**並べてある。
+  // 同じ敵編隊に対して、高度だけが違う3機が何を見て何を撃てるかを比べる:
+  //
+  //   ・上（6,500m）… 目視も赤外線も通る。電波は層を斜めに横切るぶんだけ弱る
+  //   ・中（3,800m）… 層の中。目視は死に、電波も大きく弱る。**自分も見えない**
+  //   ・下（1,200m）… 目視は通るが上とは切れる。地上レーダーには映りやすい
+  //
+  // 敵は雲の上と下に分けてあるので、**どちらが見えてどちらが見えないか**が出る。
+  {
+    id: 'd3',
+    debug: true,
+    name: 'CLOUD TEST',
+    title: '雲の検証',
+    brief: '検証用。雲の層を 3,000〜4,700m に置いてある。\n'
+      + '自軍3機は層の上・中・下に1機ずつ。敵も上下に分けてある。',
+    hint: '目視は雲で切れ、電波は通った距離だけ弱る。'
+      + '層の中の機体は「隠れられるが自分も見えない」状態になる。',
+    terrain: { seed: 88001, mountainAmount: 0.4, coast: 'none', valleyDepth: 0.4, rivers: 1, baseAltitude: 300 },
+    weather: { cloud: 'broken', base: 3000, top: 4700 },
+    weaponPoints: 0,
+    noFail: true,
+    friendly: {
+      base: { x: 10000, z: 40000 },
+      startAirborne: true,
+      aircraft: [
+        { type: 'F-1', name: 'HIGH 1', x: 16000, z: 34000, agl: 6500,
+          loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'], aiMode: 'PATROL' },
+        { type: 'F-1', name: 'MID 1', x: 16000, z: 32000, agl: 3800,
+          loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'], aiMode: 'PATROL' },
+        { type: 'F-1', name: 'LOW 1', x: 16000, z: 30000, agl: 1200,
+          loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'], aiMode: 'PATROL' },
+      ],
+    },
+    enemy: {
+      skill: 0.2,
+      aircraft: [
+        { type: 'J-7', name: 'BANDIT HIGH', x: 34000, z: 32000, agl: 6500,
+          aiMode: 'PATROL', loadout: ['AAM-M', 'AAM-S'], tags: ['target'] },
+        { type: 'J-7', name: 'BANDIT LOW', x: 34000, z: 28000, agl: 1200,
+          aiMode: 'PATROL', loadout: ['AAM-M', 'AAM-S'], tags: ['target'] },
+      ],
+      ground: [
+        // 地上レーダーが雲越しにどれだけ見えるかを見る
+        { type: 'RADAR', name: '敵レーダーサイト', x: 36000, z: 30000, tags: [], known: true },
+        // 対空砲と赤外線SAM は**目で見る**ので、雲の上は撃てないはず
+        { type: 'AAA', name: '対空砲', x: 30000, z: 30000, tags: [] },
+        { type: 'IRSAM', name: '赤外線SAM', x: 28000, z: 30000, tags: [] },
+      ],
+    },
+    rating: { time: [9999, 9999], points: [0, 0], losses: [0, 99] },
+    objectives: [
+      { id: 'watch', type: 'survive', seconds: 900, label: '15分間、雲ごしの探知を観察する' },
     ],
   },
 ];

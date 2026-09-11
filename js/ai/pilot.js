@@ -11,7 +11,8 @@
 import { headingOf, angleDiff, DEG } from '../sim/unit.js';
 import { LEVEL } from '../sim/detection.js';
 import { weaponsOf } from '../data/ground.js';
-import { isArmed } from '../data/weapons.js';
+import { isArmed, WEAPONS } from '../data/weapons.js';
+import { clamp } from '../core/rng.js';
 
 /** AIの思考間隔(秒)。毎フレーム考える必要はない。 */
 const AI_INTERVAL = 0.5;
@@ -43,8 +44,34 @@ const ENGAGE_RANGE = {
 const SWEEP_PERIOD = 26;
 const SWEEP_AMPLITUDE = 42 * DEG;
 
-/** 同じ目標に群がらないための上限 */
-const MAX_ATTACKERS_PER_TARGET = 2;
+/**
+ * 同じ目標に群がらないための重み付け（§86）。
+ *
+ * **以前は上限（2機）で足切りしていた。** そのせいで
+ * **すぐ近くの敵を「もう2機向かっている」という理由だけで飛ばし、
+ * 遠くの敵を狙いに行って、飛ばしたほうに落とされる**ことが起きた
+ * （プレイヤーの報告）。
+ *
+ * **割り当ては「手が足りているか」の話であって、
+ * 「その相手が自分に届かない」という意味ではない。**
+ * 足切りをやめて、**近いほど割り当てを気にしなくなる**重みに変えた。
+ *
+ *   罰 = 向かっている機数 × CROWD_PENALTY × min(距離 / CROWD_FULL_RANGE, 1)
+ *
+ * | 場面 | 罰 | 結果 |
+ * |---|---|---|
+ * | 5km に2機向かっている敵 | 4,000 → 実効 9,000 | **15km の空いた敵(15,000)に勝つ** |
+ * | 12km に2機向かっている敵 | 9,600 → 実効 21,600 | 18km の空いた敵(18,000)に譲る |
+ *
+ * `CROWD_FULL_RANGE` は**中距離AAMの射程**。
+ * その内側は「相手がこちらを撃てる距離」なので、割り当てを理由に背を向けない。
+ *
+ * **弾の無駄は撃つ側で止まる**（§85 の期待損害）。
+ * 狙う相手が重なっても、落とし切るぶんが飛んでいれば2発目は出ない ——
+ * だから**狙いの重複はここまで緩めてよい**。
+ */
+const CROWD_PENALTY = 8000;
+const CROWD_FULL_RANGE = WEAPONS['AAM-M'].range;
 
 /**
  * 目標の乗り換え抑制。
@@ -114,7 +141,11 @@ export class PilotAI {
     // 一番上に置く。弾切れの申告すら出さない（指示を上書きしないため）。
     if (u.aiMode === 'MANUAL') { u.headingBias = 0; return; }
 
-    // ミサイル回避中は割り込まない（機体側が回避機動を優先している）
+    // ミサイル回避中は割り込まない（機体側が回避機動を優先している）。
+    //
+    // **ここで目標を選び直す案は、測って取り消した**（§87）——
+    // 撃ってきた相手へ向き直らせると、かわし終えたあとに
+    // **遠くの射手（中央値14km）を追いかけて釣り出される。**
     if (u.threats.length > 0) return;
 
     // 弾切れの申告（燃料監視は機体側が持っている）
@@ -258,11 +289,57 @@ export class PilotAI {
     const threat = this._pickAirTarget(u, ENGAGE_RANGE.ESCORT, attackers, ward);
     if (threat) { this._attack(u, threat, attackers); return; }
 
+    // **互いに護衛し合うと、どちらも前に出ない**（§80.2.1）。
+    //
+    // 随伴は「相手を追い抜かないよう速度を合わせる」指示なので、
+    // A→B・B→A と組ませると**双方が相手に合わせて減速し続ける**。
+    // 実測では3機を輪にすると、誰も哨戒せず速度も揃わないまま漂った。
+    //
+    // 輪になっているときは、**ID が最小の1機だけが随伴をやめて基準になる。**
+    // 護る相手（`ward`）は変えないので、迎撃の受け持ちは双方向のまま残る ——
+    // 基準機も相手に近づく敵を迎えに行く。動きだけが哨戒になる。
+    if (this._escortAnchor(u, ward) === u) {
+      // **随伴の指示を先に外す。** `_patrol` は指示を上書きする前に
+      // `_isIdleOrStaleAttack` を見るが、`follow` は「働いている」と数えられる。
+      // 外さないと基準機も相手を追い続け、**輪はほどけない**（実測でそうなった）。
+      if (u.order && u.order.type === 'follow') {
+        const area = this._patrolArea(u);
+        u.setOrder({ type: 'orbit', x: area.x, z: area.z, alt: area.alt, radius: area.radius });
+      }
+      this._patrol(u, attackers);
+      return;
+    }
+
     const dist = u.distanceTo(ward);
     if (u.order.type !== 'follow' || u.order.target !== ward || dist > 6000) {
       u.setOrder({ type: 'follow', target: ward, slot: (u.formationSlot ?? 0) + 1 });
     }
     u.headingBias = Math.sin((this.time / SWEEP_PERIOD) * Math.PI * 2 + u.id) * (30 * DEG);
+  }
+
+  /**
+   * 護衛の鎖をたどって、輪になっていれば**基準にする1機**を返す（§80.2.1）。
+   *
+   * 輪でなければ null。輪なら、その輪に入っている機体のうち ID が最小のもの。
+   * **決め方は何でもよいが、全員が同じ答えを出すことだけが要る** ——
+   * 毎回違う機体を基準にすると、今度は基準そのものが揺れる。
+   */
+  _escortAnchor(u, ward) {
+    const seen = new Set([u.id]);
+    const ring = [u];
+    let cur = ward;
+    while (cur && cur.alive && cur.aiMode === 'ESCORT' && cur.escortTarget) {
+      if (cur === u) {                       // 一周して戻ってきた＝輪
+        let best = ring[0];
+        for (const m of ring) if (m.id < best.id) best = m;
+        return best;
+      }
+      if (seen.has(cur.id)) return null;     // 自分を含まない別の輪
+      seen.add(cur.id);
+      ring.push(cur);
+      cur = cur.escortTarget;
+    }
+    return null;
   }
 
   _strike(u, attackers) {
@@ -462,14 +539,17 @@ export class PilotAI {
       const d = from.pos.distanceTo(t.pos);
       if (d > range) continue;
 
-      // 既に十分な数が向かっている目標は避ける
+      // 群がっている目標は避ける。**ただし近いほど気にしない**（§86）。
+      // 今狙っている目標には下駄を履かせて、僅差での乗り換えを防ぐ。
+      //
+      // **「撃ってきた相手を優先する」項を足す案は、測って取り消した**（§87）。
+      // 仕組みとしては動いた（撃ってきた相手を狙っていない割合 79.5% → 71.0%）が、
+      // **狙いの本命だった `発射機喪失` は 5件 → 2件へ減り、
+      // 被撃墜は 62 → 66 に増えた。**
       const n = attackers.get(t.id) || 0;
       const already = t === current;
-      if (!already && n >= MAX_ATTACKERS_PER_TARGET) continue;
-
-      // 近い目標を優先し、群がっている目標にはペナルティ。
-      // 今狙っている目標には下駄を履かせて、僅差での乗り換えを防ぐ。
-      const score = d + n * 8000 - (already ? TARGET_STICKINESS : 0);
+      const crowd = n * CROWD_PENALTY * clamp(d / CROWD_FULL_RANGE, 0, 1);
+      const score = d + crowd - (already ? TARGET_STICKINESS : 0);
       if (score < bestScore) { bestScore = score; best = t; }
     }
     if (best && best !== current) u._lastRetarget = this.time;
