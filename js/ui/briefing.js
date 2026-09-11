@@ -171,15 +171,21 @@ export class ScreenManager {
    * 呼ばれないので、従来どおりファイルを開く。
    */
   showReplayList(items) {
-    // **いまの版の記録を先に出す。** 古い版の記録も開けるが、
-    // 混ざったまま並ぶと「いまの動き」を見たいときに探すことになる
-    const now = items.filter((r) => r.version === VERSION);
-    const old = items.filter((r) => r.version !== VERSION);
+    // **新しい版の記録から並べる。** 古い版も開けるが、混ざったまま並ぶと
+    // 「いまの動き」を見たいときに探すことになる。
+    //
+    // **「いまの版と一致するか」では切らない** —— 版を1つ上げただけで
+    // 手元の記録が全部「古い」に落ち、そのたびに録り直すことになる（実際なった）。
+    // **一番新しい版**を基準にすれば、録り直さなくても上に残る。
+    const sorted = [...items].sort((a, b) => verNum(b.version) - verNum(a.version));
+    const top = sorted.length ? verNum(sorted[0].version) : 0;
+    const now = sorted.filter((r) => verNum(r.version) === top);
+    const old = sorted.filter((r) => verNum(r.version) !== top);
     const card = (r) => {
       const ok = r.result === 'clear';
       const sec = r.sec != null ? `${Math.round(r.sec)}秒` : '';
       const kl = r.kills != null ? `撃墜 ${r.kills} / 損失 ${r.losses}` : '';
-      const ver = r.version && r.version !== VERSION ? r.version : '';
+      const ver = r.version && verNum(r.version) !== top ? r.version : '';
       return `<div class="stage-card${ok ? ' cleared' : ''}" data-replay="${r.file}">
         <div class="sc-no">${ok ? 'CLEAR' : 'FAILED'}${ver ? ` · ${ver}` : ''}</div>
         <div class="sc-name">${r.stage}</div>
@@ -193,7 +199,7 @@ export class ScreenManager {
         <h1 class="game-title">ANGELS TWENTY</h1>
         <div class="screen-sub">REPLAY — 保存した記録</div>
         <div class="stage-grid">${now.map(card).join('')}</div>
-        ${old.length ? `<div class="screen-sub">古い版の記録</div>
+        ${old.length ? `<div class="screen-sub">それより前の版の記録</div>
         <div class="stage-grid">${old.map(card).join('')}</div>` : ''}
         <div class="screen-foot list">
           <span>${items.length} 件（<code>replays/</code> にあるもの）</span>
@@ -688,4 +694,10 @@ export class ScreenManager {
       ctx.stroke();
     }
   }
+}
+
+/** 「Beta 2.93」を並べ替えられる数にする。読めなければ 0（いちばん古い扱い）*/
+function verNum(v) {
+  const m = /(\d+)\.(\d+)/.exec(v || '');
+  return m ? Number(m[1]) * 1000 + Number(m[2]) : 0;
 }

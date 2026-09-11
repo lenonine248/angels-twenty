@@ -20,6 +20,8 @@
 //   AT.telemetry.summary()  ステージごとの平均を表で見る
 //   AT.telemetry.clear()    記録を消す
 
+import { onDevServer } from './devserver.js';
+
 const KEY = 'angels_twenty_telemetry_v1';
 const MAX_RUNS = 40;          // これを超えたら古いものから捨てる
 
@@ -107,7 +109,7 @@ export function end(result, stats) {
 
 /** 開発サーバーへ送ってファイルに残す。失敗しても黙って諦める（遊びを止めない）。 */
 function post(record) {
-  if (!isLocal()) return;
+  if (!onDevServer()) return;
   try {
     fetch('/telemetry', {
       method: 'POST',
@@ -116,11 +118,6 @@ function post(record) {
       keepalive: true,
     }).catch(() => {});
   } catch (e) { /* noop */ }
-}
-
-function isLocal() {
-  const h = location.hostname;
-  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
 }
 
 export function all() { return runs; }

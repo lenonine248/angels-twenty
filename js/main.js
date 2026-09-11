@@ -17,6 +17,7 @@ import { makeRng } from './core/rng.js';
 import { CloudField } from './world/clouds.js';
 import { CloudView } from './world/cloudview.js';
 import { buildObjectiveMarkers, scaleObjectiveLabels } from './world/objectives.js';
+import { onDevServer } from './core/devserver.js';
 import { loadProgress, markCleared, markRating, resetProgress, saveSettings } from './core/save.js';
 import { evaluate, isBetterRank, RANKS } from './data/rating.js';
 import { AudioManager } from './core/audio.js';
@@ -178,13 +179,17 @@ ${err.message}`);
    * 遊ぶ側の手順は変わらない。
    */
   screens.onOpenReplay = async () => {
-    try {
-      const res = await fetch('replays/index.json');
-      if (res.ok) {
-        const list = await res.json();
-        if (Array.isArray(list) && list.length) { screens.showReplayList(list); return; }
-      }
-    } catch { /* 一覧が無い環境。ファイル選択へ落とす */ }
+    // **無い受け口は叩かない。** 公開版に一覧は無く、
+    // 取りに行くと `try/catch` で握り潰してもコンソールに 404 が赤字で残る
+    if (onDevServer()) {
+      try {
+        const res = await fetch('replays/index.json');
+        if (res.ok) {
+          const list = await res.json();
+          if (Array.isArray(list) && list.length) { screens.showReplayList(list); return; }
+        }
+      } catch { /* 一覧が作れない。ファイル選択へ落とす */ }
+    }
     screens.onPickReplayFile();
   };
 
