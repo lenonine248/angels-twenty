@@ -47,7 +47,7 @@ Windows では `start_server.bat` をダブルクリックしても起動する�
 | P9 | 音響（Web Audio の手続き生成）・粒子演出・バランス調整 | **実装済み** |
 | P10 | モード構成（チュートリアル／ステージモード／キャンペーン） | **実装済み** |
 | P11 | クリア評価（迅速・節約・練度の3軸と総合ランク） | **実装済み** |
-| P12 | チュートリアル14本（基本6 ＋ 兵装8） | **実装済み** |
+| P12 | チュートリアル（いま18本：基本8 ＋ 兵装8 ＋ 応用2） | **実装済み** |
 
 全フェーズ完了。そのあと足したものを版ごとに並べる（**2.30 以降は
 [CHANGELOG.md](CHANGELOG.md) を見る** —— ここに二重に書くとずれるため）。
@@ -160,10 +160,11 @@ angels_twenty/
     core/telemetry.js      プレイ記録（難易度調整の一次資料）
     core/recorder.js       戦闘の記録（振り返り・受け渡し用）
     core/debug.js          デバッグモードの切替（公開版では既定で切）
+    core/devserver.js      開発サーバの上にいるか（無い受け口を叩かないため）
     data/stages.js         全8ステージ＋デバッグ限定の検証面
     data/custom.js         自作ステージの保管庫（ステージエディタの保存先）
     data/rating.js         クリア評価（3軸 ◎○△ と総合ランク）
-    data/tutorials.js      チュートリアル14本の定義（手順・地形・配置）
+    data/tutorials.js      チュートリアル18本の定義（手順・地形・配置）
     sim/mission.js         目標判定・勝敗・増援
     ui/briefing.js         モード選択・ステージ選択・ブリーフィング・戦果画面
     world/terrain.js       地形生成・高度問い合わせ・視線判定
@@ -173,6 +174,7 @@ angels_twenty/
     world/models.js        ローポリ機体・地上ユニットモデル、ラベル
     world/contacts.js      探知コンタクトの3D表示（菱形シンボル・記憶枠）
     world/effects.js       ミサイル・デコイ・爆発・粒子演出（煙・火花・残骸・衝撃波）
+    world/objectives.js    到達目標の印（戦闘とリプレイの両方が使う）
     sim/missile.js         ミサイル実体・シーカー・デコイ
     sim/combat.js          兵装選択と発射・機銃・脅威割り当て
     sim/unit.js            ユニット基底
@@ -205,6 +207,7 @@ angels_twenty/
   tools/calib.js           命中期待度の較正
   tools/aaa.js             対空砲の検証
   tools/tasking.js         司令官AIの任務の組み立てを測る
+  tools/cloudplay.js       雲がAIの判断に何をしているかを測る
   tools/difficulty.js      ステージ定義からの難易度見積り
   tools/_tut_harness.js    チュートリアルを手順どおり通して確かめる（同上）
   tools/playlog.py         プレイ記録(playlog.jsonl)を読む

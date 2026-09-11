@@ -1027,7 +1027,7 @@ angels_twenty/
   index.html
   README.md                     実装状況・操作・設計上の要点
   CHANGELOG.md                  更新履歴（版ごとの変更点）
-  devserver.py                  no-store を返す開発用サーバー（プレイ記録の受け口も兼ねる）
+  devserver.py                  no-store を返す開発用サーバー（プレイ記録とリプレイの受け口も兼ねる）
   start_server.bat
   .claude/launch.json           開発サーバーの起動定義（autoPort）
   css/style.css
@@ -1044,14 +1044,16 @@ angels_twenty/
     core/audio.js               BGM / SE の手続き生成（Web Audio）
     core/debug.js               デバッグモードの切替（§47.2・公開版では既定で切）
     core/telemetry.js           プレイ記録（難易度調整の一次資料）
+    core/devserver.js           開発サーバの上にいるか（無い受け口を叩かない／§23.8）
     core/recorder.js            戦闘の記録（振り返り・受け渡し用／§23）
     world/terrain.js            地形生成・高度問い合わせ・視線判定・整地
     world/clouds.js             雲の判定（遮断と減衰／§88）
     world/cloudview.js          雲の描画（2パスで継ぎ目を消す／§88.12）
     world/scene.js              Three.js セットアップ・カメラリグ
     world/models.js             ローポリモデルの手続き生成・ラベル
-    world/contacts.js           探知コンタクトの3D表示
+    world/contacts.js           探知コンタクトの3D表示（戦闘とリプレイで共用／§23.10）
     world/effects.js            ミサイル・デコイ・爆発・粒子演出（煙・火花・残骸）
+    world/objectives.js         到達目標の印（戦闘とリプレイで共用／§23.9）
     sim/unit.js                 ユニット基底
     sim/sight.js                視線の判定を1か所に（光学／電波／減衰／§88.3）
     sim/aircraft.js             飛行モデル・指示処理・離着陸・回避
@@ -1090,6 +1092,7 @@ angels_twenty/
   tools/calib.js                命中期待度の較正（§28.8）
   tools/aaa.js                  対空砲の検証（§51）
   tools/tasking.js              司令官AIの任務の組み立てを測る（§27・§59・§72）
+  tools/cloudplay.js            雲がAIの判断に何をしているかを測る（§88.17）
   tools/difficulty.js           ステージ定義からの難易度見積り
   tools/_tut_harness.js         チュートリアルの通し確認（同上）
   tools/playlog.py              プレイ記録（playlog.jsonl）を読む
