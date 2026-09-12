@@ -100,6 +100,17 @@
       u.beaming = false;
       u._evadeSide = null;
       u.airbrake = 0;
+      // **姿勢も戻す**。位置だけ置き直しても、機体は前の戦闘の目標高度へ
+      // 降り続ける —— `pitch` は毎フレーム `atan2(上昇率, 速度)` で引き直されるので、
+      // **`desiredAlt` を揃えないと機首が下がったまま**になる。
+      // 実測で射手が **pitch -48.9度**（急降下）のまま始まっており、
+      // 同高度の目標が**ロック扇の上下±20度の外**に出ていた。
+      // そのため `live` 掃引の AAM-M は**全条件で発射2.0秒ちょうどに照射切れ**で死に、
+      // 「対抗手段を入れると中距離弾は一発も当たらない」という測り間違いを生む。
+      // （`patch()` を使う既定の掃引は `_updateGuidance` ごと差し替えるので影響しない）
+      u.desiredAlt = alt;
+      u.pitch = 0;
+      u.roll = 0;
       u.fuel = u.fuelMax;
       u.flares = u.spec.flares;
       u.chaff = u.spec.chaff;

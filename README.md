@@ -208,6 +208,7 @@ angels_twenty/
   tools/aaa.js             対空砲の検証
   tools/tasking.js         司令官AIの任務の組み立てを測る
   tools/cloudplay.js       雲がAIの判断に何をしているかを測る
+  tools/wpncost.js         兵装ごとの単価と外れ方を測る
   tools/difficulty.js      ステージ定義からの難易度見積り
   tools/_tut_harness.js    チュートリアルを手順どおり通して確かめる（同上）
   tools/playlog.py         プレイ記録(playlog.jsonl)を読む

@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { WEAPONS } from '../data/weapons.js';
-import { Missile, Decoy, decoyMatches, NOTCH_TOLERANCE, irBrightness } from './missile.js';
+import { Missile, Decoy, decoyMatches, NOTCH_TOLERANCE, irBrightness, illuminates } from './missile.js';
 import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.js';
 import { headingOf, angleDiff, radarElevation, DEG } from './unit.js';
 import { bombAimPoint, bombImpactPoint } from './acm.js';
@@ -894,9 +894,22 @@ export class CombatSystem {
     }
     if (w.guidance === 'arm' && !target.emitting) return '電波なし';
     const off = offBoresight(shooter, dx, dz, dy) / DEG;
+
+    // **曲がりきれない角度**（§75）。扇とは**別の門**なので別の言葉で出す。
+    //
+    // ここを書いていなかったので、この理由で落ちた発射は**最後の `'視線なし'` に
+    // 落ちていた** —— 地形は何も関係ないのに「視線なし」と表示される。
+    // §89.7 でデータリンクが扇を開けたことで、この門が表に出て見つかった。
+    if (w.kind === 'aam') {
+      const tof = dist / Math.max(1, w.speed * TOF_SPEED_FRAC);
+      const budget = (w.turnRate * DEG * tof * LAUNCH_TURN_BUDGET) / DEG;
+      if (off > budget) return `機首から遠い ${Math.round(off)}度（この距離では${Math.round(budget)}度まで）`;
+    }
+
     if (w.guidance === 'sarh' || w.guidance === 'arh') {
       const lock = w.guidance === 'sarh';
-      if (!inRadarFan(shooter, dx, dz, dy, flat, lock)) {
+      if (!inRadarFan(shooter, dx, dz, dy, flat, lock)
+          && !datalinkSource(this.world, shooter, target, w, dx, dz, dy, flat)) {
         return fanMiss(shooter, dx, dz, dy, flat, lock);
       }
     } else if (off > 45) {
@@ -1000,7 +1013,10 @@ export class CombatSystem {
         // レーダー誘導は自機のレーダー扇に入っていることが条件。
         // セミアクティブは**着弾まで**保持する必要があるので、
         // 発射の可否も狭いロックの扇で判定する（§28.7）。
-        if (!inRadarFan(shooter, dx, dz, dy, flat, w.guidance === 'sarh')) return false;
+        //
+        // **データリンクを持つ弾だけ、陣営の目で代用できる**（§89.7）。
+        if (!inRadarFan(shooter, dx, dz, dy, flat, w.guidance === 'sarh')
+            && !datalinkSource(this.world, shooter, target, w, dx, dz, dy, flat)) return false;
         return los();
 
       case 'arm':
@@ -1235,6 +1251,39 @@ function offBoresight(shooter, dx, dz, dy) {
  *   ロックの扇の外にいる目標へ撃ててしまい、**発射した瞬間に誘導が切れる**。
  *   実際そうなっていて、誘導喪失26件のうち18件が「機首から25度ちょうど」だった。
  */
+/**
+ * **データリンク**（§89.7）。**陣営の誰かが照らしていれば、自分の扇の外でも撃てる。**
+ *
+ * アクティブ弾の中途誘導は「予測位置へ飛ぶ」だけなので、位置さえ誰かが
+ * 寄こせるなら**撃つ側が見ている必要は無い** —— セミアクティブには原理上できない差。
+ * これで AAM-A の値打ちが「1発の質」だけでなく**撃てる場面の広さ**になる。
+ *
+ * 開くのは**電波を出さずに撃てること**だけ —— 逆探知に映らずに撃つ
+ * （§26 電波管制に戦術的な意味が出る）。**機首は向けなければならない**
+ * （`inFanGeometry`）。扇ごと開けると AI が縦の外へ撃ち始めて損失が倍になった。
+ *
+ * **曲がりきれない角度の門（§75）はそのまま残る。** あちらは弾の物理で、
+ * こちらはセンサーの都合 —— 扇を開けても、機首から離れすぎていれば撃てない。
+ *
+ * **地上のレーダーは入れない。** 自軍飛行場は全方位60km を持つので、
+ * 入れると「飛ばずに地上の目で撃つ」が成立して位置取りの意味が消える。
+ *
+ * @returns {?object} 照らしている味方機（無ければ null）
+ */
+function datalinkSource(world, shooter, target, w, dx, dz, dy, flat) {
+  if (!w || !w.datalink || w.guidance !== 'arh') return null;
+  if (!target || target.kind !== 'aircraft' || target.onGround) return null;
+  // **機首は向ける。** 開くのは「電波を出さずに撃てる」ことだけで、
+  // 「見ていない方向へ撃てる」ではない（§89.7 の実測）
+  if (!inFanGeometry(shooter, dx, dz, dy, flat, false)) return null;
+  for (const u of world.units) {
+    if (u === shooter || !u.alive || u.side !== shooter.side) continue;
+    if (u.kind !== 'aircraft' || u.onGround) continue;
+    if (illuminates(u, target, world)) return u;
+  }
+  return null;
+}
+
 function inRadarFan(shooter, dx, dz, dy, flat, lock = false) {
   const spec = shooter.spec;
   // レーダーを切っていれば扇そのものが無い（§26.4）。
@@ -1242,6 +1291,19 @@ function inRadarFan(shooter, dx, dz, dy, flat, lock = false) {
   const range = shooter.radarRange != null ? shooter.radarRange : (spec && spec.radarRange) || 0;
   if (!spec || range <= 0) return false;
   if (Math.hypot(flat, dy) > range) return false;
+  return inFanGeometry(shooter, dx, dz, dy, flat, lock);
+}
+
+/**
+ * 扇の**向きだけ**を見る。電波を出しているかも射程も見ない（§89.7）。
+ *
+ * データリンクで撃つときに使う —— **黙っていても機首は向けなければならない。**
+ * ここを見ずに「陣営の誰かが見ていれば撃てる」にすると、AI が縦の扇の外
+ * （遥か上下）へ撃ち始めて**損失が倍**になった（実測 0.26 → 0.50）。
+ */
+function inFanGeometry(shooter, dx, dz, dy, flat, lock = false) {
+  const spec = shooter.spec;
+  if (!spec) return false;
   if (spec.omniRadar) return true;
   const fovH = lock ? (spec.radarLockFovH ?? spec.radarFovH ?? 60) : (spec.radarFovH || 60);
   const fovV = lock ? (spec.radarLockFovV ?? spec.radarFovV ?? 30) : (spec.radarFovV || 30);

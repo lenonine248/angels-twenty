@@ -589,6 +589,41 @@ export class Missile {
   }
 
   /**
+   * **中途の位置をもらえるか**（§89.7）。
+   *
+   * 既定は発射機だけ。`datalink` を持つ弾は**陣営のどの機体のレーダーでも**よい ——
+   * 撃った本人が機首を振っても、**落とされても**、僚機や早期警戒機が見ていれば
+   * 導き続けられる。**セミアクティブには原理上できない差**。
+   *
+   * **地上のレーダーは入れない。** 自軍飛行場は全方位60km を持つので、
+   * 入れると「飛ばずに地上の目で撃つ」が成立してしまい、位置取りの意味が消える。
+   * 空に出ている機体どうしで情報を回す、という筋書きに限る。
+   */
+  _midcourseFix(world) {
+    const t = this.target;
+    if (!t || !t.alive) return false;
+    const l = this.launcher;
+    if (l && l.alive && illuminates(l, t, world)) return true;
+    if (!this.weapon.datalink) return false;
+    for (const u of world.units) {
+      if (u === l || !u.alive || u.side !== this.side) continue;
+      if (u.kind !== 'aircraft' || u.onGround) continue;
+      if (illuminates(u, t, world)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * **終末（自分のシーカーで見ている段階）か。**
+   *
+   * アクティブ弾だけが持つ区別。ほかの誘導方式は最初から誘導しているので
+   * `active` が常に真で、ここは常に偽になる。
+   */
+  _isTerminal() {
+    return this.guidance === 'arh' && this.active === true;
+  }
+
+  /**
    * アクティブレーダー弾の中途誘導（§28.2）。
    *
    * 発射機の**索敵レーダー**（ロックではない）から、粗い間隔で位置をもらう。
@@ -600,15 +635,12 @@ export class Missile {
   _midcourse(dt, world) {
     const w = this.weapon;
 
-    // 発射機が見えている間だけ位置を更新する（間隔は粗く）
+    // 見えている間だけ位置を更新する（間隔は粗く）。
+    // 誰の目でよいかは `_midcourseFix`（データリンクの有無で変わる・§89.7）
     this._midcourseTimer -= dt;
     if (this._midcourseTimer <= 0) {
       this._midcourseTimer = w.midcourseInterval || 2;
-      const l = this.launcher;
-      if (l && l.alive && this.target && this.target.alive
-          && illuminates(l, this.target, world)) {
-        this.lastKnown.copy(this.target.pos);
-      }
+      if (this._midcourseFix(world)) this.lastKnown.copy(this.target.pos);
     }
 
     // 予測位置まで詰めたらシーカーを入れる
@@ -616,7 +648,12 @@ export class Missile {
       this._goActive(world);
       return;
     }
-    // まだ中途。記憶した位置へ向かう
+    // まだ中途。記憶した位置へ向かう。
+    //
+    // **ここに狙点の細工を入れないこと**（§89 でロフトを試して踏んだ）。
+    // `_updateGuidance` は次のフレームの頭で `lastKnown.copy(seekTarget.pos)` を
+    // 通るので、持ち上げた点を入れると記憶位置が毎フレーム上へ流れていく。
+    // 狙点を動かすなら `_leadPoint` の側でやる。
     this.seekTarget = { pos: this.lastKnown, alive: true, speed: 0, isPoint: true };
   }
 
@@ -985,7 +1022,11 @@ export class Missile {
     const vc = vd * (w.cornerFraction ?? CORNER_FRACTION);
     // `maxG` を持たない兵装（対地弾）は、設計速度での `turnRate` から逆算する。
     // 動かない目標を撃つので、ここが効く場面はそもそも無い
-    const maxG = w.maxG ?? (w.turnRate * (Math.PI / 180) * vd) / g;
+    const baseG = w.maxG ?? (w.turnRate * (Math.PI / 180) * vd) / g;
+    // **終末だけ余分に引ける弾**（§89）。中途を慣性で飛ぶ弾は、
+    // そこまで舵をほとんど使っていない ── 使い残した余力を最後に出す、という形。
+    // 照射され続ける弾（セミアクティブ）は最初から舵を使うので、これは持てない。
+    const maxG = (w.terminalG != null && this._isTerminal()) ? w.terminalG : baseG;
     const base = (maxG * g) / vd;                    // 設計速度での角速度(rad/s)
     const structural = base * (vd / v);
     const aero = base * (vd / (vc * vc)) * turnFactor(this.pos.y) * v;
@@ -1305,8 +1346,12 @@ function isGroundTarget(t) {
  *   セミアクティブの誘導は**ロックの扇**（狭い）で見る。
  *   アクティブの中途誘導は**索敵の扇**（広い）で見る — こちらは
  *   ロックしていないからこそ相手に警報が出ない（§28.2）。
+ *
+ * **`export` している**のは `sim/combat.js` のデータリンク判定（§89.7）が
+ * 同じ規則を使うため。**「照らせているか」の式を2か所に書かないこと** ——
+ * 発射が許されたのに弾が誘導できない（またはその逆）が起きる。
  */
-function illuminates(launcher, target, world, lock = false) {
+export function illuminates(launcher, target, world, lock = false) {
   if (!launcher.spec || !target) return false;
 
   // 地上発射（SAM）は全方位レーダー。沈黙すれば誘導が切れる。
