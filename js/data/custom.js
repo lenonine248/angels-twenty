@@ -13,6 +13,7 @@ import { AIRCRAFT_TYPES, ENEMY_TYPES, SUPPORT_TYPES } from './aircraft.js';
 import { GROUND_TYPES } from './ground.js';
 import { loadoutCost, loadoutFits, hardpointsOf } from './weapons.js';
 import { MAP_SIZE } from '../world/terrain.js';
+import { CLOUD_COVER, CLOUD_SHAPE } from '../world/clouds.js';
 
 const KEY = 'at_custom_stages_v1';
 
@@ -26,6 +27,8 @@ export const OBJECTIVE_TYPES = ['destroyAll', 'protect', 'hold', 'reach', 'survi
 export const ENEMY_AIR_TYPES = [...Object.keys(ENEMY_TYPES), ...Object.keys(SUPPORT_TYPES)];
 /** 自軍機に選べる型 */
 export const FRIENDLY_AIR_TYPES = [...Object.keys(AIRCRAFT_TYPES), ...Object.keys(SUPPORT_TYPES)];
+/** 支援機に選べる型（武装しない・指揮下に置かない機体・§80.4） */
+export const SUPPORT_AIR_TYPES = [...Object.keys(SUPPORT_TYPES), ...Object.keys(AIRCRAFT_TYPES)];
 /** 地上に置ける型 */
 export const GROUND_PLACEABLE = Object.keys(GROUND_TYPES).filter((k) => k !== 'AIRBASE');
 
@@ -101,6 +104,39 @@ export function blankStage() {
   };
 }
 
+/**
+ * **欠けている節を埋める**（§66.10）。
+ *
+ * `fromJSON()` は `friendly` があれば通すので、手書きの JSON や他人からもらった
+ * 断片が**節ごと欠けたまま**エディタに入ってくる。エディタは `terrain` や `enemy`
+ * があることを前提に画面を組むので、**開いた瞬間に例外で止まっていた**
+ * （実測: `terrain` 無しで「Cannot read properties of undefined (reading 'coast')」）。
+ *
+ * **値は上書きしない。** 無いものだけを白紙の既定で埋める。
+ */
+export function normalize(stage) {
+  const b = blankStage();
+  const s = stage || {};
+  if (s.name == null) s.name = b.name;
+  if (s.title == null) s.title = b.title;
+  if (s.brief == null) s.brief = '';
+  if (s.hint == null) s.hint = '';
+  if (s.weaponPoints == null) s.weaponPoints = b.weaponPoints;
+  s.terrain = { ...b.terrain, ...(s.terrain || {}) };
+  s.friendly = s.friendly || {};
+  s.friendly.aircraft = s.friendly.aircraft || [];
+  s.enemy = s.enemy || {};
+  s.enemy.aircraft = s.enemy.aircraft || [];
+  s.enemy.ground = s.enemy.ground || [];
+  if (s.enemy.skill == null) s.enemy.skill = b.enemy.skill;
+  s.objectives = s.objectives || [];
+  const r = s.rating || {};
+  s.rating = { time: r.time || b.rating.time.slice(),
+    points: r.points || b.rating.points.slice(),
+    losses: r.losses || b.rating.losses.slice() };
+  return s;
+}
+
 /** 既存ステージを下敷きにして複製する（§66.2）。**元の定義には触らない。** */
 export function duplicate(stage) {
   const copy = structuredClone(stage);
@@ -159,8 +195,12 @@ export function validate(stage) {
   for (const key of ['base', 'base2']) {
     for (const t of (e[key] && e[key].tags) || []) enemyTags.add(t);
   }
+  // **支援機は `friendly.support`**（`stage.support` ではない）。
+  // ここを取り違えていたので、**ESCORT を複製すると保存も試遊もできなかった** ——
+  // 輸送機のタグ `transport` を持つ味方が「いない」と判定されていた。
+  // 本体が読んでいる場所（`main.js` の `spawnStage`）と揃える。
   const friendlyTags = new Set(['home']);          // 自軍飛行場は暗黙に home
-  for (const u of [...air, ...(f.ground || []), ...(stage.support || [])]) {
+  for (const u of [...air, ...(f.ground || []), ...(f.support || [])]) {
     for (const t of u.tags || []) friendlyTags.add(t);
   }
 
@@ -181,13 +221,25 @@ export function validate(stage) {
   }
 
   // 座標。**地図の外に置くと出撃した瞬間に迷子になる**
-  const inside = (x, z) => x >= 0 && x <= MAP_SIZE && z >= 0 && z <= MAP_SIZE;
+  //
+  // **座標を持つものは全部見る。** 以前は敵と自軍飛行場しか見ておらず、
+  // 自軍機・自軍地上・支援機・到達地点は素通りだった —— エディタは置くときに
+  // 丸めるが、**数値欄に打ち込む経路と、読み込んだ JSON には効かない。**
+  const okNum = (v) => typeof v === 'number' && Number.isFinite(v);
   const spots = [];
   if (f.base) spots.push(['自軍飛行場', f.base]);
+  for (const u of [...air, ...(f.ground || []), ...(f.support || [])]) spots.push([u.name || '味方', u]);
   for (const u of [...(e.aircraft || []), ...(e.ground || [])]) spots.push([u.name || '敵', u]);
   for (const key of ['base', 'base2']) if (e[key]) spots.push([`敵飛行場(${key})`, e[key]]);
+  for (const o of objs) if (o.type === 'reach') spots.push([`到達地点「${o.label || o.id}」`, o]);
   for (const [label, p] of spots) {
-    if (p.x != null && !inside(p.x, p.z)) fatal.push(`${label} が地図の外にあります`);
+    if (p.x == null && p.z == null) continue;            // 位置は本体まかせ（自動配置）
+    // **片方だけ入っているのも弾く。** `null >= 0` は真なので、
+    // 素朴に比べると「Z が空」が通ってしまっていた。
+    if (!okNum(p.x) || !okNum(p.z)) { fatal.push(`${label} の座標が欠けています`); continue; }
+    if (p.x < 0 || p.x > MAP_SIZE || p.z < 0 || p.z > MAP_SIZE) {
+      fatal.push(`${label} が地図の外にあります`);
+    }
   }
 
   // 評価の順序（◎ が ○ より厳しい側）
@@ -220,6 +272,19 @@ export function validate(stage) {
     }
   }
 
+  // 天候（§88）。**書かなければ雲なし**なので、書いてあるときだけ見る
+  const w = stage.weather;
+  if (w && w.cloud && w.cloud !== 'none') {
+    if (CLOUD_COVER[w.cloud] == null) fatal.push(`雲量「${w.cloud}」は使えません`);
+    if (w.shape && CLOUD_SHAPE[w.shape] == null) fatal.push(`塊の形「${w.shape}」は使えません`);
+    const base = w.base ?? 2500;
+    const top = w.top ?? (base + 1700);
+    // 上下が逆でも本体は 200m の厚みに丸めるので落ちない。**遊びとして意図と違う**だけ
+    if (top <= base) warn.push(`雲頂(${top}m)が雲底(${base}m)より下にあります`);
+    if (base < 0) warn.push('雲底が地面より下にあります');
+    if (w.wind && w.wind.speed != null && w.wind.speed < 0) warn.push('風速が負の値です');
+  }
+
   if (!e.aircraft?.length && !e.ground?.length && !e.base) warn.push('敵が1つも置かれていません');
 
   return { fatal, warn, ok: fatal.length === 0 };
@@ -241,6 +306,7 @@ export function fromJSON(text) {
   const added = [];
   for (const s of list) {
     if (!s || typeof s !== 'object' || !s.friendly) continue;
+    normalize(s);                   // 節ごと欠けた断片でも開けるように（§66.10）
     s.id = nextId();
     s.custom = true;
     const res = save(s);
@@ -259,7 +325,11 @@ export function snippet(stage) {
   const s = structuredClone(stage);
   delete s.custom;
   return JSON.stringify(s, null, 2)
-    // キーの引用符を外して JS の書き方に寄せる（そのまま貼れるように）
-    .replace(/^(\s*)"([A-Za-z_][A-Za-z0-9_]*)":/gm, '$1$2:')
-    .replace(/"/g, "'");
+    // キーの引用符だけ外して JS の書き方に寄せる（そのまま貼れるように）。
+    //
+    // **値の引用符は触らない。** 以前は `"` を丸ごと `'` に置き換えていたので、
+    // 本文にアポストロフィがあると出力が壊れていた ——
+    // 実測: `name: 'DON'T PANIC',` / `label: 'Don't lose the 'CARGO''`。
+    // `stages.js` は単引用符で書くが、**貼って動くこと**のほうが先。
+    .replace(/^(\s*)"([A-Za-z_][A-Za-z0-9_]*)":/gm, '$1$2:');
 }

@@ -13,7 +13,8 @@
 // （`tools/bench.js` も読み込み時に警告する）。
 
 import { STAGES } from '../data/stages.js';
-import { ENEMY_TYPES, SUPPORT_TYPES, defaultEnemyLoadout } from '../data/aircraft.js';
+import { ENEMY_TYPES, SUPPORT_TYPES, defaultEnemyLoadout, getType } from '../data/aircraft.js';
+import { loadoutCost, loadoutFits } from '../data/weapons.js';
 import { isDebug } from '../core/debug.js';
 import { loadoutRow, removeOne, LOADOUT_HINT } from './loadout.js';
 
@@ -32,6 +33,18 @@ const PRISTINE = new Map(STAGES.map((s) => [s.id, structuredClone(s)]));
 
 /** ステージIDごとの上書き */
 let overrides = load();
+
+/**
+ * 「コピー用に出力」に**味方の搭載も含めるか**（§47.4）。
+ *
+ * **上書き(`overrides`)には入れない。** あちらは `stages.js` へ写す値で、
+ * こちらは出力の見た目の好み —— 混ぜると「既定に戻す」で消えてしまう。
+ * 保存もしない（開き直せば既定の「含めない」に戻る）。
+ */
+let withLoadouts = false;
+
+export function wantsLoadouts() { return withLoadouts; }
+export function toggleLoadouts() { withLoadouts = !withLoadouts; return withLoadouts; }
 
 function load() {
   try {
@@ -104,28 +117,77 @@ export function reset(id) { delete overrides[id]; persist(); apply(id); }
 
 export function resetAll() { overrides = {}; persist(); applyAll(); }
 
-/** いまの内容を `stages.js` に写せる形で書き出す */
-export function snippet(id) {
+/** 機体1行を `stages.js` の書き方で組む。位置は**あるものだけ**写す */
+function planeLine(a, loadout) {
+  const q = (v) => JSON.stringify(v);
+  return `  { type: ${q(a.type)}, name: ${q(a.name)}`
+    + (a.x != null ? `, x: ${a.x}` : '')
+    + (a.z != null ? `, z: ${a.z}` : '')
+    + (a.agl != null ? `, agl: ${a.agl}` : '')
+    + (a.aiMode ? `, aiMode: ${q(a.aiMode)}` : '')
+    + (a.tags && a.tags.length ? `, tags: ${q(a.tags)}` : '')
+    + (loadout ? `, loadout: ${q(loadout)}` : '')
+    + (a.strikeTargetTag ? `, strikeTargetTag: ${q(a.strikeTargetTag)}` : '')
+    + ' },';
+}
+
+/**
+ * 味方の搭載を書き出す（§47.4）。
+ *
+ * 写すのは**ブリーフィングでいま組んでいるもの**であって、ステージ定義の値ではない。
+ * 調整パネルは味方に触らないので、ここだけは呼び出し側から渡してもらう。
+ *
+ * **合計ポイントと枠の収まりも併せて出す。** 上限を超えた搭載は
+ * `data/custom.js` の検査で弾かれるので、写す前に気づけるようにする。
+ */
+function friendlyLines(s, loadouts) {
+  const list = (s.friendly && s.friendly.aircraft) || [];
+  const spent = list.reduce((n, a, i) => n + loadoutCost(loadouts[i] || a.loadout || []), 0);
+  const over = spent > s.weaponPoints;
+  const bad = list.filter((a, i) => {
+    const spec = getType(a.type);
+    return spec && !loadoutFits(loadouts[i] || a.loadout || [], spec);
+  }).map((a) => a.name);
+
+  const out = [
+    `// 味方の搭載 — 合計 ${spent}P / 上限 ${s.weaponPoints}P`
+      + (over ? '  ← 上限を超えています' : ''),
+  ];
+  if (bad.length) out.push(`// パイロンに収まっていません: ${bad.join(' / ')}`);
+  out.push('friendly.aircraft: [');
+  list.forEach((a, i) => out.push(planeLine(a, loadouts[i] || a.loadout)));
+  out.push('],');
+  return out;
+}
+
+/**
+ * いまの内容を `stages.js` に写せる形で書き出す。
+ *
+ * @param {?string[][]} loadouts 味方の搭載（`wantsLoadouts()` のときだけ渡す）。
+ *   **調整パネルは味方に触らない**ので、ブリーフィングから受け取る。
+ */
+export function snippet(id, loadouts = null) {
   const s = STAGES.find((x) => x.id === id);
   if (!s) return '';
   const o = overrides[id];
-  if (!o || !Object.keys(o).length) return `// ${id} は調整していません`;
+  const tuned = !!(o && Object.keys(o).length);
+  // **搭載だけ写したい場合がある。** 敵を触っていなくても、
+  // ブリーフィングで組んだ搭載をプリセットにしたいことのほうが多い
+  if (!tuned && !loadouts) return `// ${id} は調整していません`;
+
+  const lines = [`// ${s.name}（${s.title}）— stages.js に写す`];
+  if (loadouts) lines.push(...friendlyLines(s, loadouts));
+  if (!tuned) return lines.join('\n');
+
   const r = s.rating;
-  const q = (v) => JSON.stringify(v);
-  const lines = [
-    `// ${s.name}（${s.title}）の調整結果 — stages.js に写す`,
+  if (loadouts) lines.push('', '// 難易度');
+  lines.push(
     `weaponPoints: ${s.weaponPoints},`,
     `rating: { time: [${r.time}], points: [${r.points}], losses: [${r.losses}] },`,
-  ];
+  );
   if (s.enemy && s.enemy.skill != null) lines.push(`enemy.skill: ${s.enemy.skill},`);
   lines.push('enemy.aircraft: [');
-  for (const a of (s.enemy && s.enemy.aircraft) || []) {
-    lines.push(`  { type: ${q(a.type)}, name: ${q(a.name)}, x: ${a.x}, z: ${a.z}, agl: ${a.agl},`
-      + ` aiMode: ${q(a.aiMode)}, tags: ${q(a.tags || [])}`
-      + (a.loadout ? `, loadout: ${q(a.loadout)}` : '')
-      + (a.strikeTargetTag ? `, strikeTargetTag: ${q(a.strikeTargetTag)}` : '')
-      + ' },');
-  }
+  for (const a of (s.enemy && s.enemy.aircraft) || []) lines.push(planeLine(a, a.loadout));
   lines.push('],');
   return lines.join('\n');
 }
@@ -188,6 +250,8 @@ export function render(id) {
     <div class="tn-head">
       <span class="tn-title">難易度調整 — ${s.name}</span>
       <button class="autow" data-act="tuneReset">既定に戻す</button>
+      <button class="autow${withLoadouts ? '' : ' off'}" data-act="tuneLoadouts"
+        title="ブリーフィングでいま組んでいる味方の搭載を、出力に含めます">味方の搭載も出す${withLoadouts ? ' ✓' : ''}</button>
       <button class="autow" data-act="tuneCopy">コピー用に出力</button>
       <button class="cl-close" data-act="tuneClose">閉じる</button>
     </div>

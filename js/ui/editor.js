@@ -12,6 +12,7 @@
 import { Terrain, CELLS, MAP_SIZE } from '../world/terrain.js';
 import { AI_MODES } from '../ai/pilot.js';
 import { GROUND_TYPES } from '../data/ground.js';
+import { CLOUD_COVER, CLOUD_SHAPE, CLOUD_WIND_SPEED } from '../world/clouds.js';
 import { loadoutCost } from '../data/weapons.js';
 import * as custom from '../data/custom.js';
 import { loadoutRow, removeOne, LOADOUT_HINT } from './loadout.js';
@@ -26,6 +27,8 @@ const TOOLS = [
   ['select', '選択', null],
   ['fbase', '自軍飛行場', 'fbase'],
   ['fair', '自軍機', 'fair'],
+  ['fsup', '自軍支援機', 'fsup'],
+  ['fground', '自軍地上', 'fground'],
   ['eair', '敵機', 'eair'],
   ['eground', '敵地上', 'eground'],
   ['ebase', '敵飛行場', 'ebase'],
@@ -34,6 +37,7 @@ const TOOLS = [
 
 const TABS = [
   ['terrain', '地形'],
+  ['weather', '天候'],
   ['objectives', '目標'],
   ['rating', '評価'],
   ['text', '文章'],
@@ -41,6 +45,11 @@ const TABS = [
 ];
 
 const COAST = ['none', 'n', 'e', 's', 'w'];
+const CLOUD_KINDS = Object.keys(CLOUD_COVER);
+const CLOUD_SHAPES = Object.keys(CLOUD_SHAPE);
+
+/** 天候を書き始めるときの既定（§88.16 の面に近い層） */
+const WEATHER_DEFAULT = { cloud: 'scattered', base: 2400, top: 3800, shape: 'puffy' };
 
 
 /**
@@ -105,28 +114,85 @@ export class StageEditor {
     this.msg = '';
     this._terrain = null;
     this._terrainKey = '';
+    this._mapImage = null;         // 地形の下敷き（種が変わるまで使い回す）
     this._drag = null;
 
     this.root.addEventListener('click', (e) => this._onClick(e));
     this.root.addEventListener('input', (e) => this._onInput(e));
     this.root.addEventListener('change', (e) => this._onInput(e));
+
+    // **ドラッグの受けは構築時に1度だけ張る。**
+    //
+    // 以前は `_wireCanvas()`（＝描き直すたびに走る）の中で `window` へ足していて、
+    // **一度も外していなかった。** 漏れた受けはどれも同じ `this` を見るので、
+    // ドラッグ中は**全部が動く** —— 実測で描き直し30回のあと、
+    // mousemove 1回が `_draw()` を31回・150ms。配置もツール切替もタブ切替も
+    // 描き直しを通るので、数分で届く。
+    //
+    // 画布の上の受け（contextmenu/mousedown）は画布ごと作り直されるので、
+    // あちらは `_wireCanvas()` のままでよい（要素が消えれば受けも消える）。
+    window.addEventListener('mousemove', (ev) => {
+      if (!this._drag || !this.isOpen) return;
+      const p = this._at(ev);
+      if (!p) return;
+      this._drag.ref.x = clampPos(this._world(p.px));
+      this._drag.ref.z = clampPos(this._world(p.pz));
+      this._draw();
+    });
+    window.addEventListener('mouseup', () => {
+      if (!this._drag) return;
+      this._drag = null;
+      this._refresh();
+    });
+  }
+
+  /** 画面の点 → 画布の座標。画布が無ければ null */
+  _at(ev) {
+    const canvas = this.root.querySelector('#edMap');
+    if (!canvas) return null;
+    const r = canvas.getBoundingClientRect();
+    // 表示されていないと 0 が返る。**そのまま割ると Infinity になる。**
+    const w = r.width || SIZE;
+    const h = r.height || SIZE;
+    return { px: (ev.clientX - r.left) * (SIZE / w), pz: (ev.clientY - r.top) * (SIZE / h) };
   }
 
   get isOpen() { return !this.root.classList.contains('hidden'); }
 
   open(stage) {
-    this.stage = structuredClone(stage || custom.blankStage());
+    // **節ごと欠けた定義でも開けるようにしてから触る**（§66.10）。
+    // 読み込んだ JSON は `friendly` しか保証されていない。
+    this.stage = custom.normalize(structuredClone(stage || custom.blankStage()));
     this.sel = null;
     this.tool = 'select';
     this.msg = '';
+    this._dirty = false;
+    this._pending = null;
     this.root.classList.remove('hidden');
     this._render();
+  }
+
+  /**
+   * **保存していない編集を黙って捨てない**（§66.10）。
+   *
+   * ブラウザの確認窓は使わない（この作りでは他に1つも出していない）。
+   * **同じボタンをもう一度押させる**形にする —— 押し間違いは止まるし、
+   * 分かっていて捨てたい人は2回押すだけで済む。
+   */
+  _mayDiscard(token, what) {
+    if (!this._dirty) return true;
+    if (this._pending === token) { this._pending = null; return true; }
+    this._pending = token;
+    this._say(`保存していない編集があります。${what}なら、もう一度押してください`, 'warn');
+    return false;
   }
 
   close() {
     this.root.classList.add('hidden');
     this.root.innerHTML = '';
     this.stage = null;
+    this._dirty = false;
+    this._pending = null;
   }
 
   // -------------------------------------------------------------- 描画
@@ -183,8 +249,27 @@ export class StageEditor {
     if (key !== this._terrainKey) {
       this._terrainKey = key;
       this._terrain = new Terrain(this.stage.terrain);
+      this._mapImage = null;                  // 下敷きも作り直す
     }
     return this._terrain;
+  }
+
+  /**
+   * 地形の下敷き。**種が変わるまで使い回す。**
+   *
+   * 以前は `_draw()` のたびに `buildMinimapImage()` を呼んでいた ——
+   * 5.8ms のうち 4.6ms がそれで、**ドラッグ中は mousemove ごとに**走っていた。
+   * 地形は掴んで動かしている間ずっと同じものなので、作り直す理由が無い。
+   */
+  _mapCanvas() {
+    const terrain = this._terrainFor();
+    if (this._mapImage) return this._mapImage;
+    const off = document.createElement('canvas');
+    off.width = CELLS; off.height = CELLS;
+    const octx = off.getContext('2d');
+    octx.putImageData(terrain.buildMinimapImage(octx), 0, 0);
+    this._mapImage = off;
+    return off;
   }
 
   _px(v) { return (v / MAP_SIZE) * SIZE; }
@@ -194,14 +279,10 @@ export class StageEditor {
     const canvas = this.root.querySelector('#edMap');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    // 地形は 256 で出るので、拡大して敷く
-    const off = document.createElement('canvas');
-    off.width = CELLS; off.height = CELLS;
-    const octx = off.getContext('2d');
-    octx.putImageData(this._terrainFor().buildMinimapImage(octx), 0, 0);
+    // 地形は 256 で出るので、拡大して敷く（下敷きは使い回す）
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, SIZE, SIZE);
-    ctx.drawImage(off, 0, 0, SIZE, SIZE);
+    ctx.drawImage(this._mapCanvas(), 0, 0, SIZE, SIZE);
 
     const items = this._items();
     // **自動配置の機体は飛行場と線で結ぶ**（§71.5）。
@@ -270,6 +351,20 @@ export class StageEditor {
       out.push({ kind: 'fair', i, x: p.x, z: p.z, ref: a, color: '#8fd4ff', round: true,
         label: a.name, auto, atBase: auto && !f.startAirborne, tether: auto ? f.base : null });
     });
+    // **支援機**（§80.4）。守る対象・運ぶ対象で、プレイヤーの指揮下に入らない。
+    // `moveTo` を持つものは行き先も点で出して、掴んで動かせるようにする ——
+    // 「どこまで運ぶのか」は数字より地図で決めたい。
+    (f.support || []).forEach((a, i) => {
+      out.push({ kind: 'fsup', i, x: a.x, z: a.z, ref: a, color: '#7ce0c0', round: true,
+        big: true, label: a.name });
+      if (a.moveTo) {
+        out.push({ kind: 'fsupTo', i, x: a.moveTo.x, z: a.moveTo.z, ref: a.moveTo,
+          color: '#7ce0c0', round: true, label: `${a.name || '支援機'} の行き先`,
+          tether: { x: a.x, z: a.z } });
+      }
+    });
+    (f.ground || []).forEach((g, i) => out.push({ kind: 'fground', i, x: g.x, z: g.z, ref: g,
+      color: '#5aa9ff', label: g.name }));
     const e = s.enemy || {};
     ['base', 'base2'].forEach((key, i) => {
       const b = e[key];
@@ -277,8 +372,14 @@ export class StageEditor {
     });
     (e.aircraft || []).forEach((a, i) => out.push({ kind: 'eair', i, x: a.x, z: a.z, ref: a,
       color: '#ff8a78', round: true, label: a.name }));
-    (e.ground || []).forEach((g, i) => out.push({ kind: 'eground', i, x: g.x, z: g.z, ref: g,
-      color: '#e0705a', label: g.name }));
+    (e.ground || []).forEach((g, i) => {
+      out.push({ kind: 'eground', i, x: g.x, z: g.z, ref: g, color: '#e0705a', label: g.name });
+      // 進路の点（§67.3 の車両部隊）。`i` に経路の添字を混ぜて1つずつ掴めるようにする
+      (g.route || []).forEach((wp, j) => out.push({ kind: 'eroute', i: i * 100 + j, x: wp.x, z: wp.z,
+        ref: wp, color: '#e0a05a', round: true,
+        label: `${g.name || '地上'} の経路 ${j + 1}`,
+        tether: j === 0 ? { x: g.x, z: g.z } : { x: g.route[j - 1].x, z: g.route[j - 1].z } }));
+    });
     (s.objectives || []).forEach((o, i) => {
       if (o.type !== 'reach' || o.x == null) return;
       out.push({ kind: 'reach', i, x: o.x, z: o.z, ref: o, color: '#ffb648',
@@ -296,27 +397,25 @@ export class StageEditor {
     return best;
   }
 
+  /**
+   * 画布の上の受け。**画布ごと作り直されるので、ここに張ってよい。**
+   * `window` へ張るものは構築時に1度だけ（漏れる）。
+   */
   _wireCanvas() {
     const canvas = this.root.querySelector('#edMap');
     if (!canvas) return;
-    const at = (ev) => {
-      const r = canvas.getBoundingClientRect();
-      // 表示されていないと 0 が返る。**そのまま割ると Infinity になる。**
-      const w = r.width || SIZE;
-      const h = r.height || SIZE;
-      return { px: (ev.clientX - r.left) * (SIZE / w),
-        pz: (ev.clientY - r.top) * (SIZE / h) };
-    };
     canvas.addEventListener('contextmenu', (ev) => {
       ev.preventDefault();
-      const { px, pz } = at(ev);
-      const it = this._hit(px, pz);
+      const p = this._at(ev);
+      if (!p) return;
+      const it = this._hit(p.px, p.pz);
       if (it) this._removeItem(it.kind, it.i);
     });
     canvas.addEventListener('mousedown', (ev) => {
       if (ev.button !== 0) return;
-      const { px, pz } = at(ev);
-      const it = this._hit(px, pz);
+      const p = this._at(ev);
+      if (!p) return;
+      const it = this._hit(p.px, p.pz);
       if (this.tool === 'select' || it) {
         if (!it) { this.sel = null; this._refresh(); return; }
         this.sel = { kind: it.kind, i: it.i };
@@ -327,19 +426,7 @@ export class StageEditor {
         this._refresh();
         return;
       }
-      this._place(this.tool, this._world(px), this._world(pz));
-    });
-    window.addEventListener('mousemove', this._onMove = (ev) => {
-      if (!this._drag || !this.isOpen) return;
-      const { px, pz } = at(ev);
-      this._drag.ref.x = clampPos(this._world(px));
-      this._drag.ref.z = clampPos(this._world(pz));
-      this._draw();
-    });
-    window.addEventListener('mouseup', this._onUp = () => {
-      if (!this._drag) return;
-      this._drag = null;
-      this._refresh();
+      this._place(this.tool, this._world(p.px), this._world(p.pz));
     });
   }
 
@@ -364,6 +451,17 @@ export class StageEditor {
       }
       f.aircraft.push(ac);
       this.sel = { kind: 'fair', i: f.aircraft.length - 1 };
+    } else if (tool === 'fsup') {
+      f.support = f.support || [];
+      const n = f.support.length + 1;
+      f.support.push({ type: 'E-8', name: `CARGO ${n}`, x, z, agl: 4200,
+        aiMode: 'TRANSIT', tags: ['transport'] });
+      this.sel = { kind: 'fsup', i: f.support.length - 1 };
+    } else if (tool === 'fground') {
+      f.ground = f.ground || [];
+      const n = f.ground.length + 1;
+      f.ground.push({ type: 'DEPOT', name: `補給施設 ${n}`, x, z, tags: ['depot'], known: true });
+      this.sel = { kind: 'fground', i: f.ground.length - 1 };
     } else if (tool === 'eair') {
       e.aircraft = e.aircraft || [];
       const n = e.aircraft.length + 1;
@@ -388,6 +486,7 @@ export class StageEditor {
         this.sel = { kind: 'reach', i: s.objectives.length - 1 };
       }
     }
+    this._dirty = true;
     this._refresh(true);
   }
 
@@ -395,11 +494,22 @@ export class StageEditor {
     const s = this.stage;
     if (kind === 'fbase') delete s.friendly.base;
     else if (kind === 'fair') s.friendly.aircraft.splice(i, 1);
+    else if (kind === 'fsup') s.friendly.support.splice(i, 1);
+    else if (kind === 'fsupTo') delete s.friendly.support[i].moveTo;   // 行き先だけ消す
+    else if (kind === 'fground') s.friendly.ground.splice(i, 1);
+    else if (kind === 'eroute') {
+      const g = s.enemy.ground[Math.floor(i / 100)];
+      if (g && g.route) {
+        g.route.splice(i % 100, 1);
+        if (!g.route.length) delete g.route;       // 空の経路は残さない
+      }
+    }
     else if (kind === 'eair') s.enemy.aircraft.splice(i, 1);
     else if (kind === 'eground') s.enemy.ground.splice(i, 1);
     else if (kind === 'ebase') delete s.enemy[i === 0 ? 'base' : 'base2'];
     else if (kind === 'reach') s.objectives.splice(i, 1);
     this.sel = null;
+    this._dirty = true;
     this._refresh(true);
   }
 
@@ -431,8 +541,8 @@ export class StageEditor {
         `<option value="${esc(o)}"${getPath(ref, path) === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
 
     const item = this._selItem();
-    rows.push(`<div class="ed-selname">${k === 'fbase' ? '自軍飛行場'
-      : k === 'ebase' ? '敵飛行場' : esc(ref.name || ref.label || '')}</div>`);
+    const KIND_NAME = { fbase: '自軍飛行場', ebase: '敵飛行場', fsupTo: '支援機の行き先' };
+    rows.push(`<div class="ed-selname">${KIND_NAME[k] || esc(ref.name || ref.label || '')}</div>`);
     // 自動配置の機体は座標を持たない。空の欄を出すと、打ち込めるように見えて
     // **打ち込んだ瞬間に指定配置へ化ける**（しかも片方だけ埋まる）
     if (!(item && item.auto)) rows.push(num('x', 'X') + num('z', 'Z'));
@@ -442,11 +552,39 @@ export class StageEditor {
       rows.push(pick('type', '機種', custom.FRIENDLY_AIR_TYPES) + text('name', '名前'));
       rows.push(this._loadoutRow(ref));
       rows.push(text('tags', 'タグ（カンマ区切り）', 18));
+    } else if (k === 'fsup') {
+      rows.push(pick('type', '機種', custom.SUPPORT_AIR_TYPES) + text('name', '名前'));
+      rows.push(num('agl', '対地高度', 100) + pick('aiMode', 'AIモード', Object.keys(AI_MODES)));
+      rows.push(text('tags', 'タグ', 18)
+        + `<label>操作できる<input type="checkbox" data-edsel="commandable"${
+          ref.commandable ? ' checked' : ''}></label>`
+        + '<span class="ed-note">既定では指揮下に置きません（護衛の対象を動かせると護衛が成立しない・§80.4）</span>');
+      // 行き先。**点を出すかどうか**を切り替えるので、他の項目と同じ経路では書けない
+      rows.push(`<label>行き先を決める<input type="checkbox" data-edsel="moveTo"${
+        ref.moveTo ? ' checked' : ''}></label>`
+        + (ref.moveTo ? '<span class="ed-note">地図に出た点を掴んで動かせます</span>'
+          : '<span class="ed-note">入れると地図に行き先の点が出ます（護衛の到達目標と組で使う）</span>'));
+    } else if (k === 'eroute') {
+      rows.push('<div class="ed-note">車両はこの点を順に回ります。'
+        + '右クリックで点だけ消せます（最後の1点を消すと進路ごと外れます）</div>');
+    } else if (k === 'fsupTo') {
+      rows.push(num('alt', '到達高度(m)', 500));
+      rows.push('<div class="ed-note">支援機はここへ向かい、着いたらこの周りを回ります。'
+        + '「到達地点」ツールで同じ場所に目標を置くと、護衛ミッションになります</div>');
+    } else if (k === 'fground') {
+      rows.push(pick('type', '種別', custom.GROUND_PLACEABLE) + text('name', '名前'));
+      rows.push(text('tags', 'タグ', 18)
+        + `<label>敵に判明<input type="checkbox" data-edsel="known"${ref.known ? ' checked' : ''}></label>`
+        + `<label>武装なし<input type="checkbox" data-edsel="unarmed"${ref.unarmed ? ' checked' : ''}></label>`);
+      rows.push('<div class="ed-note">守る対象なら protect、いくつ残すかで測るなら hold の目標と組で使います</div>');
     } else if (k === 'eair') {
       rows.push(pick('type', '機種', custom.ENEMY_AIR_TYPES) + text('name', '名前'));
       rows.push(num('agl', '対地高度', 100) + pick('aiMode', 'AIモード', Object.keys(AI_MODES)));
       rows.push(this._loadoutRow(ref));
       rows.push(text('tags', 'タグ', 18));
+      // 爆撃機に「どこを狙うか」を持たせる（SCRAMBLE の形）
+      rows.push(text('strikeTargetTag', '爆撃目標のタグ', 14)
+        + '<span class="ed-note">このタグを持つものへ真っ直ぐ向かって爆撃します（空欄なら AIモードまかせ）</span>');
     } else if (k === 'eground') {
       rows.push(pick('type', '種別', custom.GROUND_PLACEABLE) + text('name', '名前'));
       rows.push(text('tags', 'タグ', 18)
@@ -455,13 +593,35 @@ export class StageEditor {
       // 進んで壊しに行く相手（§67.3）。空なら巡回だけ
       rows.push(text('attackTag', '攻撃目標のタグ', 14)
         + '<span class="ed-note">このタグを持つ相手へ寄って、射程で止まって撃つ</span>');
+      // 進む相手（COASTAL WALL の車両部隊）。点は地図に出して掴めるようにする
+      const rt = ref.route;
+      rows.push(`<label>進路を持つ<input type="checkbox" data-edsel="route"${rt ? ' checked' : ''}></label>`
+        + (rt ? `<button data-edcmd="addwp">点を足す</button>`
+          + `<span class="ed-note">${rt.length}点を順に回ります（最後まで行くと先頭へ戻る）。地図の点を掴んで動かせます</span>`
+          : '<span class="ed-note">入れると地図に経路の点が出ます。動かない陣地なら切ったままで構いません</span>'));
     } else if (k === 'ebase') {
       rows.push(text('tags', 'タグ', 18)
         + `<label>判明<input type="checkbox" data-edsel="known"${ref.known ? ' checked' : ''}></label>`);
       const r = ref.reinforce;
       rows.push(`<label>増援<input type="checkbox" data-edsel="reinforce"${r ? ' checked' : ''}></label>`
         + (r ? num('reinforce.every', '間隔(秒)', 10) + num('reinforce.max', '最大機数')
-          + pick('reinforce.type', '機種', custom.ENEMY_AIR_TYPES) : ''));
+          + num('reinforce.burst', '1波の機数') : ''));
+      if (r) {
+        // **機種は複数書ける**（`types`）。本体は `types` を順に使い、
+        // 無ければ `type` に落ちる —— 出す側は `types` に寄せて1本にする。
+        const types = (r.types || (r.type ? [r.type] : ['J-7'])).join(',');
+        rows.push(`<label>機種（カンマ区切り）<input data-edsel="reinforce.types"
+            value="${esc(types)}" size="20"></label>`
+          + '<span class="ed-note">順番に使います。「B-9,J-7,J-7」なら爆撃機1・護衛2の波</span>');
+        // **タグが無いと増援は目標から見えない**（§74.3 の `pending`）。
+        // ここを空のままにすると「全機撃墜」が湧いている最中に達成になる。
+        rows.push(`<label>増援のタグ<input data-edsel="reinforce.tags"
+            value="${esc((r.tags || []).join(','))}" size="16"></label>`
+          + '<span class="ed-warn">空だと、湧いた機体は destroyAll の数に入りません（§74.3）</span>');
+        rows.push(`<label>見つかってから数える<input type="checkbox" data-edsel="reinforce.after"${
+          r.after === 'detected' ? ' checked' : ''}></label>`
+          + '<span class="ed-note">入れると、こちらが敵に掴まれるまで時計が動きません（§80.5）</span>');
+      }
     } else if (k === 'fbase') {
       const air = !!this.stage.friendly.startAirborne;
       rows.push(`<div class="ed-note">位置を持たない自軍機は、${air
@@ -541,21 +701,69 @@ export class StageEditor {
             value="${esc(s.enemy.skill ?? 0.6)}"></label>
         </div>`;
     }
-    if (this.tab === 'objectives') {
-      const rows = (s.objectives || []).map((o, i) => `
+    if (this.tab === 'weather') {
+      const w = s.weather;
+      const cloud = (w && w.cloud) || 'none';
+      const on = cloud !== 'none';
+      const wind = (w && w.wind) || {};
+      const sel = (path, label, opts, cur) =>
+        `<label>${label}<select data-ed="${path}">${opts.map((o) =>
+          `<option value="${o}"${cur === o ? ' selected' : ''}>${o}</option>`).join('')}</select></label>`;
+      if (!on) {
+        return `<div class="ed-row">${sel('weather.cloud', '雲量', CLOUD_KINDS, 'none')}
+          <span class="ed-note">`
+          + '雲量を選ぶと、層の高さと風の欄が出てきます</span></div>';
+      }
+      // **層の高さが設計の道具**（§88.16）。雲量より効くので、そう書いておく
+      return `<div class="ed-row">
+          ${sel('weather.cloud', '雲量', CLOUD_KINDS, cloud)}
+          <span class="ed-note">覆う割合 ${Math.round((CLOUD_COVER[cloud] ?? 0) * 100)}%</span>
+          ${sel('weather.shape', '塊の形', CLOUD_SHAPES, (w && w.shape) || 'puffy')}
+          <span class="ed-note">見た目と当たり判定は同じ形です</span>
+        </div>
         <div class="ed-row">
-          <select data-edobj="${i}.type">${custom.OBJECTIVE_TYPES.map((t) =>
+          ${num('weather.base', '雲底(m)', 100)}
+          ${num('weather.top', '雲頂(m)', 100)}
+          <span class="ed-note"><b>層の高さは雲量より効きます</b>（交戦高度に重ねるか、下を通らせるか）</span>
+        </div>
+        <div class="ed-row">
+          <label>風向(度)<input type="number" step="10" data-ed="weather.wind.deg"
+            value="${esc(wind.deg ?? '')}" placeholder="乱数"></label>
+          <label>風速(m/s)<input type="number" step="1" data-ed="weather.wind.speed"
+            value="${esc(wind.speed ?? '')}" placeholder="${CLOUD_WIND_SPEED}"></label>
+          <span class="ed-note">吹いてくる方位。空欄なら向きは戦闘ごとの乱数・速さは ${CLOUD_WIND_SPEED}m/s。0 で止まります</span>
+        </div>`;
+    }
+    if (this.tab === 'objectives') {
+      // 自軍の目標と敵側の任務（§73）は**同じ形**なので、行の組み立ては1つにする。
+      // `attr` だけ変えて書き込み先を分ける。
+      const row = (o, i, attr, opts = {}) => `
+        <div class="ed-row">
+          <select data-${attr}="${i}.type">${custom.OBJECTIVE_TYPES.map((t) =>
             `<option value="${t}"${o.type === t ? ' selected' : ''}>${t}</option>`).join('')}</select>
-          <input data-edobj="${i}.id" value="${esc(o.id)}" size="7" title="内部ID">
-          <input data-edobj="${i}.tag" value="${esc(o.tag)}" size="10" title="タグ">
-          <input data-edobj="${i}.label" value="${esc(o.label)}" size="28" title="画面に出る説明">
-          ${o.type === 'survive' ? `<input type="number" data-edobj="${i}.seconds"
-            value="${esc(o.seconds ?? 300)}" size="5" title="秒数">` : ''}
-          <label>失敗<input type="checkbox" data-edobj="${i}.fail"${o.fail ? ' checked' : ''}></label>
-          <button data-edcmd="delobj:${i}" class="ed-del">消す</button>
-        </div>`).join('');
-      return rows + `<div class="ed-row"><button data-edcmd="addobj">目標を足す</button>
-        <span class="ed-note">destroyAll は敵のタグ、protect と reach は味方のタグを見ます</span></div>`;
+          <input data-${attr}="${i}.id" value="${esc(o.id)}" size="7" title="内部ID">
+          <input data-${attr}="${i}.tag" value="${esc(o.tag)}" size="10" title="タグ">
+          <input data-${attr}="${i}.label" value="${esc(o.label)}" size="26" title="画面に出る説明">
+          ${o.type === 'survive' ? `<label title="秒数">秒<input type="number" data-${attr}="${i}.seconds"
+            value="${esc(o.seconds ?? 300)}" size="5"></label>` : ''}
+          ${o.type === 'hold' ? `<label title="これを下回ると失敗">残す数<input type="number"
+            data-${attr}="${i}.min" value="${esc(o.min ?? 1)}" size="4"></label>` : ''}
+          ${opts.fail === false ? '' : `<label title="入れると「失敗すると負け」。外すと「達成すると勝ち」">失敗条件<input
+            type="checkbox" data-${attr}="${i}.fail"${o.fail ? ' checked' : ''}></label>`}
+          <button data-edcmd="${opts.del}:${i}" class="ed-del">消す</button>
+        </div>`;
+      const mine = (s.objectives || []).map((o, i) => row(o, i, 'edobj', { del: 'delobj' })).join('');
+      const foe = ((s.enemy && s.enemy.objectives) || [])
+        .map((o, i) => row(o, i, 'edfoeobj', { del: 'delfoeobj', fail: false })).join('');
+      return `<div class="bf-section">自軍の目標</div>${mine}
+        <div class="ed-row"><button data-edcmd="addobj">目標を足す</button>
+          <span class="ed-note">destroyAll は敵のタグ、protect・hold・reach は味方のタグを見ます。
+            hold は「残す数」を下回ると失敗（protect は1つでも失えば失敗）</span></div>
+        <div class="bf-section">敵側の任務（§73）</div>${foe
+          || '<div class="ed-empty">書かなければ、敵は陣営としての目標を持ちません（各機が勝手に戦います）</div>'}
+        <div class="ed-row"><button data-edcmd="addfoeobj">敵の任務を足す</button>
+          <span class="ed-note">敵の司令官AIが「何を壊すか・誰を護るか」を読みます。
+            勝敗には出ません</span></div>`;
     }
     if (this.tab === 'rating') {
       const r = s.rating || (s.rating = { time: [300, 600], points: [10, 18], losses: [0, 1] });
@@ -599,10 +807,28 @@ export class StageEditor {
       if (t.type === 'number') { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
       return raw;
     };
+    this._dirty = true;
+    this._pending = null;
+    // **雲量は節ごと出し入れする。** `none` のまま空の `weather` を残すと、
+    // 書き出した定義に意味の無い節が混ざる（本体は `cloud` が無ければ雲なし）
+    if (t.dataset.ed === 'weather.cloud') {
+      if (t.value === 'none') delete this.stage.weather;
+      else this.stage.weather = { ...WEATHER_DEFAULT, ...(this.stage.weather || {}), cloud: t.value };
+      this._refresh(true);
+      return;
+    }
+    // 風は空欄なら「書かない」。書かないことが**乱数の向き・既定の速さ**という指定になる
+    if (t.dataset.ed === 'weather.wind.deg' || t.dataset.ed === 'weather.wind.speed') {
+      const key = t.dataset.ed.split('.')[2];
+      const w = this.stage.weather;
+      if (!w) return;
+      if (t.value === '') { if (w.wind) delete w.wind[key]; if (w.wind && !Object.keys(w.wind).length) delete w.wind; }
+      else { w.wind = w.wind || {}; w.wind[key] = val(t.value); }
+      return;
+    }
     if (t.dataset.ed) {
       setPath(this.stage, t.dataset.ed, val(t.value));
       this._draw();
-      if (t.dataset.ed.startsWith('terrain')) this._draw();
       return;
     }
     if (t.dataset.edsel) {
@@ -611,22 +837,56 @@ export class StageEditor {
       const path = t.dataset.edsel;
       if (path === 'tags') {
         ref.tags = t.value.split(',').map((v) => v.trim()).filter(Boolean);
+      } else if (path === 'reinforce.types' || path === 'reinforce.tags') {
+        const key = path.split('.')[1];
+        const list = t.value.split(',').map((v) => v.trim()).filter(Boolean);
+        ref.reinforce = ref.reinforce || {};
+        if (list.length) ref.reinforce[key] = list;
+        else delete ref.reinforce[key];
+        if (key === 'types') delete ref.reinforce.type;   // 言い方を1つに寄せる
+        return;
+      } else if (path === 'reinforce.after') {
+        ref.reinforce = ref.reinforce || {};
+        if (t.checked) ref.reinforce.after = 'detected';
+        else delete ref.reinforce.after;
+        return;
+      } else if (path === 'route') {
+        if (t.checked) ref.route = ref.route
+          || [{ x: clampPos(ref.x - 8000), z: clampPos(ref.z) }, { x: clampPos(ref.x + 8000), z: clampPos(ref.z) }];
+        else delete ref.route;
+        this._refresh(true);
+        return;
+      } else if (path === 'moveTo') {
+        // 支援機の行き先。入れたら**いまの位置から少し先**に置く ——
+        // 地図の原点に出ると「どこへ飛んだのか」が分からない
+        if (t.checked) ref.moveTo = ref.moveTo || { x: clampPos(ref.x + 12000), z: clampPos(ref.z - 12000), alt: 4200 };
+        else delete ref.moveTo;
+        this._refresh(true);
+        return;
       } else if (path === 'reinforce') {
-        if (t.checked) ref.reinforce = ref.reinforce || { every: 180, max: 4, type: 'J-7' };
+        if (t.checked) ref.reinforce = ref.reinforce || { every: 180, max: 4, burst: 1, types: ['J-7'] };
         else delete ref.reinforce;
         this._refresh();
         return;
+      } else if (path === 'x' || path === 'z') {
+        // **打ち込んだ座標も地図の内側へ丸める。**
+        // 掴んで動かす側は丸めていたのに、数値欄は素通しだった。
+        ref[path] = clampPos(val(t.value));
       } else {
         setPath(ref, path, val(t.value));
       }
       this._draw();
       return;
     }
-    if (t.dataset.edobj) {
-      const [i, key] = t.dataset.edobj.split('.');
-      const o = this.stage.objectives[Number(i)];
+    const objAttr = t.dataset.edobj ? 'edobj' : (t.dataset.edfoeobj ? 'edfoeobj' : null);
+    if (objAttr) {
+      const [i, key] = t.dataset[objAttr].split('.');
+      const list = objAttr === 'edobj'
+        ? this.stage.objectives
+        : (this.stage.enemy && this.stage.enemy.objectives);
+      const o = list && list[Number(i)];
       if (!o) return;
-      o[key] = val(t.value);
+      o[key] = (key === 'x' || key === 'z') ? clampPos(val(t.value)) : val(t.value);
       if (key === 'type') this._refresh(true);
       else this._draw();
     }
@@ -647,6 +907,7 @@ export class StageEditor {
       ref.loadout = ref.loadout || [];
       if (op === 'add') ref.loadout.push(arg);
       else ref.loadout = removeOne(ref.loadout, arg);
+      this._dirty = true;
       this._refresh();
       return;
     }
@@ -658,12 +919,18 @@ export class StageEditor {
 
   _command(op, arg) {
     const s = this.stage;
+    // 「もう一度押す」の待ち受けは、別のものを押したら解く
+    if (this._pending && this._pending !== op + ':' + (arg || '')) this._pending = null;
     switch (op) {
-      case 'exit': this.close(); this.onExit?.(); break;
+      case 'exit':
+        if (!this._mayDiscard('exit:', '編集を捨てて戻る')) break;
+        this.close(); this.onExit?.();
+        break;
       case 'del': if (this.sel) this._removeItem(this.sel.kind, this.sel.i); break;
       // 自動配置 ⇄ 指定配置（§71.5）。固定するときは、いま描いている点を写す ——
       // 「押したら別の場所へ飛んだ」と見えないようにするため。
       case 'pin': {
+        this._dirty = true;
         const ref = this._selRef();
         const base = s.friendly && s.friendly.base;
         if (!ref || !base || this.sel.kind !== 'fair') break;
@@ -673,6 +940,7 @@ export class StageEditor {
         break;
       }
       case 'unpin': {
+        this._dirty = true;
         const ref = this._selRef();
         if (!ref || this.sel.kind !== 'fair') break;
         delete ref.x; delete ref.z;
@@ -681,22 +949,58 @@ export class StageEditor {
       }
       case 'reseed':
         s.terrain.seed = 10000 + Math.floor(Math.random() * 89999);
+        this._dirty = true;
         this._render();
         break;
       case 'addobj':
         s.objectives = s.objectives || [];
         s.objectives.push({ id: 'obj' + (s.objectives.length + 1), type: 'destroyAll',
           tag: 'target', label: '新しい目標' });
+        this._dirty = true;
         this._render();
         break;
-      case 'delobj': s.objectives.splice(Number(arg), 1); this._render(); break;
-      case 'new': this.open(custom.blankStage()); break;
+      case 'addwp': {
+        const ref = this._selRef();
+        if (!ref || !ref.route || !ref.route.length) break;
+        const last = ref.route[ref.route.length - 1];
+        ref.route.push({ x: clampPos(last.x + 4000), z: clampPos(last.z + 4000) });
+        this._dirty = true;
+        this._refresh(true);
+        break;
+      }
+      case 'addfoeobj': {
+        const e = s.enemy = s.enemy || {};
+        e.objectives = e.objectives || [];
+        e.objectives.push({ id: 'foe' + (e.objectives.length + 1), type: 'destroyAll',
+          tag: 'home', label: '自軍飛行場を潰す' });
+        this._dirty = true;
+        this._render();
+        break;
+      }
+      case 'delfoeobj':
+        s.enemy.objectives.splice(Number(arg), 1);
+        // **空の配列は残さない。** `main.js` は「書いてあるか」で敵司令官を出す
+        if (!s.enemy.objectives.length) delete s.enemy.objectives;
+        this._dirty = true;
+        this._render();
+        break;
+      case 'delobj':
+        s.objectives.splice(Number(arg), 1);
+        this._dirty = true;
+        this._render();
+        break;
+      case 'new':
+        if (!this._mayDiscard('new:', '白紙から作り直す')) break;
+        this.open(custom.blankStage());
+        break;
       case 'load': {
+        if (!this._mayDiscard('load:' + arg, 'そちらを開く')) break;
         const c = custom.getCustom(arg);
         if (c) this.open(c);
         break;
       }
       case 'dup': {
+        if (!this._mayDiscard('dup:' + arg, '複製を開く')) break;
         const c = custom.getCustom(arg);
         if (!c) break;
         const copy = custom.duplicate(c);
@@ -752,10 +1056,20 @@ export class StageEditor {
     if (box) box.innerHTML = this.msg;
   }
 
-  /** 検証して結果を出す。`fatal` があれば false */
-  _check() {
+  /**
+   * 検証して結果を出す。`fatal` があれば false。
+   *
+   * @param {string} lead 先頭に添える一言（何をしようとして止まったのか）
+   */
+  _check(lead = '') {
     const v = custom.validate(this.stage);
     const parts = [];
+    // **何が悪いのかを消さない。**
+    //
+    // 以前は結果を出したあとに `_say('…上の ✕ を直してください')` で
+    // **その一覧を上書き**していた。読めと言っている当のものが消えるので、
+    // 何を直せばよいのか分からなかった。**前置きとして混ぜる。**
+    if (lead) parts.push(`<span class="ed-bad">${esc(lead)}</span>`);
     for (const m of v.fatal) parts.push(`<span class="ed-bad">✕ ${esc(m)}</span>`);
     for (const m of v.warn) parts.push(`<span class="ed-warn">△ ${esc(m)}</span>`);
     if (!parts.length) parts.push('<span class="ed-ok">✓ 遊べる形になっています</span>');
@@ -767,16 +1081,20 @@ export class StageEditor {
 
   _save() {
     // **警告では止めない**（§66.5）。作りかけを保存できないと作業にならない。
-    const ok = this._check();
-    if (!ok) { this._say('遊べない箇所があるので保存しません（上の ✕ を直してください）', 'bad'); return; }
+    if (!this._check('保存しません:')) return;
     const res = custom.save(this.stage);
     if (!res.ok) { this._say(res.why, 'bad'); return; }
+    this._dirty = false;
+    this._pending = null;
     this._say(`保存しました（${this.stage.id}）`, 'ok');
   }
 
   _playtest() {
-    if (!this._check()) { this._say('遊べない箇所があります（上の ✕ を直してください）', 'bad'); return; }
-    custom.save(this.stage);
+    if (!this._check('試遊できません:')) return;
+    // **保存に失敗したら試遊しない**（§66.9）。試遊から戻るときに開き直すのは
+    // 保管庫の側なので、保存が落ちていると**編集内容が消える。**
+    const res = custom.save(this.stage);
+    if (!res.ok) { this._say(`${res.why}（試遊を中止しました）`, 'bad'); return; }
     const stage = structuredClone(this.stage);
     this.close();
     this.onPlaytest?.(stage);

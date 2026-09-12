@@ -331,6 +331,7 @@ export class ScreenManager {
   showBriefing(stage) {
     this.stage = stage;
     this._tuneOpen = false;
+    this._tuneOutShown = false;
     // 前回このステージで組んだ搭載があればそれを復元する。
     // 出撃 → 途中でブリーフィングに戻る、を繰り返すたびに組み直しになると煩わしい。
     const saved = this._lastLoadouts.get(stage.id);
@@ -342,6 +343,23 @@ export class ScreenManager {
       this.loadouts = stage.friendly.aircraft.map((a) => a.loadout.slice());
     }
     this._renderBriefing();
+  }
+
+  /**
+   * 調整結果を `stages.js` に写せる形で出す（§47・§47.4）。
+   *
+   * 味方の搭載を含めるかは `tuning.wantsLoadouts()`。**搭載を持っているのはこちら**
+   * （調整パネルは味方に触らない）なので、写しを渡す。
+   */
+  _showTuneOut() {
+    const out = document.getElementById('tnOut');
+    if (!out || !this.stage) return;
+    const loads = tuning.wantsLoadouts() && this.loadouts
+      ? this.loadouts.map((l) => l.slice())
+      : null;
+    out.textContent = tuning.snippet(this.stage.id, loads);
+    out.classList.remove('hidden');
+    this._tuneOutShown = true;
   }
 
   /** 現在の搭載を記憶する（出撃時・変更時） */
@@ -553,6 +571,7 @@ export class ScreenManager {
         break;
       case 'tuneClose':
         this._tuneOpen = false;
+        this._tuneOutShown = false;
         this._renderBriefing();
         break;
       case 'tuneReset':
@@ -563,11 +582,19 @@ export class ScreenManager {
         this._tuneOpen = true;
         this._renderBriefing();
         break;
-      case 'tuneCopy': {
-        const out = document.getElementById('tnOut');
-        if (out) { out.textContent = tuning.snippet(this.stage.id); out.classList.remove('hidden'); }
+      // 出力に味方の搭載を含めるかの切り替え（§47.4）。
+      // **調整パネルは味方に触らない**ので、搭載はこちらが持っているものを渡す
+      case 'tuneLoadouts':
+        if (!isDebug()) break;
+        tuning.toggleLoadouts();
+        this._renderBriefing();
+        // 出しっぱなしなら出し直す。切り替えた結果がその場で見えないと、
+        // どちらの状態で出力したのか分からなくなる
+        if (this._tuneOutShown) this._showTuneOut();
         break;
-      }
+      case 'tuneCopy':
+        this._showTuneOut();
+        break;
       case 'editor':
         if (isDebug()) this.onEditor?.(null);
         break;
