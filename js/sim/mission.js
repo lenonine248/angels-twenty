@@ -138,6 +138,10 @@ export class Mission {
     /** 敵飛行場からの増援管理 */
     this.reinforce = [];
     this._accum = 0;
+
+    /** §12.2。全機失ったあと、まだ当たりうる自軍の弾が空に何発あるか */
+    this.lastStand = 0;
+    this._lastStandLogged = false;
   }
 
   registerReinforcement(airbase, config) {
@@ -172,10 +176,26 @@ export class Mission {
     if (this.stage.noFail) return;
 
     // --- 敗北条件（仕様 §12） ---
+    //
+    // **全機失っても、放った弾が空にあるうちは負けにしない**（§12.2）。
+    // 最後の1機と刺し違えた弾が目標を落とせば、そこで勝ちになる。
+    //
+    // 猶予のあいだも**判定は通常どおり**に回す —— 飛行場全損も、
+    // 護衛目標の喪失も、制限時間もそのまま負けになる。
+    // 敵の司令官AIも動き続けるので、防衛面では
+    // **猶予のあいだに守るものを壊されて負ける**ことがありうる。
     const myAircraft = w.units.filter(
       (u) => u.kind === 'aircraft' && u.side === w.playerSide);
-    if (myAircraft.length > 0 && myAircraft.every((u) => !u.alive)) {
+    const wiped = myAircraft.length > 0 && myAircraft.every((u) => !u.alive);
+    this.lastStand = wiped ? this._ordnanceAloft() : 0;
+    if (wiped && this.lastStand === 0) {
       return this._fail('自軍の戦闘機が全滅しました');
+    }
+    if (this.lastStand > 0 && !this._lastStandLogged) {
+      // **出さないと「固まった」と誤解される。**
+      // 全機落ちたのに終わらない状態は、説明が無ければ不具合に見える。
+      this._lastStandLogged = true;
+      w.log?.(`【最後の一撃】自軍機は全滅。飛翔中の兵装 ${this.lastStand} 発の行方を待つ`);
     }
     const myBases = w.units.filter((u) => u.kind === 'airbase' && u.side === w.playerSide);
     if (myBases.length > 0 && myBases.every((u) => !u.alive)) {
@@ -202,10 +222,34 @@ export class Mission {
   }
 
   /**
-   * **これから湧いてくる**敵に付くタグ（§74.3）。
+   * **まだ当たりうる、自軍機が放った兵器の数**（§12.2）。
    *
-   * 飛行場を潰すか、送る数を出し切れば、そのタグは外れる。
+   * 3つ絞る。どれも外すと壊れる:
+   *
+   * | 絞り | 理由 |
+   * |---|---|
+   * | 陣営 | 敵の弾を数えたら永久に終わらない |
+   * | 発射母体が航空機 | `fireGround`（SAM）の弾も同じ配列に入る。LONG WATCH には**自軍のSAMと対空砲**が置いてあり、その弾が空にいる時間は全体の10〜27%。陣営だけで絞ると**自軍SAMが撃つたびに敗北が延びる**（18種のベンチでは 0/18 で表に出なかった。塞いであるだけ） |
+   * | 誘導が生きている | 明後日へ飛んでいる弾を待つ意味は無い |
+   *
+   * 3つ目の帰結として、**AAM-M はここで全部落ちる** ——
+   * セミアクティブは発射機の照射が要るので、全機落ちた瞬間に
+   * `発射機喪失` で誘導が切れる（`missile.js` の `_updateGuidance`）。
+   * 相打ちに参加できるのは AAM-S（赤外線）・AAM-A（アクティブ）・
+   * AGM / ARM（どちらも撃ちっぱなし）・BOMB。**兵装の性格差がそのまま出る。**
    */
+  _ordnanceAloft() {
+    const w = this.world;
+    let n = 0;
+    for (const m of w.missiles || []) {
+      if (!m.alive || m.lost) continue;
+      if (m.side !== w.playerSide) continue;
+      if (!m.launcher || m.launcher.kind !== 'aircraft') continue;
+      n++;
+    }
+    return n;
+  }
+
   /** その陣営が、こちらの機体を1機でも掴んでいるか（§80.5） */
   _spotted(side) {
     const d = this.world.detection;
@@ -217,6 +261,11 @@ export class Mission {
     return false;
   }
 
+  /**
+   * **これから湧いてくる**敵に付くタグ（§74.3）。
+   *
+   * 飛行場を潰すか、送る数を出し切れば、そのタグは外れる。
+   */
   _pendingTags() {
     const set = new Set();
     for (const r of this.reinforce) {

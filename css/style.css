@@ -710,6 +710,8 @@ button.chip.pick.picked {
 .obj-row.done { color: #7ec87e; }
 .obj-row.failed { color: var(--hostile); }
 .obj-row.active { color: var(--text); }
+/* 全機失ったあと、弾の行方を待っている状態（§12.2）。目立たないと「固まった」に見える */
+.obj-row.laststand { color: var(--amber); border-top: 1px solid var(--amber-dim); margin-top: 3px; padding-top: 5px; }
 button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 
 .ur-fm { color: var(--cyan); }

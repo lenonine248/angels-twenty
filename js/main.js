@@ -1265,9 +1265,12 @@ function renderObjectives() {
   const box = el('objectives');
   if (!box || !battle) return;
   const status = battle.mission.status();
+  // 全機失ったあと、弾の行方を待っている状態（§12.2）。
+  // **これを出さないと「固まった」に見える。**
+  const stand = battle.mission.lastStand || 0;
   // 目標を持たないステージ（チュートリアル）では箱ごと出さない。
   // 空の OBJECTIVES 枠が残ると、手順パネルの置き場所と取り合いになる。
-  if (status.length === 0) {
+  if (status.length === 0 && !stand) {
     if (objectivesKey !== 'none') { box.innerHTML = ''; objectivesKey = 'none'; }
     return;
   }
@@ -1277,7 +1280,11 @@ function renderObjectives() {
   const ready = battle.world.units.filter(
     (u) => u.state === 'ready' && u.side === battle.world.playerSide).length;
   // 内容が変わらないうちは作り直さない（作り直すとホバー中のボタンが点滅する）
-  const key = status.map((s) => s.state).join(',') + '|' + ready;
+  //
+  // **鍵に見出しそのものを入れる。** 状態だけで作っていたので、
+  // `hold` の「3/4 健在」が**減っても書き換わらなかった**（状態は active のまま）。
+  // 飛翔中の残り発数も同じ理由でここに要る。
+  const key = status.map((s) => s.state + s.label).join(',') + '|' + ready + '|' + stand;
   if (key === objectivesKey) return;
   objectivesKey = key;
 
@@ -1286,6 +1293,7 @@ function renderObjectives() {
     return `<div class="obj-row ${s.state}">${icon} ${s.label}</div>`;
   }).join('');
   box.innerHTML = `<div class="panel-title">OBJECTIVES</div>${rows}`
+    + (stand ? `<div class="obj-row laststand">◆ 自軍機 全滅 — 飛翔中 ${stand}発</div>` : '')
     + (ready ? `<button id="launchAll" class="go small">全機発進 (${ready})</button>` : '');
 }
 
