@@ -291,7 +291,9 @@ export class Airbase extends GroundUnit {
     // 帰投にまつわる状態をすべて解く。
     // 残したまま発進させると、AI が「帰投中」のつもりのまま
     // 離陸直後にまた飛行場へ引き返す。
-    if (ac.aiMode === 'RTB') ac.aiMode = 'PATROL';
+    // **拠点防空の機体は拠点防空へ戻す。** 一律 `PATROL` で上げると
+    // 司令官AIの指揮下に戻り、持ち場を離れて追撃に出ていく
+    if (ac.aiMode === 'RTB') ac.aiMode = ac.guardHome ? 'GUARD' : 'PATROL';
     ac._winchester = false;
     ac._rtbTriggered = false;
     ac.withdrawing = false;

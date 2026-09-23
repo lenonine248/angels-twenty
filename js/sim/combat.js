@@ -373,6 +373,9 @@ export function aspectOf(shooter, target) {
 /** ミサイルの最小射程（近すぎると誘導が間に合わない） */
 const MIN_RANGE = { 'AAM-S': 400, default: 1500 };
 
+/** 実効射程のうち発射を許す割合。射程の端で撃った弾は届く前に失速するので手前で切る */
+const LAUNCH_RANGE_FRAC = 0.85;
+
 /**
  * AIが自動発射に踏み切る命中期待度のしきい値。
  *
@@ -837,8 +840,12 @@ export class CombatSystem {
    * プレイヤーからは「撃てるはずなのに撃たない」としか見えなかった。
    *
    * @param {?object} weapon 省略時は自動選択と同じ規則で選ぶ
+   * @param {boolean} directed プレイヤーが兵装を指定した射撃指示（`fireTasks`）か。
+   *   **通る門が違う**（§92.3）。`_runFireTasks` が見るのは 探知・包絡線・再装填 だけで、
+   *   同時誘導数・味方の弾・命中期待度は**見ない** —— 撃つと決めたのはプレイヤーだから。
+   *   ここを分けずに出すと、**実際には撃つ弾に「期待度不足」と表示される。**
    */
-  fireBlockReason(shooter, target, weapon = null) {
+  fireBlockReason(shooter, target, weapon = null, directed = false) {
     if (!shooter || !shooter.alive || !target || !target.alive) return null;
     if (shooter.onGround) return '地上';
     if (!this.world.detection.isVisible(shooter.side, target)) return '未探知';
@@ -861,13 +868,15 @@ export class CombatSystem {
 
     if (!this.inEnvelope(shooter, target, w)) return this._envelopeReason(shooter, target, w);
 
-    if (this.guidingCount(shooter, target, w) >= MAX_AAM_PER_TARGET) return `${w.id} 誘導中`;
-    // 編隊のほかの機体が既に落とし切るぶんを撃っている（§85）
-    if (w.kind === 'aam' && target.kind === 'aircraft'
-      && this.committedDamage(shooter.side, target) >= target.hp) return '味方が誘導中';
+    if (!directed) {
+      if (this.guidingCount(shooter, target, w) >= MAX_AAM_PER_TARGET) return `${w.id} 誘導中`;
+      // 編隊のほかの機体が既に落とし切るぶんを撃っている（§85）
+      if (w.kind === 'aam' && target.kind === 'aircraft'
+        && this.committedDamage(shooter.side, target) >= target.hp) return '味方が誘導中';
+    }
     if (shooter.fireCooldown > 0) return `再装填 ${shooter.fireCooldown.toFixed(1)}秒`;
 
-    if (w.kind !== 'bomb') {
+    if (!directed && w.kind !== 'bomb') {
       const need = FIRE_THRESHOLD[shooter.fireThreshold || 'mid'] ?? FIRE_THRESHOLD.mid;
       if (estimateHitChance(shooter, target, w, this.aimErrorOf(shooter, target)) < need) {
         return '期待度不足';
@@ -890,7 +899,7 @@ export class CombatSystem {
       const minR = MIN_RANGE[w.id] ?? MIN_RANGE.default;
       const eff = effectiveMissileRange(w, (shooter.pos.y + target.pos.y) * 0.5);
       if (dist < minR) return '近すぎ';
-      if (dist > eff * 0.85) return '射程外';
+      if (dist > eff * LAUNCH_RANGE_FRAC) return '射程外';
     }
     if (w.guidance === 'arm' && !target.emitting) return '電波なし';
     const off = offBoresight(shooter, dx, dz, dy) / DEG;
@@ -980,7 +989,7 @@ export class CombatSystem {
 
     const minR = MIN_RANGE[w.id] ?? MIN_RANGE.default;
     const effRange = effectiveMissileRange(w, (shooter.pos.y + target.pos.y) * 0.5);
-    if (dist < minR || dist > effRange * 0.85) return false;
+    if (dist < minR || dist > effRange * LAUNCH_RANGE_FRAC) return false;
 
     // **曲がりきれない角度からは撃たない**（§75）。
     //

@@ -448,6 +448,8 @@ export class Hud {
     for (const id of ['order', 'spd', 'alt', 'agl', 'hdg', 'fuel', 'gun', 'dec', 'hp', 'perf', 'svc']) {
       this._d[id] = document.getElementById('dv-' + id);
     }
+    // 射撃指示の理由書き（§92.3）。組み直しのときだけ引いて、値は毎フレーム入れる
+    this._dTaskWhy = [...this.detail.querySelectorAll('.task-why')];
   }
 
   _updateDetailValues(u) {
@@ -469,6 +471,20 @@ export class Hud {
     d.gun.textContent = Math.floor(u.gun);          // 端数は出さない
     d.dec.textContent = `${u.flares}/${u.chaff}`;
     d.hp.textContent = `${Math.round(u.hp)}/${u.maxHp}`;
+
+    // 射撃指示が待たされている理由（§92.3）。**指定した弾で測る。**
+    // 並びは `_weaponPanel` の絞り込みと同じ順で、数が合わないあいだは触らない
+    // （目標が落ちてから `_runFireTasks` が指示を捨てるまでの数フレーム）。
+    const why = this._dTaskWhy;
+    if (why && why.length) {
+      const tasks = (u.fireTasks || []).filter((t) => t.target && t.target.alive);
+      for (let i = 0; i < why.length; i++) {
+        const t = tasks[i];
+        const r = t && this.world.combat
+          ? this.world.combat.fireBlockReason(u, t.target, WEAPONS[t.weapon], true) : null;
+        why[i].textContent = r ? ` ${r}` : '';
+      }
+    }
 
     const p = altitudeProfile(u.pos.y);
     const cls = (v) => (v >= 0.8 ? 'good' : v >= 0.6 ? 'mid' : 'bad');
@@ -573,10 +589,17 @@ export class Hud {
     const thBtns = THRESHOLD.map(([k, label, tip]) => `<button class="autow${u.fireThreshold === k ? '' : ' off'}"
       data-thr="${k}" title="${tip}">${label}</button>`).join('');
 
+    // **撃てない理由をここにも出す**（§92.3）。
+    //
+    // 兵装を指定した射撃指示（`fireTasks`）は条件が整うまで黙って待つ。
+    // ロースターの理由書き（`rosterState`）は `order.type === 'attack'` のときだけ
+    // 出るので、**この経路には何も出ていなかった** —— しかも兵装を省いて
+    // 呼ぶので、AAM-S が撃てる状況なら「理由なし」と出る。
+    // **指定した弾で測った理由**でなければ答えにならない（§82.4 の続き）。
     const tasks = (u.fireTasks || []).filter((t) => t.target && t.target.alive);
     const taskRow = tasks.length
       ? `<div class="dt-load"><label>射撃指示</label>${tasks.map((t) =>
-          `<span class="chip task">${t.weapon} → ${t.target.name}</span>`).join('')}
+          `<span class="chip task">${t.weapon} → ${t.target.name}<i class="task-why"></i></span>`).join('')}
           <button class="autow off" data-cleartask="1">取消</button></div>`
       : '';
 

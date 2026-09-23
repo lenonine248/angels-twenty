@@ -137,9 +137,17 @@ export class Commander {
 
     for (const u of this._myAircraft()) {
       if (!u.alive || u.onGround || u.state === 'takeoff' || u.state === 'landing') continue;
-      // 手動・帰投・経路飛行には触らない。人が選んだ状態と、
+      // 手動・帰投・経路飛行・**持ち場の防空**には触らない。人が選んだ状態と、
       // 弾切れ／燃料で機体側が決めた帰投を上書きしない。
-      if (u.aiMode === 'MANUAL' || u.aiMode === 'RTB' || u.aiMode === 'TRANSIT') continue;
+      //
+      // **`GUARD` をここに足すまで、持ち場の機体は護衛に吸い上げられていた。**
+      // ステージが置いた敵機は湧いた地点を持ち場として受け取り、`_placePatrol` は
+      // それを動かさない —— **剥がす経路は下の護衛の割り当てだけ**だった。
+      // そして**敵が爆撃機を持つ面は LONG WATCH だけ**なので、そこでだけ
+      // CAP が1機残らず西へ抜け、飛行場が空になっていた。DAWN BLADE と
+      // TOTAL WAR の CAP が持ち場に残るのは設計ではなく、護衛する相手が居ないから。
+      if (u.aiMode === 'MANUAL' || u.aiMode === 'RTB' || u.aiMode === 'TRANSIT'
+        || u.aiMode === 'GUARD') continue;
       if (u.order && u.order.player) continue;          // プレイヤーの直接指示が優先
       if (!isArmed(u.spec)) continue;                   // 非武装の支援機は経路のまま
 

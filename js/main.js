@@ -991,6 +991,12 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
     u.aiMode = a.aiMode || 'PATROL';
+    // **拠点防空は積み直しても拠点防空に戻す**（`sim/airbase.js` の `launch`）。
+    // ここを覚えておかないと、弾切れ → 帰投 → 再武装 → 発進のあとに
+    // `PATROL` として上がり、司令官AIの指揮下へ戻って持ち場を離れる。
+    // 実測では、鎖を掛けたあとでも 6機中2機がこの経路で t≈760 に
+    // 飛行場から 25km の地点まで出て落ちていた。
+    if (u.aiMode === 'GUARD') u.guardHome = true;
     // **敵側にも効かせる**（§49）。チュートリアルの「無害な的」は
     // 機銃まで切らないと無害にならない — 機銃は搭載リストに載らない
     // 固定装備なので、`loadout: []` では黙ってくれない。

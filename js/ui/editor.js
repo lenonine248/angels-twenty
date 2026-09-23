@@ -15,6 +15,9 @@ import { GROUND_TYPES } from '../data/ground.js';
 import { CLOUD_COVER, CLOUD_SHAPE, CLOUD_WIND_SPEED } from '../world/clouds.js';
 import { loadoutCost } from '../data/weapons.js';
 import * as custom from '../data/custom.js';
+import * as stagetext from '../data/stagetext.js';
+import { isTuned } from './tuning.js';
+import { onDevServer } from '../core/devserver.js';
 import { loadoutRow, removeOne, LOADOUT_HINT } from './loadout.js';
 
 const SIZE = 512;                      // 画布の一辺(px)
@@ -112,6 +115,7 @@ export class StageEditor {
     this.tab = 'terrain';
     this.sel = null;                   // { kind, i }
     this.msg = '';
+    this._baseId = null;               // 出力の下敷き（§91）。null は自動判定
     this._terrain = null;
     this._terrainKey = '';
     this._mapImage = null;         // 地形の下敷き（種が変わるまで使い回す）
@@ -166,6 +170,7 @@ export class StageEditor {
     this.sel = null;
     this.tool = 'select';
     this.msg = '';
+    this._baseId = null;               // 面が変わったら下敷きの選び直しも捨てる
     this._dirty = false;
     this._pending = null;
     this.root.classList.remove('hidden');
@@ -605,14 +610,16 @@ export class StageEditor {
       const r = ref.reinforce;
       rows.push(`<label>増援<input type="checkbox" data-edsel="reinforce"${r ? ' checked' : ''}></label>`
         + (r ? num('reinforce.every', '間隔(秒)', 10) + num('reinforce.max', '最大機数')
-          + num('reinforce.burst', '1波の機数') : ''));
+          + num('reinforce.burst', '1波の機数') + num('reinforce.first', '初回まで(秒)', 10) : ''));
       if (r) {
         // **機種は複数書ける**（`types`）。本体は `types` を順に使い、
         // 無ければ `type` に落ちる —— 出す側は `types` に寄せて1本にする。
         const types = (r.types || (r.type ? [r.type] : ['J-7'])).join(',');
         rows.push(`<label>機種（カンマ区切り）<input data-edsel="reinforce.types"
             value="${esc(types)}" size="20"></label>`
-          + '<span class="ed-note">順番に使います。「B-9,J-7,J-7」なら爆撃機1・護衛2の波</span>');
+          + '<span class="ed-note">順番に使います。「B-9,J-7,J-7」なら爆撃機1・護衛2の波</span>'
+          + '<span class="ed-note">「初回まで」は第1波が湧くまでの秒数。空欄なら間隔と同じ。'
+          + '中盤だけ緩めたいときに、開幕の強襲まで一緒に楽にしないための欄です</span>');
         // **タグが無いと増援は目標から見えない**（§74.3 の `pending`）。
         // ここを空のままにすると「全機撃墜」が湧いている最中に達成になる。
         rows.push(`<label>増援のタグ<input data-edsel="reinforce.tags"
@@ -698,7 +705,7 @@ export class StageEditor {
             s.friendly.startAirborne ? ' checked' : ''}></label>
           ${num('friendly.startAlt', '発進高度', 500)}
           <label>敵の練度<input type="number" step="0.1" data-ed="enemy.skill"
-            value="${esc(s.enemy.skill ?? 0.6)}"></label>
+            value="${esc(s.enemy.skill ?? 1)}"></label>
         </div>`;
     }
     if (this.tab === 'weather') {
@@ -788,12 +795,28 @@ export class StageEditor {
         <button data-edcmd="dup:${c.id}">複製</button>
         <button data-edcmd="rm:${c.id}" class="ed-del">削除</button>
       </div>`).join('') || '<div class="ed-empty">まだ1つも保存されていません</div>';
+    // 下敷きの選び直し（§91）。既定は自動判定 ——
+    // `basedOn` を持たない古い面でも、名前から拾えることがある
+    const auto = stagetext.baseOf(s);
+    const cur = this._baseId;
+    const opt = (v, label, on) => `<option value="${esc(v)}"${on ? ' selected' : ''}>${esc(label)}</option>`;
+    const bases = opt('auto', `自動（${auto ? auto.name : '下敷きなし'}）`, cur == null)
+      + opt('', '下敷きなし（全文を出す）', cur === '')
+      + stagetext.baseList().map((b) => opt(b.id, `${b.name}（${b.id}）`, cur === b.id)).join('');
     return `${list}
       <div class="ed-row">
         <button data-edcmd="new">白紙から作る</button>
         <button data-edcmd="export">JSONを書き出す</button>
         <button data-edcmd="import">JSONを読み込む</button>
         <button data-edcmd="snippet">stages.js 用のコードを出す</button>
+      </div>
+      <div class="ed-row">
+        <button data-edcmd="outline">要点と差分を出す</button>
+        <label>下敷き<select data-edbase>${bases}</select></label>
+        ${onDevServer() ? '<button data-edcmd="tofile">ファイルに書き出す</button>' : ''}
+        <span class="ed-note">相談するとき用の写し（§91）。下敷きがあれば
+          <b>元の面との違いだけ</b>を出します${onDevServer()
+            ? '。書き出し先は stages_out/' : '（公開版なので書き出しは出ません）'}</span>
       </div>
       <textarea id="edOut" class="hidden" rows="8"></textarea>`;
   }
@@ -807,6 +830,12 @@ export class StageEditor {
       if (t.type === 'number') { const n = Number(raw); return Number.isFinite(n) ? n : 0; }
       return raw;
     };
+    // **下敷きの選択はステージを触っていない**（§91）。
+    // ここで抜けないと、出力の宛先を選んだだけで「保存していない編集がある」になる
+    if (t.dataset.edbase != null) {
+      this._baseId = t.value === 'auto' ? null : t.value;
+      return;
+    }
     this._dirty = true;
     this._pending = null;
     // **雲量は節ごと出し入れする。** `none` のまま空の `weather` を残すと、
@@ -844,6 +873,14 @@ export class StageEditor {
         if (list.length) ref.reinforce[key] = list;
         else delete ref.reinforce[key];
         if (key === 'types') delete ref.reinforce.type;   // 言い方を1つに寄せる
+        return;
+      } else if (path === 'reinforce.first') {
+        // **空欄なら「間隔と同じ」**（既定の挙動）。
+        // 0 や空文字をそのまま残すと開始と同時に湧いてしまうので、消す。
+        ref.reinforce = ref.reinforce || {};
+        const v = Number(t.value);
+        if (t.value !== '' && v > 0) ref.reinforce.first = v;
+        else delete ref.reinforce.first;
         return;
       } else if (path === 'reinforce.after') {
         ref.reinforce = ref.reinforce || {};
@@ -1013,8 +1050,54 @@ export class StageEditor {
       case 'playtest': this._playtest(); break;
       case 'export': this._out(custom.toJSON(s), 'JSON。ファイルに保存すれば、あとで読み込めます'); break;
       case 'snippet': this._out(custom.snippet(s), 'stages.js の STAGES に足すコード。id は s7 などに直すこと'); break;
+      case 'outline': this._out(this._outline(), '要点（下敷きがあれば差分）。このまま貼れば読めます'); break;
+      case 'tofile': this._toFile(); break;
       case 'import': this._import(); break;
       default: break;
+    }
+  }
+
+  /** いま選ばれている下敷き。`null` は「下敷き無し」、未選択なら自動判定 */
+  _base() {
+    if (this._baseId === '') return null;
+    if (this._baseId) return stagetext.baseById(this._baseId);
+    return stagetext.baseOf(this.stage);
+  }
+
+  /**
+   * 相談用の写し（§91）。**下敷きの面に §47 の上書きが載っていたら注記する** ——
+   * 載ったままだと、差分は「調整後の値との違い」になる。
+   */
+  _outline() {
+    const base = this._base();
+    return stagetext.outline(this.stage, base, { baseTuned: !!base && isTuned(base.id) });
+  }
+
+  /**
+   * 開発サーバのときだけ、写しと定義をファイルに落とす（§91）。
+   *
+   * **エディタの面は localStorage の中にあり、開発側からは読めない。**
+   * 画面から拾ってコピーする道は残したうえで、手元で遊んでいるときは
+   * そのままファイルに落ちるようにしておく。
+   */
+  async _toFile() {
+    const s = this.stage;
+    // 日本語の名前はファイル名に残らない。**id を必ず付ける**ので衝突はしない
+    const slug = String(s.name || 'stage').toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'stage';
+    const name = `${slug}-${s.id}`;
+    const put = (ext, body, type) => fetch(`/stage/${name}.${ext}`, {
+      method: 'POST', headers: { 'Content-Type': type }, body,
+    });
+    try {
+      const [a, b] = await Promise.all([
+        put('txt', this._outline(), 'text/plain; charset=utf-8'),
+        put('json', custom.toJSON(s), 'application/json'),
+      ]);
+      if (!a.ok || !b.ok) { this._say(`書き出せませんでした（${a.status} / ${b.status}）`, 'bad'); return; }
+      this._say(`stages_out/${name}.txt と ${name}.json に書き出しました`, 'ok');
+    } catch (err) {
+      this._say('書き出せませんでした（開発サーバが要ります）', 'bad');
     }
   }
 

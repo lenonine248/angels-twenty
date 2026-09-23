@@ -718,6 +718,8 @@ button.small { font-size: 10px; padding: 3px 10px; margin: 4px 9px 7px; }
 /* 指揮下にない機体（護衛対象など・§80.4）。押しても選べない理由を出す */
 .ur-ward { color: var(--text-dim); font-style: italic; }
 .ur-why { color: var(--amber); font-size: 10px; margin-left: 4px; }
+/* 射撃指示が待たされている理由（§92.3）。ロースターの ur-why と同じ見た目 */
+.chip.task .task-why { color: var(--amber); font-size: 10px; font-style: normal; }
 .ur-brk { color: var(--amber); }
 .fm-tag.hot { color: var(--amber); border-color: var(--amber); }
 

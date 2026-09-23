@@ -147,7 +147,12 @@ export class Mission {
   registerReinforcement(airbase, config) {
     // `after: 'detected'` を書くと、**こちらが敵に見つかるまで時計が動かない**（§80.5）
     this.reinforce.push({
-      airbase, config, timer: config.every, spawned: 0,
+      // **第1波までの時間は間隔と別に決められる**（`first`）。
+      //
+      // 一緒くたにしていたので、「中盤の圧力を緩める」ために間隔を伸ばすと
+      // **第1波も同じだけ遅れて、開幕の強襲がそのぶん楽になる** ——
+      // 緩めたい所と締めたい所が反対に動いていた。書かなければ従来どおり。
+      airbase, config, timer: config.first ?? config.every, spawned: 0,
       armed: config.after !== 'detected',
     });
   }

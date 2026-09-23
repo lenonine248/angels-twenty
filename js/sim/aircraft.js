@@ -181,7 +181,7 @@ const CORNER_FRACTION = 0.85;
  * 「探すためにレーダーを出す」対象になるAIモード（§61.5）。
  * 空中の敵を見つけるのが仕事のモードだけ。対地攻撃と帰投は含めない。
  */
-const HUNTING_MODES = { PATROL: 1, PURSUIT: 1, COORDINATE: 1, ESCORT: 1 };
+const HUNTING_MODES = { PATROL: 1, PURSUIT: 1, COORDINATE: 1, ESCORT: 1, GUARD: 1 };
 
 const MIL_SPEED_FRACTION = 0.78;
 const MIL_ACCEL_FRACTION = 0.55;
@@ -945,6 +945,17 @@ export class Aircraft extends Unit {
             // 上下角は `_integrate` が `atan2(上昇率, 速度)` で決めるので、
             // **許される上昇率へ逆算して高度指示を挟む**（そこの式と対にしてある）。
             desiredAlt = this._holdInVerticalFan(desiredAlt, dx, dz, aim.y);
+
+            // **撃つ前にも掛けようとして、測って取り消した**（§92.3）。
+            //
+            // ここを `_guidingSarhAt` に結び付けているせいで、
+            // **1発目を撃つ前は誰も縦の扇を守っていない**（撃つには扇に入れる必要があり、
+            // 扇に入れてくれるのは弾が飛んでいるときだけ、という循環）。
+            // 距離で窓を切る版（c案）と、「縦の扇だけが止めているとき」に絞る版（b案）を
+            // 作って18種で測ったが、**どちらも詰まりを増やした** ——
+            // b案は落ちた件数が 2.6倍・縦で落ちた件数も2倍近くに増える。
+            // 姿勢を押さえるぶん射点へ詰められず、詰まったまま時間を過ごすため。
+            // **入れるなら、押さえ方ではなく詰め方から考えること。**
           } else {
             this.cranking = false;
           }
@@ -1295,6 +1306,7 @@ export class Aircraft extends Unit {
     return world.missiles.some((m) => m.alive && !m.lost
       && m.launcher === this && m.target === target && m.guidance === 'sarh');
   }
+
 
   /**
    * 自分が誘導し続けているセミアクティブ弾があるか（目標は問わない）。

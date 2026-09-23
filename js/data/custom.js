@@ -128,7 +128,11 @@ export function normalize(stage) {
   s.enemy = s.enemy || {};
   s.enemy.aircraft = s.enemy.aircraft || [];
   s.enemy.ground = s.enemy.ground || [];
-  if (s.enemy.skill == null) s.enemy.skill = b.enemy.skill;
+  // **練度は埋めない**（§91.1）。白紙の既定（0.6）を入れていたので、
+  // **組み込み面を複製すると敵の練度が 1 → 0.6 に落ちて、元より易しくなっていた。**
+  // 本体は `skill` が無ければ 1 と読む（`main.js` の `enemySkill`）。
+  // ここの役目は「節ごと欠けた定義でも開けるようにする」ことで、
+  // **遊びを変えることではない。** 白紙から作る面は `blankStage()` が 0.6 を書く。
   s.objectives = s.objectives || [];
   const r = s.rating || {};
   s.rating = { time: r.time || b.rating.time.slice(),
@@ -142,6 +146,10 @@ export function duplicate(stage) {
   const copy = structuredClone(stage);
   copy.id = nextId();
   copy.custom = true;
+  // **下敷きにした面を覚える**（§91）。差分で書き出すときの比較先になる。
+  // 複製の複製でも**いちばん元**を指したままにする（`c2` ではなく `s7`）——
+  // 読む側が見たいのは「組み込みの面から何を変えたか」なので。
+  copy.basedOn = stage.basedOn || stage.id;
   copy.name = (stage.name || 'STAGE') + ' COPY';
   delete copy.debug;
   return copy;
@@ -324,6 +332,7 @@ export function fromJSON(text) {
 export function snippet(stage) {
   const s = structuredClone(stage);
   delete s.custom;
+  delete s.basedOn;               // 下敷きの控え（§91）は本編の定義には要らない
   return JSON.stringify(s, null, 2)
     // キーの引用符だけ外して JS の書き方に寄せる（そのまま貼れるように）。
     //

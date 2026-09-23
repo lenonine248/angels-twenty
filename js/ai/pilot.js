@@ -19,6 +19,7 @@ const AI_INTERVAL = 0.5;
 
 export const AI_MODES = {
   PATROL:     { id: 'PATROL',     label: '哨戒',     desc: '指定エリアを旋回しつつ索敵。近づいた敵だけ迎撃する' },
+  GUARD:      { id: 'GUARD',      label: '拠点防空', desc: '持ち場から離れない。交戦距離を自機ではなく持ち場から測る' },
   PURSUIT:    { id: 'PURSUIT',    label: '追撃',     desc: '探知した敵へ積極的に向かい交戦する' },
   EVADE:      { id: 'EVADE',      label: '回避優先', desc: '交戦を避け、低空へ退避する' },
   COORDINATE: { id: 'COORDINATE', label: '連携',     desc: '編隊でレーダーの扇を分担し、目標を重複させない' },
@@ -32,6 +33,8 @@ export const AI_MODES = {
 /** モードごとの交戦距離(m) */
 const ENGAGE_RANGE = {
   PATROL: 14000,
+  // **持ち場から**測る（自機からではない）。`_guard` を参照。
+  GUARD: 14000,
   PURSUIT: 30000,
   COORDINATE: 30000,
   // 護衛は「被護衛機に脅威が届く前に叩く」のが仕事。
@@ -164,6 +167,7 @@ export class PilotAI {
     const mode = u.aiMode || 'PATROL';
     switch (mode) {
       case 'PURSUIT':    this._pursuit(u, attackers, ENGAGE_RANGE.PURSUIT); break;
+      case 'GUARD':      this._guard(u, attackers); break;
       case 'COORDINATE': this._coordinate(u, attackers, true); break;
       case 'EVADE':      this._evadeMode(u); break;
       case 'ESCORT':     this._escort(u, attackers); break;
@@ -206,6 +210,38 @@ export class PilotAI {
     }
     u.headingBias = Math.sin((this.time / SWEEP_PERIOD) * Math.PI * 2 + u.id) * SWEEP_AMPLITUDE;
     return false;
+  }
+
+  /**
+   * 拠点防空。**持ち場から離れない。**
+   *
+   * `_patrol` との違いは交戦距離を**「自機から」ではなく「持ち場から」**測ること
+   * （`_pickAirTarget` の `near` に持ち場を渡す）。
+   *
+   * 自機から測ると、14km で捕まえて追いかけ、追いついた先でまた 14km を測り直す
+   * —— **鎖が機体と一緒に伸びていく**ので、いくらでも遠くへ行ける。
+   * 実測: LONG WATCH の飛行場に置いた2機に `COORDINATE`(30km) を与えたところ、
+   * **80秒で飛行場から 15〜22km まで出て、そこで撃墜された**（3種の種で同傾向）。
+   * 持ち場から測れば、出られるのは鎖の長さまでで止まる。
+   *
+   * **戻すときは `attack` の命令ごと置き換える。** `_isIdleOrStaleAttack` では
+   * 戻れない —— 追撃中は生きた `attack` 命令があるので「暇ではない」と判定され、
+   * 鎖の外へ出た相手をそのまま追い続けてしまう。
+   */
+  _guard(u, attackers) {
+    const area = this._patrolArea(u);
+    // `near` は `.pos` を持つものを渡す約束（`_escort` は被護衛機を渡している）。
+    // 持ち場は平たい `{x, z, alt}` なので、機体ごとに1つだけ錨を持たせて使い回す。
+    if (!u._guardAnchor) u._guardAnchor = { pos: u.pos.clone() };
+    u._guardAnchor.pos.set(area.x, area.alt, area.z);
+
+    const target = this._pickAirTarget(u, ENGAGE_RANGE.GUARD, attackers, u._guardAnchor);
+    if (target) { this._attack(u, target, attackers); u.headingBias = 0; return; }
+
+    if (this._isIdleOrStaleAttack(u) || u.order.type === 'attack') {
+      u.setOrder({ type: 'orbit', x: area.x, z: area.z, alt: area.alt, radius: area.radius });
+    }
+    u.headingBias = Math.sin((this.time / SWEEP_PERIOD) * Math.PI * 2 + u.id) * SWEEP_AMPLITUDE;
   }
 
   /**

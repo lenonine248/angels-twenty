@@ -13,6 +13,10 @@ python -m http.server だとブラウザが ES モジュールをキャッシュ
 2. 戦闘のリプレイ（仕様 §23）を replays/ へ保存する。
    ブラウザからのダウンロードは環境によって止められるので、
    検証で回した戦闘をそのまま残せるようにしておく。
+3. ステージエディタで組んだ面（仕様 §91）を stages_out/ へ保存する。
+   自作ステージは localStorage の中にあり、開発側からは読めない。
+   画面のテキストをコピーして渡す道は残したうえで、
+   手元で遊んでいるときはそのままファイルに落ちるようにしておく。
 
 127.0.0.1 にだけ bind した開発用サーバなので、書き込み口はローカル専用。
 
@@ -27,6 +31,9 @@ import sys
 
 PLAYLOG = "playlog.jsonl"
 REPLAY_DIR = "replays"
+STAGE_DIR = "stages_out"
+# 面1つは要点が数 KB・定義が数十 KB。桁で余裕を持たせておく。
+MAX_STAGE = 1024 * 1024
 MAX_BODY = 512 * 1024
 # リプレイは1戦 85〜400KB（仕様 §23.5）。取りこぼさない余裕を持たせる。
 MAX_REPLAY = 8 * 1024 * 1024
@@ -111,9 +118,12 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        """/replay/ はリプレイの保存、/telemetry はプレイ記録の追記。"""
+        """/replay/ はリプレイ、/stage/ はエディタの面、/telemetry はプレイ記録。"""
         if self.path.startswith("/replay/"):
             self._save_replay()
+            return
+        if self.path.startswith("/stage/"):
+            self._save_stage()
             return
         if self.path != "/telemetry":
             self.send_error(404)
@@ -157,6 +167,36 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(400, "not json")
             return
         out = os.path.join(self._root(), REPLAY_DIR)
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, name), "wb") as f:
+            f.write(raw)
+        self.send_response(204)
+        self.end_headers()
+
+    def _save_stage(self):
+        """POST /stage/<name>.json|.txt でエディタの面を stages_out/ に置く（§91）。
+
+        .json は定義そのもの（読み込み直せる）、.txt は人が読む要点と差分。
+        リプレイと同じ規則でファイル名を絞り、壊れた JSON は置かない。
+        """
+        name = self.path[len("/stage/"):]
+        if not name or not all(c in SAFE_NAME for c in name) or ".." in name:
+            self.send_error(400, "bad name")
+            return
+        if not (name.endswith(".json") or name.endswith(".txt")):
+            self.send_error(400, "bad ext")
+            return
+        raw = self._read_body(MAX_STAGE)
+        if raw is None:
+            self.send_error(400, "bad body")
+            return
+        if name.endswith(".json"):
+            try:
+                json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self.send_error(400, "not json")
+                return
+        out = os.path.join(self._root(), STAGE_DIR)
         os.makedirs(out, exist_ok=True)
         with open(os.path.join(out, name), "wb") as f:
             f.write(raw)
