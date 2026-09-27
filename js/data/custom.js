@@ -14,6 +14,8 @@ import { GROUND_TYPES } from './ground.js';
 import { loadoutCost, loadoutFits, hardpointsOf } from './weapons.js';
 import { MAP_SIZE } from '../world/terrain.js';
 import { CLOUD_COVER, CLOUD_SHAPE } from '../world/clouds.js';
+import { TRIGGER_CONDITIONS, TRIGGER_ACTIONS } from '../sim/triggers.js';
+import { GROUND_MODES } from '../sim/ground.js';
 
 const KEY = 'at_custom_stages_v1';
 
@@ -208,7 +210,11 @@ export function validate(stage) {
   // 輸送機のタグ `transport` を持つ味方が「いない」と判定されていた。
   // 本体が読んでいる場所（`main.js` の `spawnStage`）と揃える。
   const friendlyTags = new Set(['home']);          // 自軍飛行場は暗黙に home
-  for (const u of [...air, ...(f.ground || []), ...(f.support || [])]) {
+  // 友軍（§102）も同じ陣営なので、protect・hold の受け皿になる
+  const al = stage.ally || {};
+  const allyAir = al.aircraft || [];
+  if (al.base) friendlyTags.add('ally-home');
+  for (const u of [...air, ...(f.ground || []), ...(f.support || []), ...allyAir]) {
     for (const t of u.tags || []) friendlyTags.add(t);
   }
 
@@ -228,6 +234,62 @@ export function validate(stage) {
     }
   }
 
+  // 友軍（§102）。**任務が無ければ友軍の司令官は動かない**（Q5）—— 置いただけで止まっている機体になる
+  const allyObjs = al.objectives || [];
+  if (allyAir.length && !allyObjs.length) warn.push('友軍機がいるのに友軍の任務がありません（友軍は動きません）');
+  for (const a of allyAir) {
+    if (!FRIENDLY_AIR_TYPES.includes(a.type)) fatal.push(`友軍機「${a.name}」の機種「${a.type}」は使えません`);
+    if (a.x == null && !f.base && !al.base) fatal.push(`友軍機「${a.name}」は待機する飛行場がありません`);
+  }
+  for (const o of allyObjs) {
+    if (!OBJECTIVE_TYPES.includes(o.type)) { fatal.push(`友軍の任務「${o.label || o.id}」の型が不正です`); continue; }
+    if (o.type === 'destroyAll' && !enemyTags.has(o.tag)) {
+      warn.push(`友軍の任務「${o.label || o.id}」の tag「${o.tag}」を持つ敵がいません`);
+    }
+    if (o.type === 'protect' && !friendlyTags.has(o.tag)) {
+      warn.push(`友軍の任務「${o.label || o.id}」の tag「${o.tag}」を持つ味方がいません`);
+    }
+  }
+
+  // トリガー（§12.3）。**書き間違いは黙って何もしない形で現れる**ので、ここで全部拾う
+  const eBases = ['base', 'base2'].filter((k) => e[k]);
+  const enemyOwn = new Set(enemyTags);
+  // **増援とトリガーの出撃が付けるタグも数える。** 配置した敵だけを見ると、
+  // 「増援の編隊が n 機以下になったら」が書けない
+  for (const k of eBases) for (const tg of (e[k].reinforce && e[k].reinforce.tags) || []) enemyOwn.add(tg);
+  for (const t of e.triggers || []) for (const a of t.do || []) if (a.type === 'launch' && a.tag) enemyOwn.add(a.tag);
+  // 地上の行動（§103）が動かせるのは**動く地上ユニット**だけ
+  const movableTags = (list) => {
+    const out = new Set();
+    for (const g of list) if (GROUND_TYPES[g.type] && !GROUND_TYPES[g.type].static) for (const t of g.tags || []) out.add(t);
+    return out;
+  };
+  validateTriggers({
+    list: e.triggers, side: '敵', bases: eBases, condTags: enemyOwn, actTags: enemyOwn,
+    groundTags: movableTags(e.ground || []),
+    baseName: (k) => `敵飛行場「${k}」`, reinforceOf: (k) => e[k] && e[k].reinforce,
+    airTypes: ENEMY_AIR_TYPES,
+  }, fatal, warn);
+  // 友軍側（§102 A2）。**条件はどちらの陣営のタグも読み、行動は友軍機だけを動かす**
+  // 友軍を書いた面では、トリガーが無くても「トリガーで開始」の増援を拾うために通す
+  if (stage.ally) {
+    const allyOwn = new Set();
+    for (const u of allyAir) for (const t of u.tags || []) allyOwn.add(t);
+    const allyRf = al.reinforce || (al.base && al.base.reinforce);
+    for (const t of (allyRf && allyRf.tags) || []) allyOwn.add(t);
+    for (const t of al.triggers || []) for (const a of t.do || []) if (a.type === 'launch' && a.tag) allyOwn.add(a.tag);
+    // 友軍の増援は専用の飛行場があればそこ、無ければ共用の飛行場から出る（`main.js` の `spawnStage`）
+    const rfKey = al.base ? 'base' : 'home';
+    validateTriggers({
+      list: al.triggers, side: '友軍', bases: [...(al.base ? ['base'] : []), ...(f.base ? ['home'] : [])],
+      condTags: new Set([...allyOwn, ...friendlyTags, ...enemyOwn]), actTags: allyOwn,
+      groundTags: movableTags((f.ground || []).filter((g) => g.owner === 'ally')),
+      baseName: (k) => (k === 'home' ? '自軍飛行場（home）' : `友軍飛行場「${k}」`),
+      reinforceOf: (k) => (k === rfKey ? allyRf : null),
+      airTypes: FRIENDLY_AIR_TYPES,
+    }, fatal, warn);
+  }
+
   // 座標。**地図の外に置くと出撃した瞬間に迷子になる**
   //
   // **座標を持つものは全部見る。** 以前は敵と自軍飛行場しか見ておらず、
@@ -236,10 +298,16 @@ export function validate(stage) {
   const okNum = (v) => typeof v === 'number' && Number.isFinite(v);
   const spots = [];
   if (f.base) spots.push(['自軍飛行場', f.base]);
+  if (al.base) spots.push(['友軍飛行場', al.base]);
+  for (const u of allyAir) spots.push([u.name || '友軍', u]);
   for (const u of [...air, ...(f.ground || []), ...(f.support || [])]) spots.push([u.name || '味方', u]);
   for (const u of [...(e.aircraft || []), ...(e.ground || [])]) spots.push([u.name || '敵', u]);
   for (const key of ['base', 'base2']) if (e[key]) spots.push([`敵飛行場(${key})`, e[key]]);
   for (const o of objs) if (o.type === 'reach') spots.push([`到達地点「${o.label || o.id}」`, o]);
+  for (const t of e.triggers || []) {
+    for (const c of t.when || []) if (c.type === 'enter') spots.push([`トリガー「${t.label || t.id}」の区域`, c]);
+    for (const a of t.do || []) if (a.type === 'guard') spots.push([`トリガー「${t.label || t.id}」の地点`, a]);
+  }
   for (const [label, p] of spots) {
     if (p.x == null && p.z == null) continue;            // 位置は本体まかせ（自動配置）
     // **片方だけ入っているのも弾く。** `null >= 0` は真なので、
@@ -296,6 +364,82 @@ export function validate(stage) {
   if (!e.aircraft?.length && !e.ground?.length && !e.base) warn.push('敵が1つも置かれていません');
 
   return { fatal, warn, ok: fatal.length === 0 };
+}
+
+/**
+ * トリガーの検証（§12.3・友軍側は §102 A2）。敵側と友軍側で同じ関数を使い、違いは引数で渡す。
+ *
+ * | 拾うもの | 重さ | 理由 |
+ * |---|---|---|
+ * | 存在しない条件・行動の型 | 致命 | 本体は黙って無視する |
+ * | 持ち主の無いタグ | 致命 | 条件は永久に成立せず、行動は誰にも効かない |
+ * | 無い飛行場・無いトリガーID | 致命 | 同上 |
+ * | ID の重複 | 致命 | `fired` がどちらを指すか決まらない |
+ * | 「トリガーで開始」なのに `reinforce on` が無い増援 | 警告 | 一度も湧かない |
+ *
+ * @param {object} o
+ * @param {object[]} o.list        トリガーの並び
+ * @param {string} o.side          文言の頭（'敵' / '友軍'）
+ * @param {string[]} o.bases       行動が指せる飛行場の名前
+ * @param {Set} o.condTags         条件（destroyed・below）が数えられるタグ
+ * @param {Set} o.actTags          行動（guard・defend・restore）が動かせるタグ
+ * @param {Function} o.baseName    飛行場の名前 → 文言
+ * @param {Function} o.reinforceOf 飛行場の名前 → その飛行場の増援（無ければ null）
+ * @param {string[]} o.airTypes    出撃させられる機種
+ */
+function validateTriggers(o, fatal, warn) {
+  const list = o.list || [];
+  const ids = new Set();
+  const bases = o.bases;
+  const turnedOn = new Set();
+  const pre = o.side === '敵' ? '' : `${o.side}の`;
+  for (const t of list) {
+    const name = `${pre}トリガー「${t.label || t.id}」`;
+    if (!t.id) fatal.push(`${name} に ID がありません`);
+    else if (ids.has(t.id)) fatal.push(`${pre}トリガーの ID「${t.id}」が重複しています`);
+    ids.add(t.id);
+    if (!(t.when || []).length) warn.push(`${name} に条件がありません（成立しません）`);
+    if (!(t.do || []).length) warn.push(`${name} に行動がありません`);
+  }
+  for (const t of list) {
+    const name = `${pre}トリガー「${t.label || t.id}」`;
+    for (const c of t.when || []) {
+      if (!TRIGGER_CONDITIONS.includes(c.type)) { fatal.push(`${name} の条件「${c.type}」は使えません`); continue; }
+      if ((c.type === 'destroyed' || (c.type === 'below' && c.tag)) && !o.condTags.has(c.tag)) {
+        fatal.push(`${name} の条件のタグ「${c.tag}」を持つ${o.side === '敵' ? '敵' : 'ユニット'}がいません`);
+      }
+      if (c.type === 'fired' && !ids.has(c.id)) fatal.push(`${name} の条件が指すトリガー「${c.id}」がありません`);
+      if (c.type === 'fired' && c.id === t.id) fatal.push(`${name} が自分自身を待っています`);
+    }
+    for (const a of t.do || []) {
+      if (!TRIGGER_ACTIONS.includes(a.type)) { fatal.push(`${name} の行動「${a.type}」は使えません`); continue; }
+      if (['guard', 'defend', 'restore'].includes(a.type) && !o.actTags.has(a.tag)) {
+        fatal.push(`${name} の行動のタグ「${a.tag}」を持つ${o.side}機がいません`);
+      }
+      if (['defend', 'launch', 'reinforce'].includes(a.type) && !bases.includes(a.base)) {
+        fatal.push(`${name} の行動が指す${o.baseName(a.base)}がありません`);
+      }
+      if (a.type === 'reinforce' && a.base && bases.includes(a.base) && !o.reinforceOf(a.base)) {
+        warn.push(`${name} が増援を持たない${o.baseName(a.base)}の増援を切り替えています`);
+      }
+      if (a.type === 'reinforce' && a.on) turnedOn.add(a.base);
+      if (a.type === 'ground') {
+        if (!GROUND_MODES.includes(a.mode)) fatal.push(`${name} の地上の行動「${a.mode}」は使えません`);
+        if (!o.groundTags.has(a.tag)) {
+          fatal.push(`${name} の行動のタグ「${a.tag}」を持つ${o.side === '敵' ? '敵の' : '友軍の'}動く地上部隊がいません`);
+        }
+      }
+      if (a.type === 'launch' && !o.airTypes.includes(a.aircraft)) {
+        fatal.push(`${name} の出撃機種「${a.aircraft}」は使えません`);
+      }
+    }
+  }
+  for (const k of bases) {
+    const r = o.reinforceOf(k);
+    if (r && r.after === 'trigger' && !turnedOn.has(k)) {
+      warn.push(`${o.baseName(k)} の増援は「トリガーで開始」ですが、開始させるトリガーがありません（一度も湧きません）`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- 出口

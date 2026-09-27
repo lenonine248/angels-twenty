@@ -79,6 +79,7 @@
     let steps = 0;
     let kills = 0;
     let losses = 0;
+    let allyLosses = 0;
     let shots = 0;
     let hits = 0;
 
@@ -88,7 +89,9 @@
     // **全機に同じ目標を割り当てて**いた。前者は情報量を変える変更の効きを
     // 測れなくし、後者は1機あたりの発射数を増やす変更を実際より悪く見せていた。
     // どちらもベンチ固有の癖で、ゲーム本体（ai/pilot.js）は正しかった。
-    const auto = new AT.Commander(w, w.playerSide, b.mission);
+    // **プレイヤーの機体だけ**（§102）。友軍の機体は友軍の司令官（`b.allyCommander`）が動かす ——
+    // ベンチが動かすと、友軍の指揮を横取りして測ることになる
+    const auto = new AT.Commander(w, w.playerSide, b.mission, { owner: 'player' });
 
     // **敵側の司令官も回す**（§27.6）。`buildBattle` が組んだものをそのまま使う。
     // ここを忘れると、ベンチと実際の遊びで**敵の動きが違う**。
@@ -145,10 +148,16 @@
         if (record) {
           const kind = u.deathCause === 'withdraw' ? 'withdraw'
             : (u.side === w.playerSide ? 'loss' : 'kill');
-          b.recorder?.event(kind, now(), { unit: u, pos: u.pos, cause: u.deathCause || '被弾' });
+          // 落とした相手も載せる（§12.3 の P0）。`main.js` の `handleDeaths` と同じ
+          const hit = AT.killedBy ? AT.killedBy(u) : null;
+          b.recorder?.event(kind, now(), { unit: u, pos: u.pos, cause: u.deathCause || '被弾',
+            by: hit && hit.by, weapon: hit && hit.weapon });
         }
         if (u.deathCause === 'withdraw') continue;
-        if (u.side === w.playerSide) losses++; else kills++;
+        // 損失はプレイヤーの指揮下だけ（§102・評価の練度と同じ）。友軍は別に数える
+        if (u.side !== w.playerSide) kills++;
+        else if (u.owner === 'ally') allyLosses++;
+        else losses++;
       }
       b.mission.update(DT);
 
@@ -172,6 +181,9 @@
       auto.update(DT);
       b.enemyPlan?.update(DT);
       if (foe) foe.update(DT);
+      // 友軍の司令官（§102）。`main.js` の `fixedUpdate` と同じ順番
+      b.allyPlan?.update(DT);
+      b.allyCommander?.update(DT);
       // **記録は頼まれたときだけ**（§56）。既定の周回では回さない —
       // 何百戦もするので、位置の標本を溜めると重いし、
       // ベンチが測っているのは数字であってリプレイではない。
@@ -195,6 +207,7 @@
       sec: +(steps / 30).toFixed(1),
       kills,
       losses,
+      allyLosses,
       shots,
       hits,
       pk: shots ? +(hits / shots).toFixed(2) : 0,

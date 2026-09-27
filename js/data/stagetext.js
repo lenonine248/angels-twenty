@@ -148,6 +148,10 @@ const KEY_OF = {
   'enemy.ground': 'name',
   objectives: 'id',
   'enemy.objectives': 'id',
+  'ally.aircraft': 'name',
+  'ally.objectives': 'id',
+  'enemy.triggers': 'id',
+  'ally.triggers': 'id',
 };
 
 /** 差分に出さないもの（面ごとに必ず違う・要点に既に出ている） */
@@ -205,6 +209,7 @@ function diffUnits(path, a, b, key, out) {
 const SECTIONS = [
   ['難易度', (p) => p === 'weaponPoints' || p.startsWith('rating') || p === 'enemy.skill'],
   ['味方', (p) => p.startsWith('friendly')],
+  ['友軍', (p) => p.startsWith('ally')],
   ['敵', (p) => p.startsWith('enemy') && p !== 'enemy.skill' && !p.startsWith('enemy.objectives')],
   ['目標', (p) => p === 'objectives' || p.startsWith('enemy.objectives')],
   ['地形・天候', (p) => p.startsWith('terrain') || p.startsWith('weather')],
@@ -253,10 +258,23 @@ function fullLines(s) {
   out.push(...listLines('friendly.aircraft', f.aircraft));
   out.push(...listLines('friendly.ground', f.ground));
   out.push(...listLines('friendly.support', f.support));
+  // 友軍（§102）。書いた面だけ
+  const al = s.ally;
+  if (al) {
+    out.push('', '// 友軍');
+    if (al.skill != null) out.push(`ally.skill: ${al.skill},`);
+    if (al.escortPlayer === false) out.push('ally.escortPlayer: false,');
+    if (al.base) out.push(`ally.base: ${val(al.base)},`);
+    out.push(...listLines('ally.aircraft', al.aircraft));
+    if (al.reinforce) out.push(`ally.reinforce: ${val(al.reinforce)},`);
+    out.push(...listLines('ally.objectives', al.objectives));
+    out.push(...listLines('ally.triggers', al.triggers));
+  }
   out.push('', '// 敵');
   for (const key of ['base', 'base2']) if (e[key]) out.push(`enemy.${key}: ${val(e[key])},`);
   out.push(...listLines('enemy.aircraft', e.aircraft));
   out.push(...listLines('enemy.ground', e.ground));
+  out.push(...listLines('enemy.triggers', e.triggers));
   out.push('', '// 目標');
   out.push(...listLines('objectives', s.objectives));
   out.push(...listLines('enemy.objectives', e.objectives));

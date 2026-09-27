@@ -22,7 +22,7 @@ export const AI_MODES = {
   GUARD:      { id: 'GUARD',      label: '拠点防空', desc: '持ち場から離れない。交戦距離を自機ではなく持ち場から測る' },
   PURSUIT:    { id: 'PURSUIT',    label: '追撃',     desc: '探知した敵へ積極的に向かい交戦する' },
   EVADE:      { id: 'EVADE',      label: '回避優先', desc: '交戦を避け、低空へ退避する' },
-  COORDINATE: { id: 'COORDINATE', label: '連携',     desc: '編隊でレーダーの扇を分担し、目標を重複させない' },
+  COORDINATE: { id: 'COORDINATE', label: '連携',     desc: '編隊でレーダーの扇を分担し、広く探して交戦する' },
   ESCORT:     { id: 'ESCORT',     label: '護衛',     desc: '護衛対象の周囲を確保し、近づく敵を排除する' },
   STRIKE:     { id: 'STRIKE',     label: '対地攻撃', desc: '地上目標へ進撃。SAM圏内では低空へ降りる' },
   RTB:        { id: 'RTB',        label: '帰投',     desc: '最寄りの自軍飛行場へ戻る' },
@@ -31,7 +31,7 @@ export const AI_MODES = {
 };
 
 /** モードごとの交戦距離(m) */
-const ENGAGE_RANGE = {
+export const ENGAGE_RANGE = {
   PATROL: 14000,
   // **持ち場から**測る（自機からではない）。`_guard` を参照。
   GUARD: 14000,
@@ -85,7 +85,13 @@ const TARGET_STICKINESS = 9000;   // 現在の目標に与える下駄(m相当)
 const RETARGET_COOLDOWN = 5;      // 乗り換えを許す最短間隔(秒)
 
 /** SAM圏を警戒して低空へ降りる距離(m) */
-const SAM_AVOID_RANGE = 26000;
+export const SAM_AVOID_RANGE = 26000;
+
+/** 回避優先が退避を始める距離(m)。探知している敵機がこれより近いと動く */
+export const EVADE_RANGE = 26000;
+
+/** 対地攻撃で SAM の圏に入ったとき降りる高さ（対地・m）。ARM を積んでいなければ */
+export const STRIKE_LOW_AGL = 600;
 
 /**
  * 対空砲（弾幕）の圏に入る前に上を取るための余裕(m)。
@@ -95,11 +101,11 @@ const SAM_AVOID_RANGE = 26000;
  * 距離も高度も二値なので、「どれだけ食らうか」ではなく
  * **入るか入らないか**しか判断の余地が無い。
  */
-const GUN_CLEAR_MARGIN = 300;      // 射高にこれだけ足した高さを保つ
+export const GUN_CLEAR_MARGIN = 300;      // 射高にこれだけ足した高さを保つ
 const GUN_APPROACH_PAD = 1800;     // 射程にこれだけ足した距離から上がり始める
 
 /** ARM を撃つときに取る高度(m)。高いほど射程が伸びる。 */
-const ARM_STANDOFF_ALT = 8500;
+export const ARM_STANDOFF_ALT = 8500;
 
 export class PilotAI {
   constructor(world) {
@@ -245,7 +251,7 @@ export class PilotAI {
   }
 
   /**
-   * 連携。編隊内でレーダーの扇を分担し、同じ目標を重複して狙わない。
+   * 連携。編隊内でレーダーの扇を分担する。狙いの重なりは目安（§86）、撃ちすぎは弾の側で止める（§85）。
    * 扇の分担は「機首の向きを役割ごとにずらす」ことで実現している。
    */
   _coordinate(u, attackers) {
@@ -260,7 +266,7 @@ export class PilotAI {
 
   _evadeMode(u) {
     u.headingBias = 0;
-    const enemy = this._nearestKnownEnemy(u, 26000);
+    const enemy = this._nearestKnownEnemy(u, EVADE_RANGE);
     if (!enemy) {
       if (this._isIdleOrStaleAttack(u)) {
         const area = this._patrolArea(u);
@@ -410,7 +416,7 @@ export class PilotAI {
       if (this._canUseArm(u, target)) {
         u.order.alt = Math.max(u.order.alt || 0, ARM_STANDOFF_ALT);
       } else {
-        u.order.alt = Math.max(0, this.world.terrain.heightAt(u.pos.x, u.pos.z)) + 600;
+        u.order.alt = Math.max(0, this.world.terrain.heightAt(u.pos.x, u.pos.z)) + STRIKE_LOW_AGL;
       }
     }
   }

@@ -12,6 +12,7 @@
 //
 //   pause: true            その手順に入ったら時間を止める
 //   highlight: '<選択子>'  押してほしい／見てほしい場所を光らせる
+//   hover: true            光らせた場所にカーソルを合わせたら達成（§98・「見て」ほしい欄に使う）
 //
 // **画面を操作してほしい手順では時間を止める。** 飛びながらパネルを探させると、
 // 探しているあいだに状況が変わってしまう。止まっていても選択・指示・視点は
@@ -26,6 +27,7 @@
 import { block } from './markup.js';
 
 const DONE_FLASH = 1.1;         // 「達成」表示を出しておく秒数（実時間）
+const HOVER_DWELL = 0.35;       // hover の手順で、枠の中に留まってほしい秒数（実時間）
 
 export class TutorialRunner {
   /**
@@ -56,6 +58,11 @@ export class TutorialRunner {
     this._pausedFor = -1;
     /** 時間を動かすために覚えておく loop（update のたびに入れ替える） */
     this._loop = null;
+    /** カーソルの位置（hover の手順が見る）と、枠の中に留まった実時間 */
+    this._mouse = null;
+    this._hoverT = 0;
+    this._onMove = (e) => { this._mouse = { x: e.clientX, y: e.clientY }; };
+    window.addEventListener('mousemove', this._onMove);
 
     this.root = document.getElementById('tutorial');
     this._onClick = (e) => {
@@ -92,6 +99,7 @@ export class TutorialRunner {
   update(ctx, realDt) {
     this._loop = ctx.loop || this._loop;
     this._elapsed += realDt;
+    this._placeBelowObjectives();
     if (this._flash > 0) {
       this._flash -= realDt;
       if (this._flash <= 0) {
@@ -125,6 +133,16 @@ export class TutorialRunner {
 
     this._updateHighlight();
 
+    // 「欄を見る」手順（§98）。通り過ぎただけで進まないよう、少し留まるのを待つ。
+    // パネルは毎フレーム作り直されるので :hover ではなく枠とカーソルの位置で見る
+    if (s.hover) {
+      const m = this._mouse;
+      const r = target && target.getBoundingClientRect();
+      const inside = !!(m && r && m.x >= r.left && m.x <= r.right && m.y >= r.top && m.y <= r.bottom);
+      this._hoverT = inside ? this._hoverT + realDt : 0;
+      if (this._hoverT >= HOVER_DWELL) { this._advance(); return; }
+    }
+
     if (s.check) {
       let ok = false;
       try {
@@ -139,6 +157,7 @@ export class TutorialRunner {
   }
 
   destroy() {
+    window.removeEventListener('mousemove', this._onMove);
     this._hi?.remove();
     this._hi = null;
     if (this.root) {
@@ -156,6 +175,7 @@ export class TutorialRunner {
     this._pending = done;
     this.index++;
     this._mem = {};             // 覚え書きは手順ごとに捨てる
+    this._hoverT = 0;
     this._flash = DONE_FLASH;
 
     // 止めた手順を終えたら**こちらで動かし直す**。
@@ -166,6 +186,19 @@ export class TutorialRunner {
       this._loop.setPaused(false);
     }
     this._render(true);
+  }
+
+  /**
+   * 目標のあるチュートリアルでは、手順を目標欄の下へずらす（§98）。
+   * 両方とも画面上部の同じ位置にあり、以前は「チュートリアルには目標が無い」前提だった。
+   * 守る本（k2）は目標を持っていて、「目標欄を読む」手順が目標欄を覆っていた。
+   * 目標欄の行数は戦闘中に変わりうるので、毎フレーム高さから引き直す。
+   */
+  _placeBelowObjectives() {
+    if (!this.root) return;
+    const obj = document.getElementById('objectives');
+    const top = obj && obj.offsetHeight ? `${obj.offsetTop + obj.offsetHeight + 6}px` : '';
+    if (this.root.style.top !== top) this.root.style.top = top;
   }
 
   _finish() {

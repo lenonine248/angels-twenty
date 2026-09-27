@@ -7,9 +7,10 @@
 //   ・出撃編成と兵装（兵装ポイントの範囲内で自由に組める）
 
 import { STAGES, isUnlocked, stageList } from '../data/stages.js';
-import { TUTORIALS, getTutorial } from '../data/tutorials.js';
+import { LISTED_TUTORIALS, countTutorialsDone, getTutorial } from '../data/tutorials.js';
 import { VERSION, VERSION_DATE } from '../core/version.js';
 import { showChangelog } from './changelog.js';
+import { REFERENCE, getReference, renderReference } from './reference.js';
 import { ratingTargets } from '../data/rating.js';
 import { loadoutCost, loadoutFits } from '../data/weapons.js';
 import { getType } from '../data/aircraft.js';
@@ -63,15 +64,15 @@ export class ScreenManager {
 
   showTitle() {
     const cleared = this.progress.cleared.length;
-    const done = this.progress.tutorial.length;
+    const done = countTutorialsDone(this.progress.tutorial);
 
     const modes = [
       {
         act: 'tutorial',
         name: 'チュートリアル',
         sub: '操作と仕組みを覚える',
-        state: TUTORIALS.length ? `${done} / ${TUTORIALS.length}` : '準備中',
-        ready: TUTORIALS.length > 0,
+        state: LISTED_TUTORIALS.length ? `${done} / ${LISTED_TUTORIALS.length}` : '準備中',
+        ready: LISTED_TUTORIALS.length > 0,
       },
       {
         act: 'select',
@@ -217,18 +218,20 @@ export class ScreenManager {
     const done = this.progress.tutorial;
     // 本数が増えたので種類ごとに束ねる。1列に並べると縦に収まらない。
     const groups = [];
-    for (const t of TUTORIALS) {
+    for (const t of LISTED_TUTORIALS) {
       const key = t.group || 'その他';
       let g = groups.find((x) => x.key === key);
       if (!g) { g = { key, items: [] }; groups.push(g); }
       g.items.push(t);
     }
+    // 群の定義は §93.2
     const GROUP_SUB = {
-      基本: '操作と仕組み',
-      兵装: '1兵装ずつ、特性と使い方',
-      詳細: '踏み込んだ仕組みと任せ方',
+      基本: '遊ぶのに必要な最低限',
+      戦術: '一歩進んだ判断',
+      兵装: '1兵装ずつ、その兵装でしか起きないこと',
+      詳細: 'ゲームの仕様を表で引く資料',
     };
-    const GROUP_TAG = { 基本: 'BASIC', 兵装: 'WEAPON', 詳細: 'DETAIL' };
+    const GROUP_TAG = { 基本: 'BASIC', 戦術: 'TACTICS', 兵装: 'WEAPON', 詳細: 'DETAIL' };
     const sections = groups.map((g) => {
       const n = g.items.filter((t) => done.includes(t.id)).length;
       const cards = g.items.map((t, i) => `
@@ -245,11 +248,25 @@ export class ScreenManager {
         </div>`;
     }).join('');
 
+    // 詳細は本ではなく資料（§93.5）。受講済みの数には入れない
+    const refCards = REFERENCE.map((r, i) => `
+        <div class="stage-card tut ref" data-act="reference" data-id="${r.id}">
+          <div class="sc-no">${GROUP_TAG.詳細} ${String(i + 1).padStart(2, '0')}</div>
+          <div class="sc-name">${r.name}</div>
+          <div class="sc-title">${r.title}</div>
+        </div>`).join('');
+    const refSection = `<div class="tut-group">
+          <div class="bf-section">詳細<span class="tg-sub">${GROUP_SUB.詳細}</span>
+            <span class="tg-count">読むだけ・数えない</span></div>
+          <div class="tut-grid ref-grid">${refCards}</div>
+        </div>`;
+
     this._show(`
       <div class="screen-inner">
         <h1 class="game-title">ANGELS TWENTY</h1>
         <div class="screen-sub">TUTORIAL — チュートリアル</div>
         ${sections || '<div class="panel-empty">準備中</div>'}
+        ${refSection}
         <div class="screen-foot list">
           <span>好きな順番で、何度でも受けられます</span>
           <button data-act="title" class="ghost">モード選択へ</button>
@@ -300,7 +317,9 @@ export class ScreenManager {
         </div>
 
         <div class="screen-foot">
-          <button data-act="tutorial" class="ghost">戻る</button>
+          ${this._refFrom
+            ? `<button data-act="reference" data-id="${this._refFrom}" class="ghost">資料へ戻る</button>`
+            : '<button data-act="tutorial" class="ghost">戻る</button>'}
           <button data-act="startTutorial" class="go">開始</button>
         </div>
       </div>`);
@@ -310,14 +329,31 @@ export class ScreenManager {
 
   /** 全手順を終えたときの画面。評価は付けない（§19.1）。 */
   showTutorialResult(t) {
-    const i = TUTORIALS.indexOf(t);
-    const next = TUTORIALS[i + 1];
-    const done = this.progress.tutorial.length;
+    const i = LISTED_TUTORIALS.indexOf(t);
+    const done = countTutorialsDone(this.progress.tutorial);
+    const count = i >= 0 ? `（受講済み ${done} / ${LISTED_TUTORIALS.length}）` : '';
+    // 資料の「試す」から開いた本は資料へ戻す（§93.7）。「次へ」で本の続きへは行かない
+    if (this._refFrom) {
+      const r = getReference(this._refFrom);
+      this._show(`
+        <div class="screen-inner result">
+          <div class="res-badge clear">TUTORIAL COMPLETE</div>
+          <h1 class="bf-name">${t.name}<small>${t.title}</small></h1>
+          <div class="res-reason">すべての手順を終えました${count}</div>
+          <div class="screen-foot">
+            <button data-act="tutorial" class="ghost">チュートリアル一覧へ</button>
+            <button data-act="reference" data-id="${this._refFrom}" class="go">資料「${r ? r.name : ''}」へ戻る</button>
+          </div>
+        </div>`);
+      return;
+    }
+    // 一覧の外の本には「次」が無い
+    const next = i >= 0 ? LISTED_TUTORIALS[i + 1] : null;
     this._show(`
       <div class="screen-inner result">
         <div class="res-badge clear">TUTORIAL COMPLETE</div>
         <h1 class="bf-name">${t.name}<small>${t.title}</small></h1>
-        <div class="res-reason">すべての手順を終えました（受講済み ${done} / ${TUTORIALS.length}）</div>
+        <div class="res-reason">すべての手順を終えました${count}</div>
         ${next ? `<div class="res-next">次は「${next.name} — ${next.title}」です</div>` : `
         <div class="res-next">これで全部です。ステージモードへ進んでください</div>`}
         <div class="screen-foot">
@@ -326,6 +362,42 @@ export class ScreenManager {
             : '<button data-act="select" class="go">ステージモードへ</button>'}
         </div>
       </div>`);
+  }
+
+  /**
+   * 詳細の資料（§93.5・§93.13）。左に目次、右に本文。
+   * 本文は開くたびにデータから組み直す（釣り合いを変えても古くならない）。
+   */
+  showReference(id) {
+    const item = getReference(id) || REFERENCE[0];
+    this._refFrom = null;
+    this._refId = item.id;
+    const toc = REFERENCE.map((r, i) => `
+      <button class="${r === item ? 'active' : ''}" data-act="reference" data-id="${r.id}">
+        <span>${String(i + 1).padStart(2, '0')}</span>${r.name}</button>`).join('');
+    this._show(`
+      <div class="screen-inner reference">
+        <div class="bf-top">
+          <div>
+            <div class="screen-sub">REFERENCE — 詳細の資料</div>
+            <h1 class="bf-name">${item.name}<small>${item.title}</small></h1>
+          </div>
+        </div>
+        <div class="ref-body">
+          <nav class="ref-toc">${toc}</nav>
+          <div class="ref-main">${renderReference(item)}</div>
+        </div>
+        <div class="screen-foot">
+          <button data-act="tutorial" class="ghost">チュートリアル一覧へ</button>
+        </div>
+      </div>`);
+    this.root.scrollTop = 0;
+  }
+
+  /** チュートリアルを抜けたときの行き先。資料の「試す」から来たなら資料へ（戦闘中のメニューから呼ぶ） */
+  backFromTutorial() {
+    if (this._refFrom) this.showReference(this._refFrom);
+    else this.showTutorialSelect();
   }
 
   showBriefing(stage) {
@@ -394,6 +466,19 @@ export class ScreenManager {
       </div>`;
     }).join('');
 
+    // **友軍**（§102）。何を積んで何をしに行くかを出撃前に見せる。搭載は変えられない・ポイントも使わない
+    const allyDef = stage.ally || {};
+    const allies = (allyDef.aircraft || []).map((a) => {
+      const spec = getType(a.type);
+      const where = a.x != null ? '空中で合流' : (allyDef.base && a.base !== 'home' ? '友軍飛行場' : '自軍飛行場から発進');
+      return `<div class="bf-plane bf-ally">
+        <div class="bf-head"><b>${a.name}</b><span>${spec ? spec.name : a.type}</span><span>${where}</span></div>
+        <div class="bf-load"><span class="ld-hint">${(a.loadout || []).join(' / ') || '既定の搭載'}</span></div>
+      </div>`;
+    }).join('') + (allyDef.aircraft && allyDef.aircraft.length && allyDef.objectives && allyDef.objectives.length
+      ? `<div class="bf-ally-note">友軍の任務: ${allyDef.objectives.map((o) => inline(o.label || o.tag)).join('・')}${
+        allyDef.escortPlayer === false ? '' : '（こちらの攻撃機の護衛にも付く）'}</div>` : '');
+
     // **調整中であることを必ず見せる**（§47）。
     // 印が無いと、触った値のままベンチの数字を読んでしまう。
     const tuned = tuning.isTuned(stage.id) ? '<span class="tn-flag">調整中</span>' : '';
@@ -445,6 +530,7 @@ export class ScreenManager {
 
         <div class="bf-section">出撃編成</div>
         <div class="bf-roster">${roster}</div>
+        ${allies ? `<div class="bf-section">友軍（操作できない）</div><div class="bf-roster">${allies}</div>` : ''}
 
         <div class="screen-foot">
           <button data-act="back" class="ghost">戻る</button>
@@ -502,6 +588,7 @@ export class ScreenManager {
           <div><label>経過時間</label><b>${stats.time}</b></div>
           <div><label>撃墜</label><b>${stats.kills}</b></div>
           <div><label>喪失</label><b>${stats.losses}</b></div>
+          ${stats.allyLosses != null ? `<div><label>友軍の喪失</label><b>${stats.allyLosses}</b></div>` : ''}
           <div><label>残兵装P</label><b>${stats.points}</b></div>
         </div>
         ${rating}
@@ -532,7 +619,7 @@ export class ScreenManager {
     if (card) { this.showBriefing(stageList().find((s) => s.id === card.dataset.stage)); return; }
 
     const tut = e.target.closest('[data-tutorial]');
-    if (tut) { this.showTutorialBriefing(getTutorial(tut.dataset.tutorial)); return; }
+    if (tut) { this._refFrom = null; this.showTutorialBriefing(getTutorial(tut.dataset.tutorial)); return; }
 
     const rep = e.target.closest('[data-replay]');
     if (rep) { this.onPickReplay?.(rep.dataset.replay); return; }
@@ -621,7 +708,16 @@ export class ScreenManager {
       case 'back':   this.showStageSelect(); break;
       case 'title':  this.showTitle(); break;
       case 'select': this.showStageSelect(); break;
-      case 'tutorial': this.showTutorialSelect(); break;
+      case 'tutorial': this._refFrom = null; this.showTutorialSelect(); break;
+      case 'reference': this.showReference(act.dataset.id); break;
+      // 資料の「試す」（§93.5）。終えたら資料のこの項目へ戻る
+      case 'tryTutorial': {
+        const t = getTutorial(act.dataset.id);
+        if (!t) break;
+        this._refFrom = this._refId;
+        this.showTutorialBriefing(t);
+        break;
+      }
       case 'startTutorial':
         if (this.onStartTutorial) this.onStartTutorial(this.stage);
         break;
@@ -702,6 +798,8 @@ export class ScreenManager {
     // 自軍
     if (stage.friendly.base) mark(stage.friendly.base.x, stage.friendly.base.z, '#5aa9ff', 7);
     for (const g of stage.friendly.ground || []) mark(g.x, g.z, '#5aa9ff', 5);
+    // 友軍の飛行場（§102）。地上は自軍と同じ青（Q7）
+    if (stage.ally && stage.ally.base) mark(stage.ally.base.x, stage.ally.base.z, '#5aa9ff', 7);
 
     // 判明している敵だけ
     const enemy = stage.enemy;

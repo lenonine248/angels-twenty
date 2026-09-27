@@ -11,12 +11,15 @@
 import * as THREE from 'three';
 import { Unit, headingOf, angleDiff, DEG, RWR_SIGNATURE_FACTOR } from './unit.js';
 import { getType } from '../data/aircraft.js';
-import { loadoutSlots, loadoutFuelBonus } from '../data/weapons.js';
-import { attackManeuver, defensiveManeuver, groundAttackRun, bombAimPoint } from './acm.js';
+import { WEAPONS, loadoutSlots, loadoutFuelBonus } from '../data/weapons.js';
+import {
+  attackManeuver, defensiveManeuver, groundAttackRun, tossAttackRun, bombAimPoint, tossClearAlt, TOSS,
+} from './acm.js';
 import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
 import { clamp } from '../core/rng.js';
 import { thrustFactor, turnFactor, maxSpeedFactor } from '../core/atmosphere.js';
 import { APPROACH_DISTANCE } from './airbase.js';
+import { SCREEN_TOLERANCE, NOTCH_TOLERANCE } from './missile.js';
 
 /** 地表から確保する最低高度(m) */
 const MIN_AGL = 220;
@@ -30,6 +33,22 @@ const RIDGE_CLIMB = 2200;
 const ALT_SMOOTH = 0.02;
 /** 爆撃機の進入高度（目標からの相対）。軽対空砲の射高1800mより上に置く。 */
 const BOMBER_RUN_ALT = 2100;
+/** トスの進入高度（目標からの相対）（§95）。低く入るほど対空砲に見つかりにくい */
+const TOSS_INGRESS_ALT = 300;
+/** トスの機首上げで指示する上げ幅(m)。上昇率を上限に張り付かせるためだけの値 */
+const TOSS_PULL_ALT = 2000;
+/** トスの投射の床（`tossClearAlt`）を解き直す間隔(秒)。二分探索で重いので刻みごとには解かない */
+const TOSS_CLEAR_INTERVAL = 0.5;
+/**
+ * 投射の床まで上がり始める距離の余裕(m)。上がるのに要る距離（高さの差 ÷ 上昇率の8割 × 速さ）に足す。
+ * 投げる位置で上がりきっていないと機首を上げられず、近づきすぎて入り直しになる
+ */
+const TOSS_POPUP_PAD = 500;
+/**
+ * 掃射の進入で、目標より先の地形に見込む上昇の余地（§96）。トス（`TOSS.climbCredit`）と同じ 0.8。
+ * 目標の手前には見込まない —— 目標へ降りていく途中なので、手前の上り斜面では実際には登らない
+ */
+const STRAFE_CLIMB_CREDIT = 0.8;
 /**
  * 登り切れないときに試す針路のずらし幅（ラジアン）。左右交互に、浅い角度から試す。
  * 引き返す角度まで含めないと、袋小路の谷に入ったときに出口が見つからない。
@@ -173,8 +192,8 @@ const CRANK_FRACTION = 0.6;
  */
 const CRANK_SUPPORT_SEC = 8;
 
-/** コーナー速度の既定値（巡航速度に対する割合・§29.2） */
-const CORNER_FRACTION = 0.85;
+/** コーナー速度の既定値（巡航速度に対する割合・§29.2）。チュートリアルの文も読む */
+export const CORNER_FRACTION = 0.85;
 
 /** ミリタリー推力（AB無し）の上限。最大速度・加速度に対する割合（§29.3） */
 /**
@@ -185,6 +204,35 @@ const HUNTING_MODES = { PATROL: 1, PURSUIT: 1, COORDINATE: 1, ESCORT: 1, GUARD: 
 
 const MIL_SPEED_FRACTION = 0.78;
 const MIL_ACCEL_FRACTION = 0.55;
+
+/**
+ * 燃料の減り方（巡航・中高度・空荷を 1 とした倍率）。`fuelRate` が使う。
+ * 資料画面（§93.13）が文にするので名前を付けて出す。
+ */
+export const FUEL_AB_RATE = 3;                      // アフターバーナーを焚いているあいだ
+export const FUEL_HIGH = { alt: 6000, rate: 0.7 };  // これより高いと減りが遅い
+export const FUEL_LOW = { alt: 1000, rate: 1.4 };   // これより低いと減りが速い
+/**
+ * 積んだ重さ（`loadoutSlots`）が機体の基準（`spec.loadCapacity`）に達したときの代償。
+ * **基準は上限ではない** —— 積める数を決めるのは枠の本数（`loadoutFits`）で、
+ * 基準を超えて積めばそのぶん比例して重くなる。
+ */
+export const LOAD_FUEL_PENALTY = 0.3;               // 燃料の減りが +30%
+export const LOAD_TURN_PENALTY = 0.25;              // 旋回率が −25%
+
+/**
+ * 上下の加速度の上限（§99・SPEC §2.1.1）。単位は g。
+ *
+ * - `pullG`: ふだんの上限。上昇率はこの加速度でしか変わらず、目標高度の手前から
+ *   止まれる速さに落として行き過ぎない。null にすると §99 以前（上昇率が1刻みで
+ *   切り替わり、機首が跳ぶ）に戻る
+ * - `escapeG`: 地形回避中・地形の床より下にいる間の上限（強く引き起こす）
+ * - `deepBelow`: 床からこれ(m)以上下にいたら上限を外す。旋回中に横の丘へ向き直った
+ *   ときなど先読みが遅れた場面で、見た目より墜ちないことを優先する
+ *
+ * A/B のため書き換えられるオブジェクトにしてある。
+ */
+export const VERTICAL = { pullG: 3, escapeG: 6, deepBelow: 150 };
 
 /** 帰投中の巡航高度と、上げてよい条件（§29.5） */
 const RTB_CRUISE_ALT = 8000;
@@ -228,6 +276,8 @@ export class Aircraft extends Unit {
     // 見た目用（描画側が参照する）
     this.roll = 0;
     this.pitch = 0;
+    /** 上昇率(m/s)。`VERTICAL.pullG` が入っているときだけ前の刻みの値として使う */
+    this.vs = 0;
     /** 実際の旋回率(rad/s)。毎ステップ更新する */
     this.turnRate = 0;
     /**
@@ -277,7 +327,10 @@ export class Aircraft extends Unit {
     this._decoyTimer = 0;
     /** デコイを自動で撒くか（§9.5）。兵装の自動使用と同じ扱いの独立トグル */
     this.autoDecoy = true;
-    /** いまビーム機動中か（§28.6 の低空ノッチ判定が読む） */
+    /**
+     * いまビーム機動中か。読むのはチャフの門（§46）だけ ——
+     * ノッチの効き（`notchQuality`）は旗ではなく幾何で見る（§94.4）
+     */
     this.beaming = false;
     this.evading = false;
     /** 背を向けて離れている最中か（§37.3）。表示と計測のため */
@@ -290,6 +343,11 @@ export class Aircraft extends Unit {
 
     /** ミサイル誘導中でも回避機動を取るか（false なら誘導を優先して耐える） */
     this.evadeWhileGuiding = true;
+    /**
+     * 爆弾の入り方（§95）。'level' は水平爆撃、'toss' は低く入って投げ上げる。
+     * プレイヤーが機体ごとに選ぶ。司令官AI・敵は触らない。
+     */
+    this.bombProfile = 'level';
     /** プレイヤーが指定した使用兵装。null ならAIが選ぶ。 */
     this.selectedWeapon = null;
     /** プレイヤーの射撃指示 [{weapon, target}]。攻撃目標は変えずに撃つ。 */
@@ -557,6 +615,7 @@ export class Aircraft extends Unit {
         glideAlt = Math.max(glideAlt, Math.max(0, ahead) + 150);
       }
       const vs = clamp((glideAlt - this.pos.y) * 0.8, -55, 45);
+      this.vs = vs;
       this.pos.y += vs * dt;
       this.pitch = Math.atan2(vs, Math.max(40, this.speed));
 
@@ -619,6 +678,7 @@ export class Aircraft extends Unit {
       this.speed += 6 * dt;
       const climb = this.spec.climbRate * 0.55;
       this.pos.y += climb * dt;
+      this.vs = climb;
       this.pitch = Math.atan2(climb, Math.max(40, this.speed));
       if (this.pos.y - ground > 180) {
         this.state = 'flying';
@@ -728,7 +788,7 @@ export class Aircraft extends Unit {
 
     const hpFactor = 0.6 + 0.4 * (this.hp / this.maxHp);
     // ハードポイント0の機体（早期警戒機）でゼロ除算しないよう下限を置く
-    const loadFactor = 1 - 0.25 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.loadCapacity));
+    const loadFactor = 1 - LOAD_TURN_PENALTY * (loadoutSlots(this.loadout) / Math.max(1, this.spec.loadCapacity));
     return Math.min(structural, lift) * hpFactor * loadFactor;
   }
 
@@ -765,6 +825,14 @@ export class Aircraft extends Unit {
    */
   get altitudeMaxSpeed() {
     return this.spec.maxSpeed * maxSpeedFactor(this.pos.y);
+  }
+
+  /**
+   * いまの速度で出せる上昇率の上限(m/s)。遅いほど登れない。
+   * `_integrate` と、トスの「いま上げたら届く距離」（`acm.js` の `tossRange`）が読む。
+   */
+  get climbCap() {
+    return this.spec.climbRate * clamp(this.speed / this.spec.cruiseSpeed, 0.35, 1.2);
   }
 
   /** ミリタリー推力（AB無し）で出せる水平最大速度(m/s) */
@@ -831,6 +899,11 @@ export class Aircraft extends Unit {
     let desiredHeading = this.heading;
     let desiredAlt = this.desiredAlt;
     let desiredSpeed = this.spec.cruiseSpeed;
+    // 床に見込む上昇の余地（`_terrainScan`）。トスの進入・離脱（§95.9）と掃射の進入（§96）が立てる。
+    // creditFrom は余地を見込み始める距離（掃射は目標までの距離）
+    let climbCredit = 0;
+    let creditFrom = 0;
+    let strafeCredit = false;
 
     switch (o.type) {
       case 'move': {
@@ -981,11 +1054,69 @@ export class Aircraft extends Unit {
         // 対地攻撃の大半（SAM陣地・建物）の飛び方は変わらない。
         const runAim = this.loadout.includes('BOMB') && t.speed > 0
           ? bombAimPoint(this, t, aim) : aim;
+
+        // **トス爆撃**（§95）。プレイヤーが選んだ機体だけ。
+        //
+        // 放す瞬間は投下の判定（`combat.js`）が決める。ここは上げる距離と離れ方だけ。
+        // 爆弾が尽きても**離れきるまではこの飛び方を続ける** —— 投げた直後に
+        // 下の掃射へ切り替わると、守られた目標へ向き直って降りていく。
+        if (this.bombProfile === 'toss' && (this.loadout.includes('BOMB') || this._tossEgress)) {
+          // **投射の床**（§95.9）: 投げた弾が目標を囲む地形を越えられる高さ。
+          // 低く入るぶん、この高さより下から投げると弾が谷の縁に当たる。
+          let clear = null;
+          if (this.loadout.includes('BOMB')) {
+            this._tossClearT = (this._tossClearT ?? 0) - dt;
+            if (this._tossClearT <= 0 || this._tossClearFor !== t) {
+              this._tossClear = tossClearAlt(this, runAim, world.terrain, WEAPONS.BOMB.blastRadius);
+              this._tossClearFor = t;
+              this._tossClearT = TOSS_CLEAR_INTERVAL;
+            }
+            clear = this._tossClear;
+          }
+          const run = tossAttackRun(this, t, runAim, WEAPONS.BOMB.blastRadius, clear?.alt);
+          desiredHeading = run.heading;
+          this.attackRun = run.phase;
+          // **進入と離脱は低く飛ぶ**（§95.9）—— 床に上昇の余地を見込む。
+          // 今までの床は先読みの最高点＋220m で、稜線のずっと手前から稜線の上を飛び、
+          // 高所の SAM から見えていた。機首上げは登るのが目的なので見込まない。
+          if (run.phase !== 'pull') climbCredit = TOSS.climbCredit;
+          const floor = this._terrainFloor(world, desiredHeading, climbCredit) + 300;
+          if (run.phase === 'pull') {
+            desiredAlt = this.pos.y + TOSS_PULL_ALT;
+          } else {
+            // プレイヤーが高度を指定していればその高さで入る（§62）
+            desiredAlt = o.alt ?? this.commandedAlt ?? Math.max(t.pos.y + TOSS_INGRESS_ALT, floor);
+            if (run.phase === 'out') desiredAlt = Math.max(desiredAlt, floor);
+          }
+          // **投げる手前で投射の床まで上がる**（ポップアップ・§95.9）。上がるのに要る距離の手前から。
+          // 一度上がり始めたら機首上げまで下げない —— 近づくほど要る距離が縮むので、
+          // 距離だけで決めると上がっては下がるを繰り返す。
+          // 高度指示より優先する（機首上げが指示を見ないのと同じく、投げる動作の一部）。
+          if (run.phase !== 'in') this._tossPopped = false;
+          else if (clear) {
+            const climbDist = Math.max(0, clear.alt - this.pos.y)
+              / Math.max(20, this.climbCap * 0.8) * Math.max(50, this.speed);
+            if (run.flat < clear.range + climbDist + TOSS_POPUP_PAD) this._tossPopped = true;
+            if (this._tossPopped) desiredAlt = Math.max(desiredAlt, clear.alt);
+          }
+          // 速いほど遠くへ投げられる（水平爆撃の「窓が短くなる」とは逆）
+          desiredSpeed = this.altitudeMaxSpeed * 0.92;
+          break;
+        }
+
         const run = groundAttackRun(this, t, runAim);
         desiredHeading = run.heading;
         this.attackRun = run.phase;
         const egress = run.phase === 'out';
         const flat = run.flat;
+        // 掃射の進入では、目標より先の地形にだけ上昇の余地を見込む（§96）。
+        // 先読みが目標の先の丘まで拾うと、道筋より上へ持ち上げられて機首が下を向かない。
+        // 目標の上を過ぎてから登り始める前提なので、目標の手前は今までの床のまま。
+        if (!egress && !this.loadout.includes('BOMB')) {
+          climbCredit = STRAFE_CLIMB_CREDIT;
+          creditFrom = flat;
+          strafeCredit = true;
+        }
 
         // 「爆弾を積んでいれば投下高度を保つ」「そうでなければ降りて掃射する」。
         if (o.alt != null || this.commandedAlt != null) {
@@ -1003,7 +1134,7 @@ export class Aircraft extends Unit {
           // 水平飛行のまま近づくと、目標が真下に来て機首が向かず撃てない。
           desiredAlt = flat < 6000
             ? t.pos.y + clamp(flat * 0.18, 120, 900)
-            : Math.max(t.pos.y + 900, this._terrainFloor(world, desiredHeading) + 300);
+            : Math.max(t.pos.y + 900, this._terrainFloor(world, desiredHeading, climbCredit, creditFrom) + 300);
         }
         // 離脱中は目標ではなく**進む先**の地面を見る。
         // 掃射の高度は目標からの距離で決まるので、離れる向きに山があると
@@ -1127,6 +1258,16 @@ export class Aircraft extends Unit {
     if (this.manual) {
       const m = this.threats[0];
       if (m && m.alive) {
+        // **手動機は戦法を選ばないので、旗を幾何から立てる**（§94）。
+        // §46 の門は「効く機動に入っているか」を `_evade` の旗で見るが、
+        // 手動機は `_evade` を通らないので旗が一度も立たず、チャフを1枚も撒かなかった。
+        // 角度は効きの側（`chaffScreen`・`notchQuality`）の門と同じにする ——
+        // 「効く向きのときだけ撒く」が手動機でもそのまま成り立つ。
+        const src = this._illuminatorOf(m) || m;
+        const off = Math.abs(angleDiff(
+          headingOf(this.pos.x - src.pos.x, this.pos.z - src.pos.z), this.heading));
+        this.running = off <= SCREEN_TOLERANCE;
+        this.beaming = Math.abs(off - Math.PI / 2) <= NOTCH_TOLERANCE;
         const d = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
         this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed));
       }
@@ -1137,6 +1278,9 @@ export class Aircraft extends Unit {
       desiredHeading = evade.heading;
       desiredAlt = evade.alt;
       desiredSpeed = evade.speed;
+      // 掃射の余地は「目標へ向かって降り、目標の上を過ぎてから登る」前提（§96）。
+      // 回避で針路が変わればその前提が無いので、今までの床に戻す（測っていない）
+      if (strafeCredit) { climbCredit = 0; creditFrom = 0; }
     }
 
     // --- 地形回避（さらに優先） ---
@@ -1144,13 +1288,13 @@ export class Aircraft extends Unit {
     // 高度を上げるだけでは足りない場合がある。上昇率の低い機体が急峻な尾根へ
     // 向かうと、機首を上げても物理的に間に合わず山肌に突っ込む。
     // 登り切れないと分かったら、登れる方角へ逃がす。
-    let scan = this._terrainScan(world, desiredHeading);
+    let scan = this._terrainScan(world, desiredHeading, climbCredit, creditFrom);
     const demand = this._climbDemand(scan);
     if (demand > CLIMB_DEMAND_LIMIT) {
       let best = null;
       for (const off of ESCAPE_TURNS) {
         const h = desiredHeading + off;
-        const s2 = this._terrainScan(world, h);
+        const s2 = this._terrainScan(world, h, climbCredit, creditFrom);
         const d = this._climbDemand(s2);
         if (!best || d < best.d) best = { d, h, scan: s2 };
         if (d < CLIMB_DEMAND_LIMIT * 0.6) break;   // 十分に楽な方角が見つかったら打ち切る
@@ -1167,6 +1311,7 @@ export class Aircraft extends Unit {
       this.terrainAvoiding = false;
     }
     const floor = scan.floor;
+    this._altFloor = floor;   // `_integrate` が降下率と引き起こしの強さを決めるのに使う（§99）
     if (desiredAlt < floor) desiredAlt = floor;
     desiredAlt = clamp(desiredAlt, 100, this.spec.ceiling);
 
@@ -1626,15 +1771,20 @@ export class Aircraft extends Unit {
    * 直線で数点だけ見ると、サンプルの隙間にある尾根を跨いでしまって山に突っ込む。
    * 旋回を織り込んだ予測経路に沿って一定距離ごと（LOOK_STEP）に見る。
    */
-  _terrainFloor(world, desiredHeading = this.heading) {
-    return this._terrainScan(world, desiredHeading).floor;
+  _terrainFloor(world, desiredHeading = this.heading, climbCredit = 0, creditFrom = 0) {
+    return this._terrainScan(world, desiredHeading, climbCredit, creditFrom).floor;
   }
 
   /**
    * 先読みの結果。floor は確保すべき高度、dist はその最高点までの距離。
    * dist が要る理由は「登り切れるか」を判断するため。
+   *
+   * `climbCredit` を渡すと、先の地形ほど**そこへ着くまでに登れるぶん**
+   * （`climbCredit × climbRate × 距離/速さ`）を差し引いた床を返す（§95.9・トスの進入と離脱）。
+   * `creditFrom`(m) を渡すと、登り始めるのをその距離の先からと見る（§96・掃射の進入は目標の上から）。
+   * 0 なら今までどおり「最高点＋MIN_AGL」。dist はどちらも生の最高点のまま。
    */
-  _terrainScan(world, desiredHeading = this.heading) {
+  _terrainScan(world, desiredHeading = this.heading, climbCredit = 0, creditFrom = 0) {
     const terrain = world.terrain;
 
     // 先読みの距離は「登り切れるか」で決まる。
@@ -1655,6 +1805,8 @@ export class Aircraft extends Unit {
     let ground = terrain.heightAt(x, z);
     let travelled = 0;
     let peakAt = 0;
+    let credited = Math.max(ground, 0) + MIN_AGL;
+    const creditPerM = climbCredit * this.spec.climbRate / Math.max(50, this.speed);
 
     // 近くは細かく、遠くは粗く見る。遠方は「そこに高い所があるか」だけ分かればよく、
     // 全区間を細かく見るとサンプル数が増えすぎる。
@@ -1669,7 +1821,12 @@ export class Aircraft extends Unit {
       travelled += step;
       const g = terrain.heightAt(x, z);
       if (g > ground) { ground = g; peakAt = travelled; }
+      if (climbCredit > 0) {
+        credited = Math.max(credited,
+          Math.max(g, 0) + MIN_AGL - creditPerM * Math.max(0, travelled - creditFrom));
+      }
     }
+    if (climbCredit > 0) return { floor: credited, dist: peakAt };
     return { floor: Math.max(ground, 0) + MIN_AGL, dist: peakAt };
   }
 
@@ -1711,9 +1868,28 @@ export class Aircraft extends Unit {
 
     // --- 上昇・降下 ---
     const altErr = this.desiredAlt - this.pos.y;
-    const climbCap = this.spec.climbRate * clamp(this.speed / this.spec.cruiseSpeed, 0.35, 1.2);
+    const climbCap = this.climbCap;
     // 上昇は素早く（地形回避が間に合うように）、降下は緩やかに
-    const vs = clamp(altErr > 0 ? altErr * 0.9 : altErr * 0.35, -climbCap * 1.4, climbCap);
+    let vs = clamp(altErr > 0 ? altErr * 0.9 : altErr * 0.35, -climbCap * 1.4, climbCap);
+    if (VERTICAL.pullG != null) {
+      // 地形の床より下・地形回避中は強く引き起こす（地面すれすれの急な引き起こしは実機もやる）
+      const floorY = this._altFloor;
+      const escape = this.terrainAvoiding || (floorY != null && this.pos.y < floorY);
+      // 床から大きく下にいる（旋回中に横の丘へ向き直ったなど、先読みが遅れた）ときは
+      // 制限を外して従来どおり即座に上げる。見た目より墜ちないことを優先する。
+      const deep = floorY != null && this.pos.y < floorY - VERTICAL.deepBelow;
+      const aV = deep ? Infinity
+        : (escape ? Math.max(VERTICAL.pullG, VERTICAL.escapeG) : VERTICAL.pullG) * 9.81;
+      const stop = deep ? Infinity : Math.sqrt(2 * aV * Math.abs(altErr));   // ここから止まれる上昇率
+      vs = clamp(vs, -stop, stop);
+      // 地形の床へは、ふつうの引き起こしで止まれる速さでしか降りない
+      if (floorY != null) {
+        const room = Math.max(0, this.pos.y - floorY);
+        vs = Math.max(vs, -Math.sqrt(2 * VERTICAL.pullG * 9.81 * room));
+      }
+      vs = this.vs + clamp(vs - this.vs, -aV * dt, aV * dt);
+    }
+    this.vs = vs;
     this.pos.y += vs * dt;
     this.pitch = Math.atan2(vs, Math.max(40, this.speed));
 
@@ -1830,15 +2006,21 @@ export class Aircraft extends Unit {
     return true;
   }
 
-  _consumeFuel(dt, world) {
+  /** いまの燃料の減り（秒あたり・巡航で中高度の空荷が 1）。資料画面も読む（§93.13） */
+  get fuelRate() {
     let rate = 1;
     // アフターバーナー（§29.3）。以前は速度で推し量っていたが、
     // 焚いているかどうかそのもので決める。降下で速度が乗っただけの機体が
     // 燃料を3倍で消していた。
-    if (this.abActive) rate *= 3;
-    if (this.pos.y > 6000) rate *= 0.7;
-    else if (this.pos.y < 1000) rate *= 1.4;
-    rate *= 1 + 0.3 * (loadoutSlots(this.loadout) / Math.max(1, this.spec.loadCapacity));
+    if (this.abActive) rate *= FUEL_AB_RATE;
+    if (this.pos.y > FUEL_HIGH.alt) rate *= FUEL_HIGH.rate;
+    else if (this.pos.y < FUEL_LOW.alt) rate *= FUEL_LOW.rate;
+    rate *= 1 + LOAD_FUEL_PENALTY * (loadoutSlots(this.loadout) / Math.max(1, this.spec.loadCapacity));
+    return rate;
+  }
+
+  _consumeFuel(dt, world) {
+    const rate = this.fuelRate;
 
     this.fuel -= rate * dt;
 

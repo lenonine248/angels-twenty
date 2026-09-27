@@ -10,6 +10,7 @@ import {
   createAircraftView, syncAircraftView, aircraftDisplayLength,
   createGroundView, syncGroundView, groundDisplayScale, makeLabelSprite,
 } from './world/models.js';
+import { airfieldPose } from './world/airfieldview.js';
 import { ContactRenderer } from './world/contacts.js';
 import { Effects } from './world/effects.js';
 import { GameLoop, formatTime } from './core/loop.js';
@@ -31,7 +32,7 @@ import { DetectionSystem, Contact, LEVEL } from './sim/detection.js';
 import { CombatSystem } from './sim/combat.js';
 import { resetMissileIds } from './sim/missile.js';
 import { Mission, MISSION, SideObjectives } from './sim/mission.js';
-import { SIDE, resetUnitIds } from './sim/unit.js';
+import { SIDE, resetUnitIds, killedBy, isAlly, isPlayerOwned } from './sim/unit.js';
 import { PilotAI } from './ai/pilot.js';
 import * as tuning from './ui/tuning.js';
 import { isDebug, setDebug } from './core/debug.js';
@@ -119,7 +120,9 @@ async function boot() {
   screens = new ScreenManager({
     progress,
     onStart: (stage, loadouts) => startBattle(stage, loadouts),
-    onStartTutorial: (t) => startBattle(t, null, t),
+    // 種はふつう毎回引く（spread 0 なので配置は揺れない）。**雲の塊の位置は種で決まる**ので、
+    // 雲を手順に使う本は `battleSeed` で固定する（§93.7）
+    onStartTutorial: (t) => startBattle(t, null, t, t.battleSeed),
   });
 
   // ステージエディタ（§66）。試遊はブリーフィングを通さず直接出す ——
@@ -288,6 +291,8 @@ ${err.message}`);
     // 司令官AI（§27）。いまは検証（tools/bench.js）から使う。
     // 敵に付けるかは種を固定して測ってから決める（§27.6）。
     Commander,
+    // 落とした相手（§12.3 の P0）。ベンチの記録が `handleDeaths` と同じものを載せるため
+    killedBy,
     get recording() { return lastRecording; },
     get review() { return review; },
     get replay() { return replay; },
@@ -324,6 +329,9 @@ function fixedUpdate(dt) {
   // 目標が達成された直後の1ステップで、達成済みの目標へ機体を送らないため。
   battle.enemyPlan?.update(dt);
   battle.enemyCommander?.update(dt);
+  // 友軍の司令官（§102）。`stage.ally.objectives` を書いた面でだけ動く。敵と同じ位置・同じ理由
+  battle.allyPlan?.update(dt);
+  battle.allyCommander?.update(dt);
 
   // 記録は**全部が動いたあと**に取る。途中で取ると、
   // 同じ時刻のはずのユニットとコンタクトが1ステップずれる。
@@ -348,7 +356,7 @@ function render(alpha, realDt) {
 
     const focusOn = commands.selection.length
       ? commands.selection
-      : world.units.filter((u) => u.alive && u.side === world.playerSide
+      : world.units.filter((u) => u.alive && isPlayerOwned(u, world)
           && u.kind === 'aircraft' && !u.onGround);
     if (focusOn.length) {
       let sum = 0;
@@ -365,17 +373,22 @@ function render(alpha, realDt) {
     for (const u of world.units) {
       const mine = u.side === world.playerSide;
       const visible = mine || contacts.showsBody(u);
+      // 損傷の煙（effects.js）も本体と同じ条件で描く。煙だけ出ると位置がばれる（§98）
+      u._bodyShown = visible;
       if (u.kind === 'aircraft') {
         // カメラから見て雲の向こうにいるか。**当たり判定と同じ式**を使う
         const hidden = cloudy && visible
           && world.clouds.blocks(scene.camera.position, u.pos);
-        syncAircraftView(u, terrain, size, commands.isSelected(u), visible, hidden);
+        // 飛行場での走行と格納庫（§97）。見た目だけで、sim の位置は変えない
+        const pose = airfieldPose(u, loop.simTime, size);
+        syncAircraftView(u, terrain, size, commands.isSelected(u), visible, hidden, pose);
       } else syncGroundView(u, groundDisplayScale(scene.rig.distance, scene.camera, u.spec.size), visible);
     }
     contacts.update(scene.camera, terrain, size, battle.detection.time);
     scaleObjectiveLabels(battle.objectiveMarkers, scene.camera);
     // 一時停止中は演出も止める（煙だけ流れ続けると停止しているように見えない）
-    world.effects.update(loop.paused ? 0 : realDt, world, size);
+    world.effects.update(loop.paused ? 0 : realDt, world, size,
+      loop.paused ? 0 : realDt * loop.speed);
     commands.update(scene.camera);
   }
 
@@ -384,6 +397,7 @@ function render(alpha, realDt) {
 
   if (battle) {
     minimap.draw();
+    updateCompass();
     hud.update(realDt, loop);
     updateHudBar();
     // 一時停止を覚える手順があるので、ポーズ中も進める
@@ -441,7 +455,8 @@ function updateAudio(realDt) {
   let alarm = 0;
   const mine = [];
   for (const u of world.units) {
-    if (!u.alive || u.side !== world.playerSide || u.kind !== 'aircraft' || u.onGround) continue;
+    // 警報は**プレイヤーの機体だけ**（§102）。友軍が撃たれるたびに鳴ると、自分の機体の危機と区別できない
+    if (!u.alive || !isPlayerOwned(u, world) || u.kind !== 'aircraft' || u.onGround) continue;
     if (u.threats && u.threats.length) { alarm = 2; break; }
     mine.push(u);
   }
@@ -565,11 +580,14 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
      */
     log(msg, unit) {
       if (unit && unit.side !== this.playerSide) return;
-      pushLog(msg);
+      // **友軍の行は頭に「[友軍]」**（§102）。同じ陣営なので出すが、自分の部隊の無線と混ざらないように
+      pushLog(isAlly(unit) ? `[友軍] ${msg}` : msg);
     },
     weaponPoints: stage.weaponPoints,
     weaponPointsMax: stage.weaponPoints,
     enemySkill: stage.enemy?.skill ?? 1,
+    /** 友軍の練度（§102）。友軍の増援が使う。機体ごとの指定が先 */
+    allySkill: stage.ally?.skill ?? 1,
     isVisibleToPlayer(u) {
       return this.detection ? this.detection.isVisible(this.playerSide, u) : true;
     },
@@ -625,11 +643,24 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   const enemyPlan = stage.enemy && stage.enemy.objectives && stage.enemy.objectives.length
     ? new SideObjectives(world, stage.enemy.objectives) : null;
   const enemyCommander = enemyPlan ? new Commander(world, SIDE.RED, enemyPlan) : null;
-  world.spawnReinforcement = (airbase, type, index, tags) =>
-    spawnReinforcement(world, airbase, type, index, tags);
-  for (const { airbase, config } of spawned.reinforcements) {
-    mission.registerReinforcement(airbase, config);
+  /**
+   * **友軍の司令官AI**（§102）。`stage.ally.objectives` を書いた面でだけ動く（Q5）。
+   * 自軍と同じ陣営で探知を共有し、`owner: 'ally'` の機体だけを動かす。
+   */
+  const allyDef = stage.ally || null;
+  const allyPlan = allyDef && allyDef.objectives && allyDef.objectives.length
+    ? new SideObjectives(world, allyDef.objectives) : null;
+  const allyCommander = allyPlan ? new Commander(world, SIDE.BLUE, allyPlan,
+    { owner: 'ally', escortPlayer: allyDef.escortPlayer !== false, talk: true }) : null;
+  // `loadout` まで渡す —— 以前は5引数で切っていて、**友軍の増援の `reinforce.loadout`（§9.8）が効いていなかった**
+  // （敵の枝は機種の既定を積むので読まない）
+  world.spawnReinforcement = (airbase, type, index, tags, owner, loadout) =>
+    spawnReinforcement(world, airbase, type, index, tags, owner, loadout);
+  for (const { airbase, config, owner } of spawned.reinforcements) {
+    mission.registerReinforcement(airbase, config, owner);
   }
+  mission.enemyBases = spawned.enemyBases;
+  mission.allyBases = spawned.allyBases;
 
   // ブリーフィングで判明していた敵は、開始時から記憶コンタクトとして地図に出す
   seedKnownContacts(world, spawned.known);
@@ -641,10 +672,13 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   world.onFire = (shooter, target, weapon, missile) => {
     world.recorder?.event('fire', loop.simTime,
       { unit: shooter, target, weapon: weapon.id, pos: shooter.pos });
-    if (shooter.side === world.playerSide) {
+    if (isPlayerOwned(shooter, world)) {
       world.log(`${shooter.name} ${weapon.id} 発射`);
       telemetry.markShot(weapon.id);
       notify('fire', { weapon: weapon.id, shooter, target });
+    } else if (isAlly(shooter)) {
+      // 友軍の発射はログにだけ出す（§102）。プレイ記録とチュートリアルの通知はプレイヤーの弾だけ
+      world.log(`${shooter.name} ${weapon.id} 発射`, shooter);
     }
     world.effects.launchFlash(shooter.pos, missile ? missile.dir : null);
     audio.missileLaunch(shooter.pos);
@@ -659,13 +693,13 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   };
   // 増槽の投棄（§32.2）。自分の機体のときだけ知らせる
   world.onTankDropped = (unit) => {
-    if (unit.side === world.playerSide) world.log(`${unit.name} 増槽を投棄`);
+    if (unit.side === world.playerSide) world.log(`${unit.name} 増槽を投棄`, unit);
   };
   world.onMissileHit = (m, target, dist) => {
     world.recorder?.event('hit', loop.simTime,
       { unit: m.launcher, target, weapon: m.weapon.id, pos: m.pos,
         label: dist != null && dist > 25 ? '至近弾' : '直撃' });
-    if (m.side === world.playerSide) telemetry.markHit(m.weapon.id);
+    if (m.side === world.playerSide && !isAlly(m.launcher)) telemetry.markHit(m.weapon.id);
   };
   // 機銃は実体弾（§22.2）。曳光は毎フレーム弾の位置から描かれるので、
   // ここでやるのは当たった瞬間の火花と音だけ。
@@ -791,8 +825,9 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
 
   battle = {
     stage, world, terrain, detection: world.detection, combat, pilotAI,
-    mission, enemyPlan, enemyCommander, contacts, objectiveMarkers, finished: false,
-    kills: 0, losses: 0,
+    mission, enemyPlan, enemyCommander, allyPlan, allyCommander, contacts, objectiveMarkers, finished: false,
+    // 損失はプレイヤーの指揮下だけ（評価の練度・§102 Q3）。友軍の損失は別に数えて結果画面に出す
+    kills: 0, losses: 0, allyLosses: 0,
     seed: battleSeed,
     loadouts: (loadouts || []).map((l) => l.slice()),
     // 振り返り用の記録（§23）。チュートリアルでも取る — 手順の検証に使えるため。
@@ -829,7 +864,7 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   if (asTutorial) {
     tutorial = new TutorialRunner(asTutorial, {
       onFinish: () => finishTutorial(),
-      onRestart: () => startBattle(asTutorial, null, asTutorial),
+      onRestart: () => startBattle(asTutorial, null, asTutorial, asTutorial.battleSeed),
     });
   }
 }
@@ -944,6 +979,7 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
       ac.airbase = base;
       ac.patrolArea = { x: ac.pos.x, z: ac.pos.z, alt: ac.pos.y, radius: 4500 };
       applyAutoWeapons(ac, a);
+      applyModes(ac, a);
     } else {
       const ac = world.spawn(new Aircraft({
         type: a.type, name: a.name, side: SIDE.BLUE, loadout,
@@ -954,6 +990,7 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
       ac.state = 'ready';           // ブリーフィングで整備済みとして扱う
       base.queue = base.queue.filter((q) => q !== ac);
       applyAutoWeapons(ac, a);
+      applyModes(ac, a);
     }
   });
 
@@ -969,12 +1006,15 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
 
   // --- 敵 ---
   const e = stage.enemy;
+  /** トリガーの行動が `base` / `base2` の名前で飛行場を引く（§12.3） */
+  const enemyBases = {};
   for (const key of ['base', 'base2']) {
     const b = e[key];
     if (!b) continue;
     const ab = placeAirbase({ name: key === 'base' ? '敵飛行場' : '敵飛行場 2', side: SIDE.RED, ...b });
     if (b.known) known.push(ab);
     if (b.reinforce) reinforcements.push({ airbase: ab, config: b.reinforce });
+    enemyBases[key] = ab;
   }
 
   for (const a of e.aircraft || []) {
@@ -986,7 +1026,10 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
       type: a.type, name: a.name, side: SIDE.RED, tags: a.tags,
       x: ex, z: ez,
       alt: Math.max(0, terrain.heightAt(ex, ez)) + (a.agl || 5000) + jit(SPAWN_SPREAD_ALT),
-      heading: Math.PI + jit(SPAWN_SPREAD_HDG), loadout: a.loadout || defaultEnemyLoadout(a.type),
+      // 機首の向きは既定で真南。**`heading`（ラジアン・`headingOf` の向き）を書けば出現時からそちらを向く**
+      // （§93.12）。w2 の爆撃機は北東へ逃げる的なのに真南で出て、旋回するあいだこちらへ寄ってきていた。
+      // 書いていない面（本編すべて）は今までどおり
+      heading: (a.heading ?? Math.PI) + jit(SPAWN_SPREAD_HDG), loadout: a.loadout || defaultEnemyLoadout(a.type),
       // 練度はステージ既定 → 機体ごとの指定 の順で上書きできる
       skill: a.skill ?? stage.enemy?.skill ?? 1,
     }));
@@ -1048,6 +1091,51 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
     }
   }
 
+  // --- 友軍（§102） ---
+  // **いちばん最後に出す。** ID は出した順に振られ、レーダーの扇の分担と逆探知の誤差に効く ——
+  // 途中に挟むと、友軍を書いていない面まで経過が変わる
+  const al = stage.ally;
+  /** 友軍のトリガーが名前で引く飛行場（§102 A2）。`home` はプレイヤーの飛行場（共用） */
+  const allyBases = { home: base || null, base: null };
+  if (al) {
+    // 友軍専用の飛行場。書かなければ**プレイヤーの飛行場を共用する**（Q4）
+    const allyBase = al.base
+      ? placeAirbase({ name: '友軍飛行場', side: SIDE.BLUE, tags: ['ally-home'], ...al.base, owner: 'ally' })
+      : null;
+    if (allyBase && al.base.known) knownToEnemy.push(allyBase);
+    allyBases.base = allyBase;
+    // 機体ごとに `base: 'home'` と書けばプレイヤーの飛行場から出る
+    const homeOf = (a) => (allyBase && a.base !== 'home' ? allyBase : base);
+    for (const a of al.aircraft || []) {
+      const home = homeOf(a);
+      const loadout = (a.loadout || defaultEnemyLoadout(a.type)).slice();
+      const common = { type: a.type, name: a.name, side: SIDE.BLUE, owner: 'ally', tags: a.tags,
+        loadout, skill: a.skill ?? al.skill ?? 1 };
+      let ac;
+      if (a.x != null && a.z != null) {
+        // 空中で出現する（敵機と同じ書き方・散らばりも同じ）
+        const x = a.x + jit(SPAWN_SPREAD_XZ);
+        const z = a.z + jit(SPAWN_SPREAD_XZ);
+        ac = world.spawn(new Aircraft({ ...common, x, z,
+          alt: Math.max(0, terrain.heightAt(x, z)) + (a.agl || 4000) + jit(SPAWN_SPREAD_ALT),
+          heading: (a.heading ?? Math.PI * 0.35) + jit(SPAWN_SPREAD_HDG) }));
+        ac.airbase = home;
+        ac.patrolArea = { x: ac.pos.x, z: ac.pos.z, alt: ac.pos.y, radius: 4500 };
+      } else {
+        // 飛行場で待機する（整備済み）。発進は友軍の司令官が決める
+        ac = world.spawn(new Aircraft({ ...common, x: home.pos.x, z: home.pos.z, alt: home.pos.y }));
+        ac.baseLoadout = loadout.slice();
+        home.onArrive(ac);
+        ac.state = 'ready';
+        home.dropFromService(ac);
+      }
+      prepareAlly(ac, a, loadout);
+    }
+    // 友軍の増援（敵の増援と同じ書き方）。専用の飛行場があればそこ、無ければ共用の飛行場から
+    const rf = al.reinforce || (al.base && al.base.reinforce);
+    if (rf) reinforcements.push({ airbase: allyBase || base, config: rf, owner: 'ally' });
+  }
+
   // 爆撃機の攻撃目標を解決する
   for (const u of world.units) {
     if (!u._strikeTargetTag) continue;
@@ -1055,7 +1143,22 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
     if (t) { u.strikeTarget = t; u.aiMode = 'STRIKE'; }
   }
 
-  return { known, knownToEnemy, reinforcements };
+  return { known, knownToEnemy, reinforcements, enemyBases, allyBases };
+}
+
+/**
+ * 友軍機の共通の下ごしらえ（§102）。空中出現・飛行場待機・増援のどれからも呼ぶ。
+ *
+ * - **選べない**（§80.4 の `commandable` の経路。一覧では「友軍」と出す）
+ * - **積み直しは離陸時の搭載へ戻す**（`plannedLoadout`）。ポイントは引かない（`airbase.js`）
+ */
+function prepareAlly(ac, def, loadout) {
+  ac.commandable = false;
+  ac.plannedLoadout = loadout.slice();
+  ac.aiMode = def.aiMode || 'PATROL';
+  if (ac.aiMode === 'GUARD') ac.guardHome = true;
+  ac.radarMode = def.radarMode || 'auto';
+  applyAutoWeapons(ac, def);
 }
 
 /**
@@ -1070,6 +1173,18 @@ function spawnStage(world, stage, loadouts, terrain, asTutorial) {
 function applyAutoWeapons(ac, def) {
   if (!def.autoWeapons) return;
   for (const [id, on] of Object.entries(def.autoWeapons)) ac.autoWeapons[id] = on;
+}
+
+/**
+ * 自軍機の AIモードとレーダーをステージ定義から入れる（§93.7）。
+ *
+ * 敵側（`e.aircraft` のループ）には元から配線があったが、自軍側には無く、
+ * チュートリアルは手順の `check` の中で代入していた。**書かなければ既定のまま**
+ * （AIモードは哨戒・レーダーは自動）なので、本編の面には影響しない。
+ */
+function applyModes(ac, def) {
+  if (def.aiMode) ac.aiMode = def.aiMode;
+  if (def.radarMode) ac.radarMode = def.radarMode;
 }
 
 /** ブリーフィングで判明していた敵を、記憶コンタクトとして地図に載せる */
@@ -1095,7 +1210,22 @@ function seedKnownContacts(world, units, side = world.playerSide) {
  * 目標上空へ飛んで対空砲に落ちるだけになる（実際そうなっていた）。
  */
 /** 敵飛行場からの増援 */
-function spawnReinforcement(world, airbase, type, index, tags) {
+function spawnReinforcement(world, airbase, type, index, tags, owner, loadout) {
+  // **友軍の増援**（§102）。敵の増援と同じ時計で湧き、友軍の司令官の指揮下に入る
+  if (owner === 'ally') {
+    const lo = (loadout || defaultEnemyLoadout(type)).slice();
+    const ac = world.spawn(new Aircraft({
+      type, name: `友軍増援 ${index}`, side: airbase.side, owner: 'ally', tags, loadout: lo,
+      x: airbase.pos.x, z: airbase.pos.z, alt: airbase.pos.y, skill: world.allySkill ?? 1,
+    }));
+    ac.baseLoadout = lo.slice();
+    airbase.onArrive(ac);
+    ac.state = 'ready';
+    airbase.dropFromService(ac);
+    prepareAlly(ac, {}, lo);
+    airbase.launch(ac, world);
+    return;
+  }
   const ac = world.spawn(new Aircraft({
     type, name: `増援 ${index}`, side: airbase.side, tags,
     x: airbase.pos.x, z: airbase.pos.z, alt: airbase.pos.y,
@@ -1166,6 +1296,8 @@ function finishBattle() {
         time: formatTime(loop.simTime),
         kills: battle.kills,
         losses: battle.losses,
+        // 友軍を置いた面だけ（§102）。評価には入らない
+        allyLosses: stage.ally ? battle.allyLosses : null,
         points: world.weaponPoints,
         rating,
         best: bestBefore,
@@ -1185,11 +1317,17 @@ function handleDeaths(world) {
     u._deathHandled = true;
     const mine = u.side === world.playerSide;
 
+    // 誰が・何で落としたか（§12.3 の P0）。地形・燃料・撤退は `cause` が言うので載せない
+    const hit = killedBy(u);
     telemetry.mark(u.deathCause === 'withdraw' ? 'withdraw' : (mine ? 'loss' : 'kill'),
-      loop.simTime, u, { cause: u.deathCause || '被弾', kind: u.kind });
+      loop.simTime, u, { cause: u.deathCause || '被弾', kind: u.kind,
+        ...(isAlly(u) ? { owner: 'ally' } : {}),       // 友軍の損失は評価に入らない（§102）。記録では見分けられるように
+        ...(hit ? {
+        by: hit.by.name, byType: hit.by.typeId || hit.by.type || hit.by.kind, weapon: hit.weapon } : {}) });
     battle?.recorder?.event(
       u.deathCause === 'withdraw' ? 'withdraw' : (mine ? 'loss' : 'kill'),
-      loop.simTime, { unit: u, pos: u.pos, cause: u.deathCause || '被弾' });
+      loop.simTime, { unit: u, pos: u.pos, cause: u.deathCause || '被弾',
+        by: hit && hit.by, weapon: hit && hit.weapon });
 
     // 戦域離脱は撃墜ではない。爆発も戦果カウントもしない。
     if (u.deathCause === 'withdraw') {
@@ -1204,15 +1342,26 @@ function handleDeaths(world) {
     // 「記憶している目標を攻撃したが、当たったか分からない」（§3）という
     // せっかくの状態が、爆発が上がるかどうかで**一目でばれていた**。
     if (mine || playerSees(world, u)) {
-      world.effects.explosion(u.pos, air ? 420 : 520, air ? 'air' : 'ground');
-      if (air) {
+      if (air && u.deathCause === 'fuel' && !u.onGround) {
+        // 燃料切れは数秒直進 → 射出 → 墜落 → 爆発（§100）。**撃墜の確定は今この瞬間のまま**で、
+        // 絵だけが遅れて落ちる（戦果・ログ・勝敗は下で今すぐ数える）。
+        // 爆発と残骸は、墜落機が地面に着いたときに effects.js が出す
+        world.effects.fuelCrash(u);
+      } else if (air) {
+        world.effects.explosion(u.pos, 420, 'air');
         u.forward(_deathVel).multiplyScalar(u.speed);
         world.effects.wreck(u.pos, _deathVel, 'aircraft');
       } else {
+        world.effects.explosion(u.pos, 520, 'ground');
         world.effects.wreck(u.pos, null, 'ground');
       }
     }
-    if (battle) { if (mine) battle.losses++; else battle.kills++; }
+    // 友軍の損失は評価の練度に入れない（§102・Q3）。結果画面に別の行で出す
+    if (battle) {
+      if (!mine) battle.kills++;
+      else if (isAlly(u)) battle.allyLosses++;
+      else battle.losses++;
+    }
     const cause = u.deathCause === 'fuel' ? '燃料切れ'
       : u.deathCause === 'terrain' ? '地形衝突' : '撃破';
 
@@ -1220,7 +1369,7 @@ function handleDeaths(world) {
     // 出すと「戦果が出た＝そこに敵がいた」と分かってしまい、フォグ・オブ・ウォーが崩れる。
     // 勝敗判定は内部の真の状態で行うので、ログを出さなくてもクリア判定には影響しない（§12）。
     if (mine || playerSees(world, u)) {
-      world.log(`${mine ? '【損失】' : '【戦果】'} ${u.name} ${cause}`);
+      world.log(`${mine ? (isAlly(u) ? '[友軍]【損失】' : '【損失】') : '【戦果】'} ${u.name} ${cause}`);
       audio.radio(mine ? 'bad' : 'good');
     }
   }
@@ -1284,7 +1433,7 @@ function renderObjectives() {
   // 飛行場で待機している間じゅう「全機発進」が出ていた。押すと
   // `u.airbase.launch()` がそのまま通り、**敵の増援を発進させていた**。
   const ready = battle.world.units.filter(
-    (u) => u.state === 'ready' && u.side === battle.world.playerSide).length;
+    (u) => u.state === 'ready' && isPlayerOwned(u, battle.world)).length;   // 友軍は数えない（§102）
   // 内容が変わらないうちは作り直さない（作り直すとホバー中のボタンが点滅する）
   //
   // **鍵に見出しそのものを入れる。** 状態だけで作っていたので、
@@ -1311,6 +1460,7 @@ function setupPauseMenu() {
   // 常に動かし直すと、自分で止めてから Esc を押した人の状態を勝手に解いてしまう。
   let wasPaused = false;
   const edBtn = menu.querySelector('[data-menu="editor"]');
+  const selBtn = menu.querySelector('[data-menu="select"]');
   const open = () => {
     if (!battle || battle.finished) return;
     wasPaused = loop.paused;
@@ -1320,6 +1470,11 @@ function setupPauseMenu() {
     if (edBtn) {
       const custom = isDebug() && battle.stage && battle.stage.custom;
       edBtn.classList.toggle('hidden', !custom);
+    }
+    // 戻り先の名前（行き先は下の 'select' と同じ判断）
+    if (selBtn) {
+      selBtn.textContent = !tutorial ? 'ステージモードに戻る'
+        : screens._refFrom ? '資料に戻る' : 'チュートリアル一覧に戻る';
     }
     menu.classList.remove('hidden');
   };
@@ -1357,7 +1512,7 @@ function setupPauseMenu() {
         break;
       case 'select':
         leave();
-        if (asTutorial) screens.showTutorialSelect(); else screens.showStageSelect();
+        if (asTutorial) screens.backFromTutorial(); else screens.showStageSelect();
         break;
       case 'editor':
         if (!isDebug() || !stage) break;
@@ -1469,7 +1624,8 @@ function setupTimeControls() {
     if (e.target && e.target.id === 'launchAll' && battle) {
       let launched = false;
       for (const u of battle.world.units) {
-        if (u.side !== battle.world.playerSide) continue;
+        // 友軍機は友軍の司令官が出す（§102）。押しても動かさない
+        if (!isPlayerOwned(u, battle.world)) continue;
         if (u.state === 'ready' && u.airbase) { u.airbase.launch(u, battle.world); launched = true; }
       }
       if (launched) notify('takeoff', {});
@@ -1495,6 +1651,32 @@ function setupTimeControls() {
 }
 
 // ================================================================ ミニマップ
+
+/**
+ * 方位盤（§98）。視点の向きに合わせて N を回す。
+ *
+ * カメラは注視点から (sin az, cos az) の側に立つので、見ている向きの方位は −az
+ * （ワールドの −Z が北・`headingOf` と同じ）。画面の上＝見ている向きなので、
+ * 北は画面上で −(−az) = az だけ時計回りに回った所にある。
+ * クリックで北を上（az を 2π の倍数）に戻す。一番近い倍数へ寄せて、何周も回さない。
+ */
+const compass = { rose: null, deg: NaN };
+function updateCompass() {
+  if (!compass.rose) {
+    compass.rose = el('compassRose');
+    if (!compass.rose) return;
+    el('compass').addEventListener('click', () => {
+      const r = scene.rig;
+      r.azimuth -= Math.atan2(Math.sin(r.azimuth), Math.cos(r.azimuth));
+    });
+  }
+  // 描いている向き（なめらかに追う側）に合わせる。目標の向きに合わせると盤だけ先に回る
+  const az = scene.rig._azimuth ?? scene.rig.azimuth;
+  const deg = Math.round(az * 1800 / Math.PI) / 10;
+  if (deg === compass.deg) return;
+  compass.deg = deg;
+  compass.rose.setAttribute('transform', `rotate(${deg})`);
+}
 
 class Minimap {
   constructor(canvas, terrain, rig, world, cmds, stage) {
@@ -1567,7 +1749,7 @@ class Minimap {
     for (const u of this.world.units) {
       if (!u.alive || u.side !== this.world.playerSide) continue;
       const x = (u.pos.x / MAP_SIZE) * W, y = (u.pos.z / MAP_SIZE) * H;
-      ctx.fillStyle = u.kind === 'aircraft' ? '#3d9bff' : '#4fc3ff';   // §80.9
+      ctx.fillStyle = u.kind === 'aircraft' ? (isAlly(u) ? '#45d97a' : '#3d9bff') : '#4fc3ff';   // §80.9・友軍機は緑（§102）
       ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
       if (this.commands.isSelected(u)) {
         ctx.strokeStyle = '#ffb648';

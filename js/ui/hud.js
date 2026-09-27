@@ -10,6 +10,7 @@ import { formatTime } from '../core/loop.js';
 import { altitudeProfile } from '../core/atmosphere.js';
 import { WEAPONS, loadoutCost, loadoutFits } from '../data/weapons.js';
 import { AI_MODES } from '../ai/pilot.js';
+import { FUEL_AB_RATE } from '../sim/aircraft.js';
 import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
 import { notify } from './actions.js';
 import { loadoutRow, removeOne, pylonLabel, LOADOUT_HINT } from './loadout.js';
@@ -17,7 +18,7 @@ import { loadoutRow, removeOne, pylonLabel, LOADOUT_HINT } from './loadout.js';
 const REFRESH_INTERVAL = 1 / 10;
 
 /** 詳細パネルに並べるAIモード */
-const MODE_BUTTONS = ['PATROL', 'PURSUIT', 'COORDINATE', 'EVADE', 'ESCORT', 'STRIKE', 'MANUAL'];
+export const MODE_BUTTONS = ['PATROL', 'PURSUIT', 'COORDINATE', 'EVADE', 'ESCORT', 'STRIKE', 'MANUAL'];
 
 const ORDER_LABEL = {
   move: '移動', orbit: '待機旋回', attack: '攻撃', follow: '随伴', hold: '保持',
@@ -34,31 +35,33 @@ const STATE_LABEL = {
  * ボタンから指示する手段が無かった**（Z/X で刻むしかなかった）。
  * 機種ごとの上昇限度は `_altButtons` が末尾に足す。
  */
-const ALT_PRESETS = [[600, '低空'], [2000, '中低'], [4000, '中高'], [7000, '高々度'], [10000, '超高']];
+export const ALT_PRESETS = [[600, '低空'], [2000, '中低'], [4000, '中高'], [7000, '高々度'], [10000, '超高']];
 
 /** 上昇限度のボタンを足す下限(m)。これ以下だと「超高」とほぼ重なる */
-const CEILING_BUTTON_MIN = 10500;
+export const CEILING_BUTTON_MIN = 10500;
 
 /**
  * 機体ごとの設定の選択肢。**単機のパネルと複数機のパネルで同じものを使う**（§76）。
  * 2か所に書くと、片方だけ増えたときに気づけない。
  */
-const RADAR = [
+export const RADAR = [
   ['auto', '自動', '敵機を1機も掴んでいないときは探すために出す。'
     + '掴んだら黙って詰める。交戦・誘導中と、相手のレーダー圏内では出したまま'],
   ['on', '常時ON', '常に出す。遠くまで見えるが、遠くから見つかる'],
-  ['off', '常時OFF', '出さない。目視と逆探知だけになり、AAM-M と AAM-A が撃てない'],
+  ['off', '常時OFF', '出さない。目視と逆探知だけになり、AAM-M が撃てない（AAM-A は僚機が捉えていれば撃てる）'],
 ];
-const AB = [
+export const AB = [
   ['save', '温存', '巡航を保つ。ミサイルから逃げるときだけ焚く'],
   ['normal', '標準', '敵機と交戦するときに焚く。移動や対地では焚かない'],
-  ['max', '全力', '効くなら焚く。燃料の減りは受け入れる（消費3倍）'],
+  ['max', '全力', `効くなら焚く。燃料の減りは受け入れる（消費${FUEL_AB_RATE}倍）`],
 ];
-const THRESHOLD = [
+export const THRESHOLD = [
   ['low', '低', 'この期待度を下回るとAIは自動発射しない'],
   ['mid', '中', 'この期待度を下回るとAIは自動発射しない'],
   ['high', '高', 'この期待度を下回るとAIは自動発射しない'],
 ];
+/** 爆弾の入り方の説明（§95）。単機と複数機のパネルで同じ文を使う */
+const TOSS_TIP = '水平: 目標の上を通って落とす／トス: 低く速く入り、手前で機首を上げて投げ上げ、上を通らずに引き返す';
 
 /**
  * 選んでいる機体すべてで揃っている値。**揃っていなければ null**（§76）。
@@ -83,7 +86,31 @@ export class Hud {
     this._detailKey = null;
     this._d = {};          // 詳細パネルの数値要素キャッシュ
 
+    /**
+     * 友軍の段を開いているか（§102・プレイヤーの声）。**既定は畳む** ——
+     * 友軍を全部並べると指揮下の機体が埋もれる。開閉は見る人ごとの好みなので localStorage に残す
+     */
+    this._allyOpen = false;
+    /** 畳んでいる編隊の `formation.id`。編隊は戦闘の中で組み替わるので、残さず戦闘ごとに捨てる */
+    this._fmClosed = new Set();
+    try { this._allyOpen = localStorage.getItem('at.rosterAllyOpen') === '1'; } catch (_) { /* 無くてよい */ }
+
     this.roster.addEventListener('mousedown', (e) => {
+      const fmHead = e.target.closest('.roster-fm');
+      if (fmHead) {
+        const id = Number(fmHead.dataset.fm);
+        if (this._fmClosed.has(id)) this._fmClosed.delete(id); else this._fmClosed.add(id);
+        this._rosterKey = null;
+        this._renderRoster();
+        return;
+      }
+      if (e.target.closest('.roster-sep.ally-toggle')) {
+        this._allyOpen = !this._allyOpen;
+        try { localStorage.setItem('at.rosterAllyOpen', this._allyOpen ? '1' : '0'); } catch (_) { /* 無くてよい */ }
+        this._rosterKey = null;
+        this._renderRoster();
+        return;
+      }
       const row = e.target.closest('.unit-row');
       if (!row) return;
       const u = this.world.units.find((x) => x.id === Number(row.dataset.id));
@@ -156,6 +183,13 @@ export class Hud {
       if (guard) {
         this._toggleAll((u) => !!u.evadeWhileGuiding, (u, v) => { u.evadeWhileGuiding = v; });
         notify('guard', {});
+        this._detailKey = null;
+        return;
+      }
+      // 爆弾の入り方（§95）。水平 / トス
+      const toss = e.target.closest('button[data-toss]');
+      if (toss) {
+        this._toggleAll((u) => u.bombProfile === 'toss', (u, v) => { u.bombProfile = v ? 'toss' : 'level'; });
         this._detailKey = null;
         return;
       }
@@ -288,15 +322,33 @@ export class Hud {
     this._rosterKey = null;
     this._detailKey = null;
     this._d = {};
+    this._fmClosed = new Set();
     this._accum = 99;          // 次のフレームで必ず描く
   }
 
   // -------------------------------------------------------------- ロースター
 
   _renderRoster() {
-    const mine = this.world.units.filter(
-      (u) => u.side === this.world.playerSide && u.kind === 'aircraft');
-    if (!mine.length) {
+    // **友軍は別の段に**（§102）。指揮下の機体を上に、友軍（操作不可）をその下へ並べる
+    const own = this.world.units.filter(
+      (u) => u.side === this.world.playerSide && u.kind === 'aircraft' && u.owner !== 'ally');
+    const allies = this.world.units.filter(
+      (u) => u.side === this.world.playerSide && u.kind === 'aircraft' && u.owner === 'ally');
+    // **編隊ごとにまとめる**（プレイヤーの声）。編隊は最初の機体の位置に見出しを立て、
+    // 編隊に入っていない機体はそのまま1行ずつ。畳んだ編隊の機体は行を作らない
+    const groups = [];
+    const seen = new Set();
+    for (const u of own) {
+      const f = u.formation;
+      if (!f) { groups.push({ f: null, list: [u] }); continue; }
+      if (seen.has(f.id)) continue;
+      seen.add(f.id);
+      groups.push({ f, list: own.filter((x) => x.formation === f) });
+    }
+    const shown = groups.flatMap((g) => (g.f && this._fmClosed.has(g.f.id) ? [] : g.list));
+    // 畳んでいる間は友軍の行を作らない（数値の更新も要らない）
+    const mine = this._allyOpen ? shown.concat(allies) : shown;
+    if (!mine.length && !allies.length) {
       if (this._rosterKey !== 'empty') {
         this.roster.innerHTML = '<div class="panel-empty">機体なし</div>';
         this._rosterKey = 'empty';
@@ -309,10 +361,19 @@ export class Hud {
     // 入れないまま値の更新もしないと、指示を変えても表示が古いまま残る（実際に起きた）。
     const key = mine.map((u) => `${u.id}${u.alive ? 1 : 0}${u.state}${u.radarActive ? 1 : 0}${this.commands.isSelected(u) ? 1 : 0}`
       + `${u.aiMode}${u.formation ? u.formation.number + u.formation.shape : 0}`
-      + `${u.threats.length ? 1 : 0}`).join('|');
+      + `${u.threats.length ? 1 : 0}`).join('|')
+      // 畳んだ見出しの機数も構造に入れる（落ちたら書き直す）
+      + `|A${this._allyOpen ? 1 : 0}${allies.length}:${allies.filter((u) => u.alive).length}`
+      // 畳んだ編隊の見出しは、中の機体の生死・選択・被脅威を映す
+      + groups.map((g) => (g.f ? `|F${g.f.id}${this._fmClosed.has(g.f.id) ? 'c' : 'o'}`
+        + g.list.map((u) => `${u.alive ? 1 : 0}${this.commands.isSelected(u) ? 1 : 0}${u.threats.length ? 1 : 0}`).join('') : '')).join('');
     if (key !== this._rosterKey) {
       this._rosterKey = key;
-      this.roster.innerHTML = mine.map((u) => this._rosterRow(u)).join('');
+      this.roster.innerHTML = groups.map((g) => (g.f ? this._fmHead(g.f, g.list) : '')
+        + (g.f && this._fmClosed.has(g.f.id) ? '' : g.list.map((u) => this._rosterRow(u)).join(''))).join('')
+        + (allies.length ? `<div class="roster-sep ally-toggle" title="クリックで${this._allyOpen ? '畳む' : '開く'}">`
+          + `${this._allyOpen ? '▾' : '▸'} 友軍（操作できない） ${allies.filter((u) => u.alive).length}/${allies.length}機</div>`
+          + (this._allyOpen ? allies.map((u) => this._rosterRow(u)).join('') : '') : '');
     }
 
     // 数値だけ毎回更新する
@@ -337,6 +398,16 @@ export class Hud {
     }
   }
 
+  /** 編隊の見出し。押すと畳む／開く。畳んでいても被脅威・選択・生存数は見える */
+  _fmHead(f, list) {
+    const open = !this._fmClosed.has(f.id);
+    const alive = list.filter((u) => u.alive).length;
+    const threat = list.some((u) => u.alive && u.threats.length) ? ' threat' : '';
+    const sel = list.some((u) => this.commands.isSelected(u)) ? ' selected' : '';
+    return `<div class="roster-fm${threat}${sel}" data-fm="${f.id}" title="クリックで${open ? '畳む' : '開く'}">`
+      + `${open ? '▾' : '▸'} ${f.name} ${f.shapeSpec?.label || ''} <span class="rf-n">${alive}/${list.length}機</span></div>`;
+  }
+
   _rosterRow(u) {
     const sel = this.commands.isSelected(u) ? ' selected' : '';
     const dead = u.alive ? '' : ' dead';
@@ -351,9 +422,10 @@ export class Hud {
     const rdr = u.alive && !u.onGround && !u.radarActive
       ? ' · <span class="ur-silent">沈黙</span>' : '';
     // 指揮下にない機体は、押しても選べない理由を書いておく（§80.4）
-    const ward = u.commandable === false
-      ? ' · <span class="ur-ward">指揮下にない</span>' : '';
-    return `<div class="unit-row${sel}${dead}${threat}" data-id="${u.id}">
+    const ward = u.owner === 'ally' ? ' · <span class="ur-ward">友軍</span>'
+      : u.commandable === false ? ' · <span class="ur-ward">指揮下にない</span>' : '';
+    const ally = u.owner === 'ally' ? ' ally' : '';
+    return `<div class="unit-row${sel}${dead}${threat}${ally}" data-id="${u.id}">
       <div class="ur-top"><span class="ur-name">${u.name}</span><span class="ur-state">${state}</span></div>
       <div class="ur-meta"></div>
       <div class="ur-sub">${mode}${fm}${rdr}${ward}</div>
@@ -387,7 +459,8 @@ export class Hud {
         + [common(sel, (u) => u.radarMode), common(sel, (u) => u.abMode || 'normal'),
           common(sel, (u) => u.fireThreshold), common(sel, (u) => !!u.autoDecoy),
           common(sel, (u) => !!u.evadeWhileGuiding),
-          common(sel, (u) => u.autoWeapons.GUN !== false)].join(',');
+          common(sel, (u) => u.autoWeapons.GUN !== false),
+          common(sel, (u) => u.bombProfile + u.loadout.includes('BOMB'))].join(',');
       if (key !== this._detailKey) {
         this._detailKey = key;
         this.detail.innerHTML = `
@@ -410,7 +483,7 @@ export class Hud {
       u.autoWeapons.GUN === false ? 1 : 0,
       u.radarMode, u.radarActive ? 1 : 0, u.abMode, u.abActive ? 1 : 0, u.airbrake > 0.3 ? 1 : 0,
       Math.round((u.heat ?? 0) * 20),
-      u.autoDropTank ? 1 : 0,
+      u.autoDropTank ? 1 : 0, u.bombProfile,
       (u.fireTasks || []).map((t) => t.weapon + (t.target ? t.target.id : '')).join(','),
       Object.entries(u.autoWeapons).map(([k, v]) => k + v).join(''),
     ].join('|');
@@ -436,7 +509,7 @@ export class Hud {
         <div><label>方位</label><b id="dv-hdg"></b></div>
         <div><label>燃料</label><b id="dv-fuel"></b> 分</div>
         <div><label>機銃</label><b id="dv-gun"></b> 発</div>
-        <div><label>FLR/CHF</label><b id="dv-dec"></b></div>
+        <div class="dt-dec" title="デコイの残数（フレア／チャフ）"><label>FLR/CHF</label><b id="dv-dec"></b></div>
         <div><label>HP</label><b id="dv-hp"></b></div>
       </div>
       <div class="dt-perf"><label>高度性能</label><span id="dv-perf"></span></div>
@@ -566,6 +639,11 @@ export class Hud {
             増槽${u.autoDropTank ? ' 自動' : ' 保持'}</button>`
           + `<button class="autow" data-tankdrop="1"
             title="中身が残っていても今すぐ落とす。旋回率と燃費が戻る">投棄</button>`
+        : '')
+      // 爆弾の入り方（§95）。爆弾を積んでいるときだけ出す
+      + (u.loadout.includes('BOMB')
+        ? `<button class="autow${u.bombProfile === 'toss' ? '' : ' off'}" data-toss="1"
+            title="${TOSS_TIP}">爆撃 ${u.bombProfile === 'toss' ? 'トス' : '水平'}</button>`
         : '');
 
     // レーダーの扱い（§26.5）。切ると見えなくなるが、こちらも見えなくなる。
@@ -598,7 +676,7 @@ export class Hud {
     // **指定した弾で測った理由**でなければ答えにならない（§82.4 の続き）。
     const tasks = (u.fireTasks || []).filter((t) => t.target && t.target.alive);
     const taskRow = tasks.length
-      ? `<div class="dt-load"><label>射撃指示</label>${tasks.map((t) =>
+      ? `<div class="dt-load task-row"><label>射撃指示</label>${tasks.map((t) =>
           `<span class="chip task">${t.weapon} → ${t.target.name}<i class="task-why"></i></span>`).join('')}
           <button class="autow off" data-cleartask="1">取消</button></div>`
       : '';
@@ -694,8 +772,14 @@ export class Hud {
         '誘導中も回避', '誘導を優先', 'data-guard="1"', 'AAM-M誘導中に撃たれたら、回避するか誘導を続けるか')
       + tri(common(sel, (u) => !!u.autoDecoy),
         'デコイ 自動', 'デコイ 停止', 'data-decoy="1"', '飛来ミサイルにフレア／チャフを自動で撒くか');
+    // 爆弾の入り方（§95）。爆弾を積んでいる機体だけで揃っているかを見る
+    const bombers = sel.filter((u) => u.loadout.includes('BOMB'));
+    const toss = bombers.length
+      ? tri(common(bombers, (u) => u.bombProfile === 'toss'),
+        '爆撃 トス', '爆撃 水平', 'data-toss="1"', TOSS_TIP)
+      : '';
 
-    return `<div class="dt-add">${toggles}</div>
+    return `<div class="dt-add">${toggles}${toss}</div>
       <div class="dt-add"><span class="dt-group">${thr}</span>${radar}</div>
       ${ab ? `<div class="dt-add">${ab}</div>` : ''}`;
   }

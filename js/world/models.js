@@ -6,6 +6,8 @@
 // 機首は -Z を向く（heading=0 が北 = -Z 方向 と一致する）。
 
 import * as THREE from 'three';
+import { FIELD, hangarLocal, runwayLengthOf, isCarrierBase } from '../sim/airbase.js';
+import { colorKeyOf } from '../sim/unit.js';
 
 const geometryCache = new Map();
 const materialCache = new Map();
@@ -14,18 +16,28 @@ const materialCache = new Map();
 const TARGET_PX = 46;
 const MIN_LENGTH_M = 60;
 const MAX_LENGTH_M = 1100;
+/**
+ * これより寄ると、機影は画面上で大きくなっていく（既定のカメラ距離 = scene.js）。
+ * 画面サイズを完全に一定にすると、寄ったときに地形や滑走路だけが大きくなり、
+ * 機体が相対的に極端に小さく見えた。
+ */
+const NEAR_REF_DISTANCE = 12000;
+/** 寄ったときの拡大の効き（0 = 画面サイズ一定、1 = 実寸どおりに大きくなる） */
+const NEAR_GROWTH = 0.5;
 
 /**
  * 機体の表示全長(m)を決める。
  *
  * 実寸15mの戦闘機は51kmのマップ上では1px未満になり、選択も識別もできない。
  * 画面上でおよそ一定サイズに見えるよう、カメラ距離から逆算して誇張する
- * （RTSのユニットアイコンと同じ考え方）。寄れば実寸に近づく。
+ * （RTSのユニットアイコンと同じ考え方）。既定の距離より寄ったときは
+ * 画面上の大きさも `NEAR_GROWTH` の割合で大きくする。引いたときは従来どおり。
  */
 export function aircraftDisplayLength(cameraDistance, camera) {
   const metersPerPixel =
     2 * cameraDistance * Math.tan((camera.fov * Math.PI / 180) / 2) / window.innerHeight;
-  return THREE.MathUtils.clamp(metersPerPixel * TARGET_PX, MIN_LENGTH_M, MAX_LENGTH_M);
+  const near = Math.max(1, NEAR_REF_DISTANCE / Math.max(1, cameraDistance)) ** NEAR_GROWTH;
+  return THREE.MathUtils.clamp(metersPerPixel * TARGET_PX * near, MIN_LENGTH_M, MAX_LENGTH_M);
 }
 
 /** 機種形状から機体ジオメトリを作る（キャッシュ付き） */
@@ -104,20 +116,39 @@ export function getJetGeometry(shape, key) {
  * （そうしないと駐機中の機体が路面に埋まる）。同一平面のままだと
  * 深度の取り合いでちらつくので、**深度だけ手前へずらす**。
  * 位置を持ち上げて逃げると、こんどは機体が浮いて見える。
+ *
+ * **傾きに比例するずらし（factor）は 1 画素ぶんに留める**（§97）。以前は −4 で、
+ * factor は1画素あたりの深度の変化に掛かるので、路面が画面上で4画素ぶん手前へ出て、
+ * **路面に接している機体の下の4画素を路面が隠していた** ——
+ * 小さく映る機体では半分近くになり、「滑走路に埋まっている」の正体だった。
+ * 0 にすると近くで低く見たときに地形と取り合う（頂点の丸めが一定量を越える）ので、1 は残す。
+ * `bias` は重ね塗り（滑走路の上の目印）の段。上に載るものほど大きくする。
  */
 const pavementCache = new Map();
-function getPavementMaterial(color) {
-  if (!pavementCache.has(color)) {
+function getPavementMaterial(color, bias = 1) {
+  const key = `${color}|${bias}`;
+  if (!pavementCache.has(key)) {
     const emissive = new THREE.Color(color).multiplyScalar(0.28);
-    pavementCache.set(color, new THREE.MeshLambertMaterial({
+    pavementCache.set(key, new THREE.MeshLambertMaterial({
       color, emissive, flatShading: true, side: THREE.DoubleSide,
-      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
+      polygonOffset: true, polygonOffsetFactor: -bias, polygonOffsetUnits: -6 * bias,
     }));
   }
-  return pavementCache.get(color);
+  return pavementCache.get(key);
 }
 
-function getMaterial(color) {
+/** 格納庫のかまぼこ屋根。軸が Z、膨らみが +Y の半円柱（幅2・高さ1・長さ1） */
+let roofGeometry = null;
+function getRoofGeometry() {
+  if (!roofGeometry) {
+    roofGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1, false, 0, Math.PI);
+    roofGeometry.rotateZ(Math.PI / 2);   // 膨らみ +X → +Y、軸 Y → −X
+    roofGeometry.rotateY(Math.PI / 2);   // 軸 −X → +Z
+  }
+  return roofGeometry;
+}
+
+export function getMaterial(color) {
   if (!materialCache.has(color)) {
     // 影側でも機影が黒く潰れないよう、わずかに自発光させる
     const emissive = new THREE.Color(color).multiplyScalar(0.28);
@@ -145,7 +176,8 @@ function getMaterial(color) {
 const OUTLINE_COLOR = 0xffd070;
 const OUTLINE_SCALE = 1.35;
 
-const SIDE_COLOR = { blue: 0x3d9bff, red: 0xff4536 };
+// `ally` は友軍の航空機だけ（§102・Q7）。地上は陣営の色のまま（`colorKeyOf`）
+const SIDE_COLOR = { blue: 0x3d9bff, red: 0xff4536, ally: 0x45d97a };
 const SIDE_MIX = 0.45;             // 塗装を陣営色へ寄せる割合
 const SIDE_SAT = 1.35;             // 寄せたあとに持ち上げる彩度
 
@@ -161,8 +193,8 @@ export function sideTint(color, side) {
 
 // 印は塗装より強く出す。**機体が小さく写る引きの画では、
 // 陣営を伝えているのは実質こちら**（リング・高度線・接地点）。
-const RING_COLOR = { blue: 0x4fc3ff, red: 0xff5340 };
-const ALT_LINE_COLOR = { blue: 0x3d9bff, red: 0xff4536 };
+const RING_COLOR = { blue: 0x4fc3ff, red: 0xff5340, ally: 0x5fe08a };
+const ALT_LINE_COLOR = { blue: 0x3d9bff, red: 0xff4536, ally: 0x45d97a };
 
 /**
  * 機体の表示オブジェクトを作る。
@@ -175,7 +207,7 @@ export function createAircraftView(ac) {
   group.name = `unit-${ac.id}`;
 
   const body = new THREE.Mesh(getJetGeometry(spec.shape, spec.id),
-    getMaterial(sideTint(spec.color, ac.side)));
+    getMaterial(sideTint(spec.color, colorKeyOf(ac))));
   body.name = 'body';
   group.add(body);
 
@@ -184,7 +216,7 @@ export function createAircraftView(ac) {
     new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -1, 0),
   ]);
   const altLine = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({
-    color: ALT_LINE_COLOR[ac.side] ?? 0x888888, transparent: true, opacity: 0.7,
+    color: ALT_LINE_COLOR[colorKeyOf(ac)] ?? 0x888888, transparent: true, opacity: 0.7,
   }));
   altLine.name = 'altLine';
   group.add(altLine);
@@ -193,7 +225,7 @@ export function createAircraftView(ac) {
   const spot = new THREE.Mesh(
     new THREE.RingGeometry(0.30, 0.42, 16),
     new THREE.MeshBasicMaterial({
-      color: RING_COLOR[ac.side] ?? 0x888888,
+      color: RING_COLOR[colorKeyOf(ac)] ?? 0x888888,
       transparent: true, opacity: 0.8, side: THREE.DoubleSide,
     }),
   );
@@ -249,34 +281,51 @@ export function createAircraftView(ac) {
  * @param {number} size 機体の表示全長(m)。aircraftDisplayLength() で求める。
  * @param {boolean} selected
  */
-export function syncAircraftView(ac, terrain, size, selected, visible = true, occluded = false) {
+export function syncAircraftView(ac, terrain, size, selected, visible = true, occluded = false,
+  pose = null) {
   const g = ac.view;
   if (!g) return;
   g.visible = ac.alive && visible;
   if (!g.visible) return;
 
-  g.position.copy(ac.pos);
+  // 飛行場の地上走行は見た目だけで補っている（§97・`airfieldview.js`）。
+  // `pose` があれば sim の位置の代わりにそちらを描く
+  g.position.copy(pose ? pose.pos : ac.pos);
 
+  // 格納庫の中（§97）。機体は描かず、選ばれていれば輪だけ出して居場所を示す
+  const stowed = !!(pose && pose.hidden);
   const body = g.getObjectByName('body');
-  body.scale.setScalar(size);
-  // 機体モデルは重心が原点にある。地上では機底が路面に接するよう持ち上げる。
+  const altLine = g.getObjectByName('altLine');
+  const spot = g.getObjectByName('spot');
+  body.visible = altLine.visible = spot.visible = !stowed;
+
+  const shown = size * (pose?.scale ?? 1);
+  body.scale.setScalar(shown);
+
+  const ground = Math.max(0, terrain.heightAt(g.position.x, g.position.z));
+  const agl = Math.max(0, g.position.y - ground);
+
+  // 機体モデルは重心が原点にある。飛行場では機底が路面より下へ出ないよう持ち上げる。
   // 機影は画面上で一定サイズになるよう誇張しているので、持ち上げ量も表示倍率で決まる。
-  body.position.y = ac.onGround ? -(bodyFloorOf(ac.spec) * size) : 0;
+  //
+  // **高さに応じて連続に持ち上げる**（§97）。以前は `onGround` の間だけ一定量で、
+  // 接地の直前（フレア）は持ち上げず機体が路面に沈み、離陸では高度 180m で
+  // 急に一段落ちていた。空母は甲板の高さ（絵の上だけ、sim の標高は海面）も足す。
+  const onField = ac.onGround || ac.state === 'landing' || !!pose;
+  const clearance = -bodyFloorOf(ac.spec) * shown + (onField ? deckHeightOf(ac.airbase) : 0);
+  body.position.y = onField ? Math.max(0, clearance - agl) : 0;
   // 機首方向・バンク・ピッチ
   body.rotation.set(0, 0, 0);
-  body.rotateY(-ac.heading);
+  body.rotateY(-(pose ? pose.heading : ac.heading));
   // 機首は -Z を向いているので、X軸まわりの正回転で機首が上がる。
   // 上昇(pitch>0)で機首上げになるよう符号はそのまま渡す。
-  body.rotateX(ac.pitch);
-  body.rotateZ(-ac.roll * 0.9);
+  if (!pose) {
+    body.rotateX(ac.pitch);
+    body.rotateZ(-ac.roll * 0.9);
+  }
 
-  const ground = Math.max(0, terrain.heightAt(ac.pos.x, ac.pos.z));
-  const agl = Math.max(0, ac.pos.y - ground);
-
-  const altLine = g.getObjectByName('altLine');
   altLine.scale.y = agl;
 
-  const spot = g.getObjectByName('spot');
   spot.position.y = -agl;
   spot.scale.setScalar(size * 0.9);
 
@@ -291,6 +340,16 @@ export function syncAircraftView(ac, terrain, size, selected, visible = true, oc
   // 完全に消さない —— 隠れている事実は伝えつつ、指揮はできるようにする。
   const outline = g.getObjectByName('cloudOutline');
   if (outline) outline.visible = !!occluded;
+}
+
+/**
+ * 空母の甲板の高さ(m)。sim の標高は海面（0）だが、絵の甲板は船体の上にある。
+ * 空母の絵は引くと大きくなるので、いまの表示倍率で掛ける（`syncGroundView` が覚えておく）
+ */
+const CARRIER_DECK_TOP = 0.09;   // 単位空間。下の 'carrier' の甲板の天面
+function deckHeightOf(base) {
+  if (!base || !isCarrierBase(base)) return 0;
+  return CARRIER_DECK_TOP * base.spec.size * (base.view?.userData.displayScale ?? 1);
 }
 
 /** 機体モデルの最下点（単位空間）。機種ごとに一度だけ測って覚える。 */
@@ -372,20 +431,63 @@ export function createGroundView(gu) {
       // 表示は rotation.y = -heading で回すので、-Z が sim 側の
       // runwayDir = (sin h, 0, -cos h) と一致する。機体モデルの機首も -Z。
       // ここを X 方向に描くと、見た目の滑走路が実際の離着陸方向と90度ずれる。
-      // boxMesh は「与えた y に底面を置く」。滑走路とエプロンは
-      // **天面**を飛行場の標高（y=0）に合わせないと、その厚みぶんだけ
-      // 路面が持ち上がり、駐機中の機体が路面に埋まって見える。
-      shape.add(boxMesh(0.20, 0.012, 1.7, 0x3a3a38, 0, -0.012, 0,
-        getPavementMaterial(0x3a3a38)));                                // 滑走路
-      // エプロン・管制塔・格納庫は滑走路の脇（+X）、進入端の側（+Z）にまとめる
-      shape.add(boxMesh(0.42, 0.02, 0.30, 0x44443f, 0.34, -0.02, 0.55,
-        getPavementMaterial(0x44443f)));                                // エプロン
-      shape.add(boxMesh(0.10, 0.22, 0.10, c, 0.34, 0, 0.55));         // 管制塔
-      for (let i = 0; i < 3; i++) {
-        shape.add(boxMesh(0.16, 0.09, 0.16, dark, 0.34, 0, 0.30 - i * 0.24));
+      //
+      // **寸法は sim の配置表 `FIELD` から取る**（§97）。以前は単位空間の決め打ちで、
+      // 絵の滑走路が実際より 670m 短く、離陸の始点も接地点も路面の外にあった。
+      // 局所座標(m) の along は -Z、side は +X。
+      const S = spec.size;
+      const L = runwayLengthOf(gu);
+      const half = L / 2;
+      // boxMesh は「与えた y に底面を置く」。路面は**天面**を飛行場の標高（y=0）に
+      // 合わせないと、その厚みぶんだけ持ち上がり、機体が路面に埋まって見える。
+      const pave = (a0, a1, s0, s1, color, bias = 1) => {
+        const t = 0.012;
+        shape.add(boxMesh((s1 - s0) / S, t, (a1 - a0) / S, color,
+          (s0 + s1) / 2 / S, -t, -(a0 + a1) / 2 / S, getPavementMaterial(color, bias)));
+      };
+      const F = FIELD;
+      const rw = F.runwayWidth / 2;
+      const tw = F.taxiWidth / 2;
+      pave(-half, half, -rw, rw, 0x3a3a38);                                  // 滑走路
+      pave(-half - F.padLength, -half, -rw, rw, 0x2e2e2b);                   // 過走帯
+      pave(half, half + F.padLength, -rw, rw, 0x2e2e2b);
+      pave(-half, half, F.taxiSide - tw, F.taxiSide + tw, 0x46463f);         // 平行誘導路
+      for (const a of [-half + 30, ...F.exits, half - 30]) {                 // 取付誘導路
+        pave(a - tw, a + tw, rw, F.taxiSide - tw, 0x46463f);
       }
+      // 格納庫の前のエプロン
+      const hFirst = hangarLocal(gu, 0).along, hLast = hangarLocal(gu, F.hangarCount - 1).along;
+      const door = F.hangarSide - F.hangarDepth / 2;
+      pave(hFirst - F.hangarWidth / 2 - 20, hLast + F.hangarWidth / 2 + 20,
+        F.taxiSide + tw, door, 0x4c4c45);
+      // 始端の目印（ピアノキー）。路面より一段手前に描く
+      for (const a of [-half + 40, half - 40]) {
+        for (let i = -3; i <= 3; i++) {
+          if (i === 0) continue;
+          const s = i * 22;
+          pave(a - 25, a + 25, s - 7, s + 7, 0xa8a8a0, 2);
+        }
+      }
+      // 格納庫。かまぼこ屋根と、誘導路に向いた暗い扉
+      for (let k = 0; k < F.hangarCount; k++) {
+        const h = hangarLocal(gu, k);
+        const x = h.side / S, z = -h.along / S;
+        const wS = F.hangarDepth / S, wA = F.hangarWidth / S, hh = F.hangarHeight / S;
+        shape.add(boxMesh(wS, hh * 0.55, wA, dark, x, 0, z));
+        const roof = new THREE.Mesh(getRoofGeometry(), getMaterial(c));
+        roof.scale.set(wS / 2, hh * 0.45, wA);
+        roof.position.set(x, hh * 0.55, z);
+        shape.add(roof);
+        shape.add(boxMesh(4 / S, hh * 0.62, wA * 0.78, 0x16181a,
+          x - wS / 2 - 1 / S, 0, z));                                          // 扉
+      }
+      // 管制塔。格納庫の並びの先
+      const towerA = hLast + F.hangarWidth / 2 + 110;
+      const tx = (F.hangarSide - 10) / S, tz = -towerA / S;
+      shape.add(boxMesh(0.05, 0.15, 0.05, c, tx, 0, tz));
+      shape.add(boxMesh(0.08, 0.035, 0.08, 0x2a3440, tx, 0.15, tz));        // 管制室
       // 滑走路灯。両端に置いて、点滅で「生きている飛行場」だと分かるようにする。
-      for (const sz of [-0.85, 0.85]) {
+      for (const sz of [-(half + F.padLength) / S, (half + F.padLength) / S]) {
         const lamp = new THREE.Mesh(
           new THREE.SphereGeometry(0.05, 6, 4),
           new THREE.MeshBasicMaterial({
@@ -403,7 +505,7 @@ export function createGroundView(gu) {
         new THREE.SphereGeometry(0.055, 6, 4),
         new THREE.MeshBasicMaterial({ color: 0xffd070, transparent: true, depthTest: false }),
       );
-      beacon.position.set(0.34, 0.25, 0.55);
+      beacon.position.set(tx, 0.21, tz);
       beacon.renderOrder = 6;
       beacon.name = 'beacon';
       shape.add(beacon);
@@ -428,6 +530,13 @@ export function createGroundView(gu) {
     }
     case 'ground':
     default: {
+      // 戦車（§103）は車体1つに砲塔と砲身。3両連ねた箱（車両部隊・榴弾砲）と見分けられるように
+      if (spec.id === 'TANK') {
+        shape.add(boxMesh(0.42, 0.14, 0.70, dark, 0, 0, 0));
+        shape.add(boxMesh(0.28, 0.12, 0.30, c, 0, 0.13, 0.04));
+        shape.add(boxMesh(0.05, 0.05, 0.42, c, 0, 0.15, -0.30));
+        break;
+      }
       for (let i = 0; i < 3; i++) {
         shape.add(boxMesh(0.22, 0.14, 0.40, i === 1 ? c : dark, 0, 0, -0.45 + i * 0.45));
       }
@@ -461,6 +570,7 @@ export function syncGroundView(gu, scale, visible = true) {
   if (!g.visible) return;
   g.position.copy(gu.pos);
   g.rotation.y = -gu.heading;
+  g.userData.displayScale = scale;
   const size = gu.spec.size * scale;
   const shape = g.getObjectByName('shape');
   shape.scale.setScalar(size);

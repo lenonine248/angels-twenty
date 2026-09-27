@@ -105,7 +105,7 @@ const CHAFF_AS_BACKGROUND = 0.4;
 /** これだけ見下ろしていれば満額（tan）。0.3 ≒ 17度 */
 const LOOKDOWN_FULL = 0.12;
 /** 背を向けて逃げていると言える角度（§35.2）。これを超えると雲が視線から外れる */
-const SCREEN_TOLERANCE = 35 * (Math.PI / 180);
+export const SCREEN_TOLERANCE = 35 * (Math.PI / 180);
 /** チャフの雲が「背景」として働く半径(m)（§35.2） */
 const CHAFF_COVER_RADIUS = 700;
 /** 目標の対地高度がこれを超えると、地面には紛れられない(m) */
@@ -274,7 +274,17 @@ export class Missile {
 
     // 発射時は母機の速度と向きを引き継ぐ
     const f = launcher.forward();
-    this.dir = new THREE.Vector3(f.x, Math.sin(launcher.pitch || 0), f.z).normalize();
+    const pitch = launcher.pitch || 0;
+    // **爆弾は弾道解と同じ初速で放す**（§95）—— `speed·(cos p, sin p)`。
+    //
+    // 下の式は水平の機首方向に sin p を足して正規化するので、上がる角が
+    // atan(sin p) に寝る（35° のつもりが 30°）。投下点は `bombSolution` が
+    // `speed·(cos p, sin p)` で解いているので、上昇しながら放すと
+    // **37〜228m 手前に落ちていた**（水平では一致・§95.1）。
+    // ミサイルは誘導するので発射の向きの差は効かず、そのままにしてある。
+    this.dir = weapon.kind === 'bomb'
+      ? new THREE.Vector3(f.x * Math.cos(pitch), Math.sin(pitch), f.z * Math.cos(pitch))
+      : new THREE.Vector3(f.x, Math.sin(pitch), f.z).normalize();
     this.speed = launcher.speed || 200;
 
     this.age = 0;

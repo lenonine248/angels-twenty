@@ -29,7 +29,7 @@ import {
 import { getType } from '../data/aircraft.js';
 import { getGroundType } from '../data/ground.js';
 import { WEAPONS } from '../data/weapons.js';
-import { flattenRunway } from '../sim/airbase.js';
+import { flattenRunway, hangarIndexAt } from '../sim/airbase.js';
 
 /** 再生できる速さ */
 const SPEEDS = [0.5, 1, 2, 4, 8];
@@ -158,7 +158,7 @@ export class ReplayPlayer {
     this.units = [];
     for (const u of data.units) {
       const ghost = {
-        id: u.id, name: u.name, side: u.side, kind: u.kind,
+        id: u.id, name: u.name, side: u.side, kind: u.kind, owner: u.owner || null,
         typeId: u.type,
         pos: new THREE.Vector3(), heading: 0, pitch: 0, roll: 0,
         alive: false, onGround: false, view: null,
@@ -174,7 +174,7 @@ export class ReplayPlayer {
     this._buildTracers();
 
     // 最初の自軍機へ寄せる
-    const lead = this.units.find((u) => u.side === 'blue' && u.kind === 'aircraft');
+    const lead = this.units.find((u) => u.side === 'blue' && u.kind === 'aircraft' && u.owner !== 'ally');
     if (lead) {
       const s = this._stateAt(0);
       const st = s.get(lead.id);
@@ -327,7 +327,12 @@ export class ReplayPlayer {
         // 記録に足す必要はない —— 雲もカメラもこちらで持っている
         const occluded = !!(this.clouds
           && this.clouds.blocks(this.scene.camera.position, u.pos));
-        syncAircraftView(u, this.terrain, size, this.followId === u.id, true, occluded);
+        // 格納庫にしまわれている機体は描かない（§97）。記録は機体の状態を持たないので、
+        // 位置で見分ける —— sim は駐機中の機体を格納庫の中心に置いている
+        const stowed = u.onGround && this.units.some((b) => b.kind === 'airbase' && b.alive
+          && hangarIndexAt(b, u.pos) >= 0);
+        syncAircraftView(u, this.terrain, size, this.followId === u.id, true, occluded,
+          stowed ? { pos: u.pos, heading: u.heading, scale: 1, hidden: true } : null);
       } else {
         syncGroundView(u, groundDisplayScale(this.scene.rig.distance, this.scene.camera,
           u.spec.size || 120), true);

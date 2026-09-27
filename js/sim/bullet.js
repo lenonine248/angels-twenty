@@ -66,6 +66,8 @@ export class Bullet {
    * @param {object} o.shooter 撃った機体
    * @param {number} [o.life] 寿命(秒)。省くと機体共通の `BULLET_LIFE`
    * @param {number} [o.gravity] 落下加速度(m/s^2)。**既定は 0**（§69.2）
+   * @param {boolean} [o.pierce] 装甲を抜くか（§103）。抜く弾は装甲に引かれない
+   * @param {boolean} [o.impactOnly] 着弾した地点でだけ当たるか（§103・榴弾）
    */
   constructor(o) {
     this.pos = o.pos.clone();
@@ -89,6 +91,20 @@ export class Bullet {
      * **任意にしておけば、入れたい弾にだけ入る。**
      */
     this.gravity = o.gravity || 0;
+    /**
+     * 装甲を抜くか（§103）。**装甲 `spec.armor` は機銃の弾にだけ効く** ——
+     * 戦車の主砲・榴弾と、A-3 の機銃（`gunSpec.pierce`・プレイヤーの決め）はこれを立てて素通りする。
+     * 爆風とミサイルはもともとここを通らない。
+     */
+    this.pierce = !!o.pierce;
+    /**
+     * 着弾した地点でだけ当たる（§103・榴弾）。**飛んでいる途中では何にも当たらない。**
+     *
+     * 低い弾道の榴弾は、まっすぐ向かってくる車両の通り道を低く通る。途中で当たる判定のままだと、
+     * 寄ってくる車両ほど自分から弾に入って当たる（実測: 12m/s で寄る車両部隊に 2km から2発続けて命中・0勝20敗）。
+     * 着弾点で見れば、**止まっている相手には当たり、動いている相手には外れる** —— 飛翔 8秒で 100m 動く。
+     */
+    this.impactOnly = !!o.impactOnly;
     this.alive = true;
     /** 当たった相手（演出用。命中の瞬間だけ入る） */
     this.hit = null;
@@ -108,10 +124,12 @@ export class Bullet {
     if (this.pos.y <= ground) {
       this.pos.y = ground;
       this.alive = false;
+      if (this.impactOnly && this._impact(world)) return;
       this.hitGround = true;
       world.onBulletGround?.(this);
       return;
     }
+    if (this.impactOnly) return;
 
     // 通り過ぎた区間で当たっていないかを見る。
     // 1ステップで最大 33m 進むので、点で判定すると小さい目標をすり抜ける。
@@ -120,7 +138,9 @@ export class Bullet {
       if (u === this.shooter) continue;
       const r = hitRadiusOf(u);
       if (segmentDistanceTo(this.prev, this.pos, u.pos, r) > r) continue;
-      u.damage(this.damage, this.shooter);
+      // 装甲は1発ごとに一定量を引く（§103）。弾かれた弾も止まる
+      const dmg = this.pierce ? this.damage : this.damage - (u.spec?.armor || 0);
+      if (dmg > 0) u.damage(dmg, this.shooter);
       this.alive = false;
       this.hit = u;
       world.onBulletHit?.(this, u);
@@ -128,6 +148,27 @@ export class Bullet {
     }
   }
 }
+
+/**
+ * 着弾点に最も近い相手に当てる（§103・榴弾）。当たり半径は途中で当たる弾と同じ `hitRadiusOf`、距離は水平で測る。
+ * 当たれば true。
+ */
+Bullet.prototype._impact = function (world) {
+  let best = null; let bestD = Infinity;
+  for (const u of world.units) {
+    if (!u.alive || u.side === this.side || u === this.shooter) continue;
+    if (u.kind === 'aircraft' && !u.onGround) continue;
+    const d = Math.hypot(u.pos.x - this.pos.x, u.pos.z - this.pos.z);
+    if (d > hitRadiusOf(u) || d >= bestD) continue;
+    bestD = d; best = u;
+  }
+  if (!best) return false;
+  const dmg = this.pierce ? this.damage : this.damage - (best.spec?.armor || 0);
+  if (dmg > 0) best.damage(dmg, this.shooter);
+  this.hit = best;
+  world.onBulletHit?.(this, best);
+  return true;
+};
 
 /**
  * 線分と点の最短距離。

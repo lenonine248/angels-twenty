@@ -6,10 +6,11 @@ import * as THREE from 'three';
 import { Unit, headingOf, RWR_SIGNATURE_FACTOR } from './unit.js';
 import { getGroundType, weaponsOf } from '../data/ground.js';
 import { WEAPONS } from '../data/weapons.js';
-import { opticalSight } from './sight.js';
+import { opticalSight, groundSight, GROUND_EYE } from './sight.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 import { clamp } from '../core/rng.js';
 import { Bullet, aimPointOf } from './bullet.js';
+import { LEVEL, GROUND_VISUAL_RANGE } from './detection.js';
 
 /** 弾幕の計算用（毎tick確保しない） */
 const _aim = new THREE.Vector3();
@@ -48,10 +49,10 @@ function scatter(dir, sigma, rng, out) {
  * （残距離に比例した誤差で飛ぶため）一度も当たらない兵装になる。
  * 「気づくのが遅れればそのまま食らう」が成立する距離にしてある。
  */
-const ARM_NOTICE_RANGE = 4500;
-const ARM_REACTION = 2.5;
+export const ARM_NOTICE_RANGE = 4500;
+export const ARM_REACTION = 2.5;
 /** ARM を回避したあと沈黙を続ける時間(秒) */
-const SILENCE_DURATION = 25;
+export const SILENCE_DURATION = 25;
 /**
  * 艦船が必要とする水深(m)。これより浅くなったら進まない。
  *
@@ -67,6 +68,27 @@ const SHIP_MIN_DEPTH = 40;
  * 射程ぎりぎりで止めると、地形の起伏で視線が切れたときに撃てなくなる。
  */
 const ADVANCE_STOP = 0.75;
+
+/** 見えない相手へ寄るときに、これより内へは詰めない距離(m)（§103） */
+const ADVANCE_MIN = 300;
+
+/** 持ち場・下がる先に着いたとみなす距離(m) */
+const ARRIVE_RADIUS = 150;
+
+/**
+ * 地上の行動（§103・A3）。ステージ定義の `groundMode` とトリガーの `ground` で切り替える。
+ *
+ * | | |
+ * |---|---|
+ * | `advance` | `attackTag` の敵へ寄り、射程の内側で止まる（相手が尽きたら `route` があればそれをたどる） |
+ * | `hold` | 持ち場（`holdAt`・無ければその場）に留まり、射程に入った敵を撃つ |
+ * | `route` | 経路をたどる（巡回） |
+ * | `retreat` | 下がる先（`retreatTo`・無ければ出現した位置）へ下がって留まる |
+ *
+ * 書かなければ今までと同じ振る舞い: `attackTag` があれば `advance`、`route` があれば `route`、どちらも無ければ `hold`。
+ * **どの行動でも撃つのはやめない**（射撃は移動と別に回る）。
+ */
+export const GROUND_MODES = ['advance', 'hold', 'route', 'retreat'];
 
 /** その兵装がその目標を狙うか（§67.1） */
 function aims(w, unit) {
@@ -116,6 +138,14 @@ export class GroundUnit extends Unit {
      */
     this.attackTag = o.attackTag || null;
 
+    /** 出現した位置。`retreat` の下がる先の既定（§103） */
+    this.home = { x: this.pos.x, z: this.pos.z };
+    /** 地上の行動（§103）。無ければ今までの振る舞いから決める */
+    this.groundMode = GROUND_MODES.includes(o.groundMode) ? o.groundMode
+      : this.attackTag ? 'advance' : this.route ? 'route' : 'hold';
+    this.holdAt = o.holdAt || null;
+    this.retreatTo = o.retreatTo || null;
+
     this._silence = 0;        // 沈黙の残り時間
     this._armTimer = 0;       // ARM を認識してから沈黙するまでの反応時間
     this.firing = false;      // AAA が撃っているか（描画用）
@@ -145,19 +175,33 @@ export class GroundUnit extends Unit {
     this._updateCombat(dt, world);
     if (this.spec.static) return;
 
-    // **壊しに行く相手がいれば、巡回より優先する**（§67.3）。
-    // 射程まで詰めたら止まって撃つ。
-    const goal = this._advanceGoal(world);
+    // 行く先を決める（§103）。`goal` は着いたら止まる点、無ければ経路をたどる
+    const mode = this.groundMode;
+    let goal = null;
+    if (mode === 'hold' || mode === 'retreat') {
+      const p = mode === 'hold' ? this.holdAt : (this.retreatTo || this.home);
+      if (!p) { this.speed = 0; return; }                // その場で持つ
+      goal = { x: p.x, z: p.z, stop: ARRIVE_RADIUS, keepHeading: true };
+    } else if (mode === 'advance') {
+      // **壊しに行く相手がいれば、巡回より優先する**（§67.3）。
+      // 射程まで詰めたら止まって撃つ。
+      goal = this._advanceGoal(world);
+    }
     let wp = goal;
     if (!wp) {
-      if (!this.route || this.route.length === 0) return;
+      if (mode === 'hold' || mode === 'retreat') return;
+      if (!this.route || this.route.length === 0) { this.speed = 0; return; }
       wp = this.route[this.routeIndex];
     }
     const dx = wp.x - this.pos.x, dz = wp.z - this.pos.z;
     const dist = Math.hypot(dx, dz);
     if (goal) {
       // 止まる距離は射程の内側。撃てるところまで来たら足を止める
-      if (dist <= goal.stop) { this.speed = 0; this.heading = headingOf(dx, dz); return; }
+      if (dist <= goal.stop) {
+        this.speed = 0;
+        if (!goal.keepHeading) this.heading = headingOf(dx, dz);
+        return;
+      }
     } else if (dist < 200) {
       this.routeIndex = (this.routeIndex + 1) % this.route.length;
       return;
@@ -189,6 +233,7 @@ export class GroundUnit extends Unit {
     for (const m of this.mounts) {
       m.reload = Math.max(0, m.reload - dt);
       if (m.w.kind === 'howitzer') this._updateHowitzer(dt, world, m);
+      else if (m.w.kind === 'cannon') this._updateCannon(dt, world, m);
       else if (m.w.kind === 'sam') this._updateSam(dt, world, m);
       else if (m.w.kind === 'irsam') this._updateIrSam(dt, world, m);
       else if (m.w.kind === 'aaa') this._updateAaa(dt, world, m);
@@ -215,7 +260,23 @@ export class GroundUnit extends Unit {
       if (d < bestD) { bestD = d; best = u; }
     }
     if (!best) return null;
-    return { x: best.pos.x, z: best.pos.z, stop: reach * ADVANCE_STOP };
+    // **撃てないうちは止まらない**（§103）。射程の内側でも、見えていない（直射）・
+    // 陣営が位置を知らない（榴弾）なら寄り続ける。重ならないよう ADVANCE_MIN までは詰めない
+    const stop = this._canEngage(world, best) ? reach * ADVANCE_STOP : ADVANCE_MIN;
+    return { x: best.pos.x, z: best.pos.z, stop };
+  }
+
+  /** その相手をいま撃てるか（§103）。榴弾は陣営のコンタクト、ほかは自分の目（見える距離の内で地上の視線が通る） */
+  _canEngage(world, u) {
+    const sight = this.spec.sight || GROUND_VISUAL_RANGE;
+    for (const m of this.mounts) {
+      if (!m.w.targets || m.w.targets === 'air') continue;
+      if (m.w.kind === 'howitzer') {
+        const c = world.detection && world.detection.contactsFor(this.side).get(u.id);
+        if (c && c.level >= LEVEL.IDENTIFIED) return true;
+      } else if (this.pos.distanceTo(u.pos) <= sight && groundSight(world, this.pos, u.pos)) return true;
+    }
+    return false;
   }
 
   /**
@@ -274,21 +335,28 @@ export class GroundUnit extends Unit {
     const w = m.w;
     const g = 9.81;
 
-    let target = null; let bestD = Infinity;
-    for (const u of world.units) {
-      if (!u.alive || u.side === this.side || u === this) continue;
-      if (!aims(w, u)) continue;
-      // **水平距離で見る。** 3次元で測ると、坂の上の目標が射程の外に落ちる
-      const d = Math.hypot(u.pos.x - this.pos.x, u.pos.z - this.pos.z);
-      if (d > w.range || d >= bestD) continue;
-      bestD = d; target = u;
+    // **着弾観測（§103）。陣営のコンタクトにある相手だけを撃つ。**
+    // 見ているのは車両部隊でも戦車でも航空機でもよい。狙うのは**コンタクトの位置**（真の位置ではない）——
+    // 見続けていれば当たり、見失えば推定の誤差がそのまま着弾のずれになる。
+    // 識別済み（Lv1）より下は撃たない（敵味方が分からない）
+    let target = null; let aim = null; let bestD = Infinity;
+    const contacts = world.detection ? world.detection.contactsFor(this.side) : null;
+    if (contacts) {
+      for (const c of contacts.values()) {
+        const u = c.unit;
+        if (!u || !u.alive || u.side === this.side) continue;
+        if (c.level < LEVEL.IDENTIFIED || !aims(w, u)) continue;
+        // **水平距離で見る。** 3次元で測ると、坂の上の目標が射程の外に落ちる
+        const d = Math.hypot(c.pos.x - this.pos.x, c.pos.z - this.pos.z);
+        // 最短射程（§103）。寄られると山なりの弾は撃てない
+        if (d > w.range || d < (w.minRange || 0) || d >= bestD) continue;
+        bestD = d; target = u; aim = c;
+      }
     }
     if (!target) return;
 
-    const dx = target.pos.x - this.pos.x;
-    const dz = target.pos.z - this.pos.z;
-    const flat = Math.hypot(dx, dz);
     const v = w.muzzle;
+    const muzzleY = this.pos.y + MUZZLE_HEIGHT;
 
     // **高低差を入れて解く。**
     //
@@ -299,12 +367,31 @@ export class GroundUnit extends Unit {
     // 落下点 (d, -h) を通る条件を tanθ = u について解く:
     //   k·u² − d·u + (k − h) = 0     ただし k = g·d² / (2v²)
     // 低いほうの解（マイナス側）を使う。
-    const muzzleY = this.pos.y + MUZZLE_HEIGHT;
-    const h = muzzleY - target.pos.y;          // 撃つ側がどれだけ高いか
-    const k = (g * flat * flat) / (2 * v * v);
-    const disc = flat * flat - 4 * k * (k - h);
-    if (disc < 0) return;                      // 届かない（射程の外）
-    const theta = Math.atan((flat - Math.sqrt(disc)) / (2 * k));
+    const solve = (ax, az) => {
+      const dx = ax - this.pos.x;
+      const dz = az - this.pos.z;
+      const flat = Math.hypot(dx, dz);
+      // 着弾点の高さは推定位置の地表（コンタクトの y は見たときのもの）
+      const aimY = world.terrain ? Math.max(0, world.terrain.heightAt(ax, az)) : target.pos.y;
+      const h = muzzleY - aimY;                // 撃つ側がどれだけ高いか
+      const k = (g * flat * flat) / (2 * v * v);
+      const disc = flat * flat - 4 * k * (k - h);
+      if (disc < 0) return null;               // 届かない（射程の外）
+      const theta = Math.atan((flat - Math.sqrt(disc)) / (2 * k));
+      return { dx, dz, flat, theta, t: flat / (v * Math.cos(theta)) };
+    };
+    let sol = solve(aim.pos.x, aim.pos.z);
+    if (!sol) return;
+    // **遅い相手には偏差を取る**（§103・プレイヤーの決め）。コンタクトの速さが `leadBelow` 以下なら、
+    // 飛翔時間ぶん先（コンタクトの向きと速さ）を狙う。速い相手（車両部隊 12m/s）は取らない ——
+    // 「走っている車両には当たらない・遅い戦車は詰めるあいだに削られる」を分ける線
+    if (w.leadBelow && aim.speed > 0.5 && aim.speed <= w.leadBelow) {
+      const vx = Math.sin(aim.heading) * aim.speed;
+      const vz = -Math.cos(aim.heading) * aim.speed;
+      for (let i = 0; i < 2 && sol; i++) sol = solve(aim.pos.x + vx * sol.t, aim.pos.z + vz * sol.t);
+      if (!sol) return;
+    }
+    const { dx, dz, flat, theta } = sol;
 
     _muzzle.set(this.pos.x, muzzleY, this.pos.z);
     _dir.set((dx / flat) * Math.cos(theta), Math.sin(theta), (dz / flat) * Math.cos(theta))
@@ -319,9 +406,64 @@ export class GroundUnit extends Unit {
       shooter: this,
       life: w.life,
       gravity: g,
+      pierce: true,                            // 砲弾は装甲に引かれない（§103）
+      impactOnly: !!w.impactOnly,              // 着弾した地点でだけ当たるか（§103）
     }));
     m.reload = w.reloadSeconds;
     this.firing = true;
+    world.onGunFire?.(this, target, 1, v);
+  }
+
+  /**
+   * 戦車の主砲（§103）。**直射 —— 自分の目で見えている相手だけを撃つ。**
+   *
+   * 射程（2.5km）は目視（3km）より短いので、見えているかは視線（地形・雲）だけで決まる。
+   * 偏差を取った狙点へ、重力で落ちるぶんを低いほうの解で上へ向ける（榴弾砲と同じ式）。
+   * 砲弾なので装甲には引かれない。
+   */
+  _updateCannon(dt, world, m) {
+    if (m.reload > 0) return;
+    const w = m.w;
+    const g = 9.81;
+    let target = null; let bestD = Infinity;
+    for (const u of world.units) {
+      if (!u.alive || u.side === this.side || u === this) continue;
+      if (!aims(w, u)) continue;
+      const d = Math.hypot(u.pos.x - this.pos.x, u.pos.z - this.pos.z);
+      if (d > w.range || d >= bestD) continue;
+      if (!groundSight(world, this.pos, u.pos)) continue;
+      bestD = d; target = u;
+    }
+    if (!target) return;
+
+    const muzzleY = this.pos.y + MUZZLE_HEIGHT;
+    _muzzle.set(this.pos.x, muzzleY, this.pos.z);
+    aimPointOf({ pos: _muzzle }, target, w.muzzle, _aim);
+    // **狙点は相手の地表＋目の高さ**（§103）。見える線（両端 GROUND_EYE 上）と揃える ——
+    // 足元を狙うと、見えているのに弾が手前の稜線に当たって消える（実測: 止まった戦車の 28発が全部 700m 手前の稜線に）。
+    // 放物線は弦より上を通るので、見える線が通れば弾も通る。当たり半径（戦車 42m）の内なので当たりは変わらない
+    _aim.y += GROUND_EYE;
+    const dx = _aim.x - this.pos.x;
+    const dz = _aim.z - this.pos.z;
+    const flat = Math.hypot(dx, dz);
+    if (flat < 1) return;
+    const v = w.muzzle;
+    const h = muzzleY - _aim.y;
+    const k = (g * flat * flat) / (2 * v * v);
+    const disc = flat * flat - 4 * k * (k - h);
+    if (disc < 0) return;
+    const theta = Math.atan((flat - Math.sqrt(disc)) / (2 * k));
+    _dir.set((dx / flat) * Math.cos(theta), Math.sin(theta), (dz / flat) * Math.cos(theta)).normalize();
+    const rng = world.rng ? world.rng : Math.random;
+    scatter(_dir, w.spread, rng, _shot);
+    world.bullets.push(new Bullet({
+      pos: _muzzle, dir: _shot, speed: v,
+      damage: w.dmg[0] + rng() * (w.dmg[1] - w.dmg[0]),
+      shooter: this, life: w.life, gravity: g, pierce: true,
+    }));
+    m.reload = w.reloadSeconds;
+    this.firing = true;
+    this.heading = headingOf(dx, dz);
     world.onGunFire?.(this, target, 1, v);
   }
 
@@ -413,7 +555,8 @@ export class GroundUnit extends Unit {
       }
       const d = this.pos.distanceTo(u.pos);
       if (d > w.range || d >= bestD) continue;
-      if (!opticalSight(world, this.pos, u.pos, 8, 200)) continue;   // §88.3
+      // §88.3。地上の相手は目の高さを取る（§103）
+      if (!(air ? opticalSight(world, this.pos, u.pos, 8, 200) : groundSight(world, this.pos, u.pos))) continue;
       bestD = d; target = u;
     }
     if (!target) return;
@@ -425,6 +568,8 @@ export class GroundUnit extends Unit {
     // 偏差射撃の狙点。**目標が曲がればその前提が崩れて外れる** —
     // それがこの変更のすべて（§22.2 と同じ理屈）。
     aimPointOf({ pos: _muzzle }, target, w.muzzle, _aim);
+    // 地上の相手は地表＋目の高さを狙う（§103・主砲と同じ理由）。見える線と撃つ線を揃える
+    if (!(target.kind === 'aircraft' && !target.onGround)) _aim.y += GROUND_EYE;
     _dir.set(_aim.x - _muzzle.x, _aim.y - _muzzle.y, _aim.z - _muzzle.z).normalize();
 
     // 発射数は端数を持ち越す。dt が小さいと毎回0発になってしまう。

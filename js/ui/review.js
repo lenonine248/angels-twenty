@@ -15,6 +15,7 @@
 
 import { Terrain, MAP_SIZE, CELLS } from '../world/terrain.js';
 import { downloadRecording, pickRecordingFile, resultOf } from '../core/recorder.js';
+import { colorKeyOf } from '../sim/unit.js';
 
 /** 出来事の見た目 */
 const EVENT_STYLE = {
@@ -26,7 +27,8 @@ const EVENT_STYLE = {
   order:    { color: '#6fd8e8', r: 2,   label: '指示' },
 };
 
-const SIDE_COLOR = { blue: '#5aa9ff', red: '#ff7676' };
+// `ally` は友軍の航空機（§102）。記録の名簿の `owner` で分ける（v3 から）
+const SIDE_COLOR = { blue: '#5aa9ff', red: '#ff7676', ally: '#5fd68a' };
 
 export class ReviewScreen {
   constructor(root) {
@@ -247,7 +249,7 @@ export class ReviewScreen {
     for (const [id, pts] of tracks) {
       if (this.focusId && id !== this.focusId) continue;
       const u = byId.get(id);
-      const side = u ? u.side : 'red';
+      const side = colorKeyOf(u);
       ctx.strokeStyle = SIDE_COLOR[side] || '#ff7676';
       ctx.globalAlpha = this.focusId ? 0.95 : 0.65;
       ctx.lineWidth = this.focusId === id ? 2.4 : 1.4;
@@ -310,7 +312,7 @@ export class ReviewScreen {
       if (this.mode === 'seen' && u.side !== 'blue' && !groundSeen.has(id)) continue;
       const x = px(gx), y = pz(gz);
       const dead = !aliveNow.has(id);
-      ctx.strokeStyle = dead ? '#8a8f98' : (SIDE_COLOR[u.side] || '#ff7676');
+      ctx.strokeStyle = dead ? '#8a8f98' : (SIDE_COLOR[colorKeyOf(u)] || '#ff7676');
       ctx.lineWidth = 1.6;
       ctx.globalAlpha = dead ? 0.5 : 1;
       ctx.strokeRect(x - 4, y - 4, 8, 8);

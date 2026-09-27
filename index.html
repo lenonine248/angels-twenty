@@ -96,6 +96,23 @@
   <!-- 目標 -->
   <div id="objectives"></div>
 
+  <!-- 方位盤（§98）。視点の向きに合わせて回る。クリックで北を上に戻す -->
+  <div id="compass" title="方位盤 —— クリックで北を上に戻す">
+    <svg viewBox="-32 -32 64 64" width="64" height="64" aria-hidden="true">
+      <circle r="29" class="cp-ring"/>
+      <g id="compassRose">
+        <path d="M0,-28V-23M0,28V23M-28,0H-23M28,0H23" class="cp-tick"/>
+        <path d="M19.8,-19.8L16.3,-16.3M-19.8,-19.8L-16.3,-16.3M19.8,19.8L16.3,16.3M-19.8,19.8L-16.3,16.3" class="cp-tick cp-minor"/>
+        <path d="M0,-21L4,-6H-4Z" class="cp-north"/>
+        <path d="M0,21L4,6H-4Z" class="cp-south"/>
+        <text y="-11" class="cp-n">N</text>
+        <text x="15" class="cp-l">E</text>
+        <text y="15" class="cp-l">S</text>
+        <text x="-15" class="cp-l">W</text>
+      </g>
+    </svg>
+  </div>
+
   <!-- チュートリアルの手順（§19。通常のステージでは出さない） -->
   <div id="tutorial" class="hidden"></div>
 

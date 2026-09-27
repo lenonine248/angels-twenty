@@ -24,6 +24,26 @@ export function opticalSight(world, a, b, clearance = 8, step = 300) {
  * 弱るだけなので、通るかどうかは地形だけで決まる。
  * どれだけ弱ったかは `radarReach` で別に見る。
  */
+/**
+ * 地上から地上を見る目の高さ(m)（§103）。**両端をこれだけ持ち上げて視線を引く。**
+ *
+ * 地上ユニットの位置は地表ちょうどなので、そのまま `opticalSight` に渡すと
+ * 両端が地面に接した線になり、**わずかな起伏でも切れる**（実測: 600m 先でも 3% しか見えない）。
+ * 砲口の高さ（`sim/ground.js` の MUZZLE_HEIGHT）と同じ 25m を取る —— 撃てる線と見える線を揃える。
+ * 25m で 600m 先 94%・2.5km 44%・8km 18%（丘陵の地形・ランダムな300組）。
+ */
+export const GROUND_EYE = 25;
+
+const _ga = { x: 0, y: 0, z: 0 };
+const _gb = { x: 0, y: 0, z: 0 };
+
+/** 地上から地上への視線（§103）。両端を GROUND_EYE だけ上げ、あとは `opticalSight` と同じ（雲でも切れる） */
+export function groundSight(world, a, b, clearance = 8, step = 200) {
+  _ga.x = a.x; _ga.y = a.y + GROUND_EYE; _ga.z = a.z;
+  _gb.x = b.x; _gb.y = b.y + GROUND_EYE; _gb.z = b.z;
+  return opticalSight(world, _ga, _gb, clearance, step);
+}
+
 export function radarSight(world, a, b, clearance = 8, step = 300) {
   return world.terrain.hasLineOfSight(a, b, clearance, step);
 }

@@ -124,6 +124,8 @@
     // `combat.fire()` は交戦包絡線を見ないので、ここで向きを変えれば
     // 「横を向いたまま撃った」弾をそのまま測れる。
     if (mods.off) shooter.heading += (mods.off * Math.PI) / 180;
+    // 発射時の機首上げ（§98.7）。共上昇の最中の発射は弾が上を向いて出る
+    if (mods.pitch) shooter.pitch = (mods.pitch * Math.PI) / 180;
     shooter.speed = shooter.spec.cruiseSpeed * 1.2;
     shooter.onGround = false;
     shooter.state = 'flying';
@@ -401,7 +403,9 @@
     return grid;
   }
 
-  AT.kin = { run, one, threshold, profile, boresight, report, reset, rows, WEAPONS: null };
+  AT.kin = { run, one, threshold, profile, boresight, report, reset, rows, WEAPONS: null,
+    // 他の計測台から使う（tools/_aamsalt.js）
+    _internal: { shot, fresh, patch, unpatch } };
   return import('/js/data/weapons.js').then((m) => {
     AT.kin.WEAPONS = m.WEAPONS;
     return 'kinematics ready';

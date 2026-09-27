@@ -16,6 +16,7 @@ import { CLOUD_COVER, CLOUD_SHAPE, CLOUD_WIND_SPEED } from '../world/clouds.js';
 import { loadoutCost } from '../data/weapons.js';
 import * as custom from '../data/custom.js';
 import * as stagetext from '../data/stagetext.js';
+import { TRIGGER_CONDITIONS, TRIGGER_ACTIONS, GUARD_DEFAULT } from '../sim/triggers.js';
 import { isTuned } from './tuning.js';
 import { onDevServer } from '../core/devserver.js';
 import { loadoutRow, removeOne, LOADOUT_HINT } from './loadout.js';
@@ -32,6 +33,8 @@ const TOOLS = [
   ['fair', '自軍機', 'fair'],
   ['fsup', '自軍支援機', 'fsup'],
   ['fground', '自軍地上', 'fground'],
+  ['aair', '友軍機', 'aair'],
+  ['abase', '友軍飛行場', 'abase'],
   ['eair', '敵機', 'eair'],
   ['eground', '敵地上', 'eground'],
   ['ebase', '敵飛行場', 'ebase'],
@@ -42,12 +45,54 @@ const TABS = [
   ['terrain', '地形'],
   ['weather', '天候'],
   ['objectives', '目標'],
+  ['triggers', 'トリガー'],
   ['rating', '評価'],
   ['text', '文章'],
   ['list', '一覧'],
 ];
 
 const COAST = ['none', 'n', 'e', 's', 'w'];
+
+/** トリガー（§12.3）の条件・行動の名前。値は本体の `type` */
+const COND_NAME = {
+  time: '経過時間', detected: '敵に見つかった', destroyed: '敵のタグが破壊された',
+  below: '敵の残りが n 機以下', enter: '自軍機が区域に入った', fired: '別のトリガーが実行済み',
+};
+const ACT_NAME = {
+  guard: '地点に陣取る', defend: '飛行場の防空に戻る', restore: '元の動きに戻す',
+  launch: '飛行場から出撃', reinforce: '増援を動かす／止める', notice: '状況文を出す',
+  ground: '地上部隊の行動を変える',
+};
+/** 地上の行動（§103）の名前。値は本体の `groundMode` */
+const GROUND_MODE_NAME = { advance: '前進', hold: '持つ', route: '巡回', retreat: '下がる' };
+
+/**
+ * 動く地上ユニットの点を地図に出す（§67.3・§103）: 進路の点・持ち場・下がる先。
+ * `side` は 'e'（敵）/ 'f'（自軍・友軍）。進路は `i*100+j`、持ち場は `i*10`、下がる先は `i*10+1`
+ */
+function groundPoints(out, g, i, side) {
+  const name = g.name || '地上';
+  (g.route || []).forEach((wp, j) => out.push({ kind: `${side}route`, i: i * 100 + j, x: wp.x, z: wp.z,
+    ref: wp, color: side === 'e' ? '#e0a05a' : '#7fb8e8', round: true,
+    label: `${name} の経路 ${j + 1}`,
+    tether: j === 0 ? { x: g.x, z: g.z } : { x: g.route[j - 1].x, z: g.route[j - 1].z } }));
+  if (g.holdAt) out.push({ kind: `${side}gpt`, i: i * 10, x: g.holdAt.x, z: g.holdAt.z, ref: g.holdAt,
+    color: side === 'e' ? '#e0c05a' : '#9fd0ff', round: true, label: `${name} の持ち場`, tether: { x: g.x, z: g.z } });
+  if (g.retreatTo) out.push({ kind: `${side}gpt`, i: i * 10 + 1, x: g.retreatTo.x, z: g.retreatTo.z, ref: g.retreatTo,
+    color: '#b0b0b0', round: true, label: `${name} の下がる先`, tether: { x: g.x, z: g.z } });
+}
+const BASE_NAME = { base: '敵飛行場 1', base2: '敵飛行場 2' };
+/** 友軍側のトリガー（§102 A2）。条件の読み方が違うものだけ名前を替える */
+const COND_NAME_ALLY = {
+  ...COND_NAME, detected: '友軍側が敵機を見つけた', destroyed: 'タグが破壊された（敵味方とも）',
+  below: '残りが n 機以下', enter: '敵機が区域に入った',
+};
+const ALLY_BASE_NAME = { base: '友軍飛行場', home: '自軍飛行場（共用）' };
+/** 地図の上のトリガーの印。条件・行動の添字をこの数で畳んで1つの `i` にする */
+const TRIG_STRIDE = 1000;
+/** 友軍側のトリガーの印は `i` にこれを足して敵側と分ける */
+const TRIG_ALLY = 1000000;
+
 const CLOUD_KINDS = Object.keys(CLOUD_COVER);
 const CLOUD_SHAPES = Object.keys(CLOUD_SHAPE);
 
@@ -113,6 +158,8 @@ export class StageEditor {
     this.stage = null;
     this.tool = 'select';
     this.tab = 'terrain';
+    /** トリガータブで見ている側（§102 A2）。'enemy' / 'ally' */
+    this.trigSide = 'enemy';
     this.sel = null;                   // { kind, i }
     this.msg = '';
     this._baseId = null;               // 出力の下敷き（§91）。null は自動判定
@@ -368,8 +415,23 @@ export class StageEditor {
           tether: { x: a.x, z: a.z } });
       }
     });
-    (f.ground || []).forEach((g, i) => out.push({ kind: 'fground', i, x: g.x, z: g.z, ref: g,
-      color: '#5aa9ff', label: g.name }));
+    (f.ground || []).forEach((g, i) => {
+      out.push({ kind: 'fground', i, x: g.x, z: g.z, ref: g,
+        color: '#5aa9ff', label: g.owner === 'ally' ? `${g.name || '地上'}（友軍）` : g.name });
+      groundPoints(out, g, i, 'f');
+    });
+    // **友軍**（§102）。航空機は緑、飛行場は自軍と同じ青（Q7）。
+    // 座標を持たない友軍機は待機する飛行場の上に描く（掴めない＝自軍機の自動配置と同じ扱い）
+    const al = s.ally || {};
+    if (al.base) out.push({ kind: 'abase', i: 0, x: al.base.x, z: al.base.z, ref: al.base,
+      color: '#5aa9ff', big: true, label: '友軍飛行場' });
+    (al.aircraft || []).forEach((a, i) => {
+      const auto = a.x == null;
+      const home = al.base && a.base !== 'home' ? al.base : f.base;
+      if (auto && !home) return;
+      out.push({ kind: 'aair', i, x: auto ? home.x + 600 * (i + 1) : a.x, z: auto ? home.z - 600 : a.z,
+        ref: a, color: '#5fd68a', round: true, label: a.name, auto, tether: auto ? home : null });
+    });
     const e = s.enemy || {};
     ['base', 'base2'].forEach((key, i) => {
       const b = e[key];
@@ -379,12 +441,30 @@ export class StageEditor {
       color: '#ff8a78', round: true, label: a.name }));
     (e.ground || []).forEach((g, i) => {
       out.push({ kind: 'eground', i, x: g.x, z: g.z, ref: g, color: '#e0705a', label: g.name });
-      // 進路の点（§67.3 の車両部隊）。`i` に経路の添字を混ぜて1つずつ掴めるようにする
-      (g.route || []).forEach((wp, j) => out.push({ kind: 'eroute', i: i * 100 + j, x: wp.x, z: wp.z,
-        ref: wp, color: '#e0a05a', round: true,
-        label: `${g.name || '地上'} の経路 ${j + 1}`,
-        tether: j === 0 ? { x: g.x, z: g.z } : { x: g.route[j - 1].x, z: g.route[j - 1].z } }));
+      groundPoints(out, g, i, 'e');
     });
+    // トリガーの地点と区域（§12.3）。**地図で置きたいもの**なので印を出して掴めるようにする。
+    // 友軍側（§102 A2）も同じ印で、`i` を `TRIG_ALLY` だけずらして分ける
+    for (const [host, off, who] of [[e, 0, ''], [s.ally || {}, TRIG_ALLY, '（友軍）']]) {
+      (host.triggers || []).forEach((t, ti) => {
+        (t.when || []).forEach((c, j) => {
+          if (c.type !== 'enter' || c.x == null) return;
+          out.push({ kind: 'tenter', i: off + ti * TRIG_STRIDE + j, x: c.x, z: c.z, ref: c, color: '#c792ff',
+            round: true, radius: c.r || 5000, label: `${t.label || t.id} の区域${who}` });
+        });
+        (t.do || []).forEach((a, j) => {
+          if (a.type !== 'guard' || a.x == null) return;
+          out.push({ kind: 'tguard', i: off + ti * TRIG_STRIDE + j, x: a.x, z: a.z, ref: a, color: '#c792ff',
+            radius: a.r || GUARD_DEFAULT.radius, label: `${t.label || t.id} の陣取る地点（${a.tag}）${who}` });
+        });
+        // 地上の行動の地点（§103）。持ち場・下がる先
+        (t.do || []).forEach((a, j) => {
+          if (a.type !== 'ground' || a.x == null) return;
+          out.push({ kind: 'tground', i: off + ti * TRIG_STRIDE + j, x: a.x, z: a.z, ref: a, color: '#c792ff',
+            round: true, label: `${t.label || t.id} の${GROUND_MODE_NAME[a.mode] || ''}地点（${a.tag}）${who}` });
+        });
+      });
+    }
     (s.objectives || []).forEach((o, i) => {
       if (o.type !== 'reach' || o.x == null) return;
       out.push({ kind: 'reach', i, x: o.x, z: o.z, ref: o, color: '#ffb648',
@@ -467,6 +547,22 @@ export class StageEditor {
       const n = f.ground.length + 1;
       f.ground.push({ type: 'DEPOT', name: `補給施設 ${n}`, x, z, tags: ['depot'], known: true });
       this.sel = { kind: 'fground', i: f.ground.length - 1 };
+    } else if (tool === 'aair') {
+      // 友軍機（§102）。飛行場の近くを押したら待機（座標なし）、離して押せば空中で出現
+      const al = s.ally = s.ally || {};
+      al.aircraft = al.aircraft || [];
+      if (!al.objectives) al.objectives = [{ id: 'ally1', type: 'destroyAll', tag: 'target', label: '目標を叩く' }];
+      const n = al.aircraft.length + 1;
+      const ac = { type: 'F-1', name: `EAGLE ${n}`, loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] };
+      const near = [al.base, f.base].find((b) => b && Math.hypot(x - b.x, z - b.z) <= AUTO_PLACE_RANGE);
+      if (!near) { ac.x = x; ac.z = z; ac.agl = 4500; }
+      else if (near === f.base && al.base) ac.base = 'home';
+      al.aircraft.push(ac);
+      this.sel = { kind: 'aair', i: al.aircraft.length - 1 };
+    } else if (tool === 'abase') {
+      const al = s.ally = s.ally || {};
+      al.base = { x, z };
+      this.sel = { kind: 'abase', i: 0 };
     } else if (tool === 'eair') {
       e.aircraft = e.aircraft || [];
       const n = e.aircraft.length + 1;
@@ -502,17 +598,39 @@ export class StageEditor {
     else if (kind === 'fsup') s.friendly.support.splice(i, 1);
     else if (kind === 'fsupTo') delete s.friendly.support[i].moveTo;   // 行き先だけ消す
     else if (kind === 'fground') s.friendly.ground.splice(i, 1);
-    else if (kind === 'eroute') {
-      const g = s.enemy.ground[Math.floor(i / 100)];
+    else if (kind === 'aair') s.ally.aircraft.splice(i, 1);
+    else if (kind === 'abase') {
+      delete s.ally.base;
+      for (const a of s.ally.aircraft || []) delete a.base;   // 共用の飛行場に戻る
+    }
+    else if (kind === 'eroute' || kind === 'froute') {
+      const g = (kind === 'eroute' ? s.enemy : s.friendly).ground[Math.floor(i / 100)];
       if (g && g.route) {
         g.route.splice(i % 100, 1);
         if (!g.route.length) delete g.route;       // 空の経路は残さない
       }
     }
+    else if (kind === 'egpt' || kind === 'fgpt') {
+      // 持ち場・下がる先の点（§103）。消すと「その場で持つ」「出現した位置へ下がる」に戻る
+      const g = (kind === 'egpt' ? s.enemy : s.friendly).ground[Math.floor(i / 10)];
+      if (g) delete g[i % 10 === 0 ? 'holdAt' : 'retreatTo'];
+    }
     else if (kind === 'eair') s.enemy.aircraft.splice(i, 1);
     else if (kind === 'eground') s.enemy.ground.splice(i, 1);
     else if (kind === 'ebase') delete s.enemy[i === 0 ? 'base' : 'base2'];
     else if (kind === 'reach') s.objectives.splice(i, 1);
+    else if (kind === 'tenter' || kind === 'tguard') {
+      const host = i >= TRIG_ALLY ? s.ally : s.enemy;
+      const t = host && host.triggers && host.triggers[Math.floor((i % TRIG_ALLY) / TRIG_STRIDE)];
+      if (t) (kind === 'tenter' ? t.when : t.do).splice(i % TRIG_STRIDE, 1);
+    }
+    else if (kind === 'tground') {
+      // 点だけ消す（行動は残る —— 持つならその場、下がるなら置いた位置へ）
+      const host = i >= TRIG_ALLY ? s.ally : s.enemy;
+      const t = host && host.triggers && host.triggers[Math.floor((i % TRIG_ALLY) / TRIG_STRIDE)];
+      const a = t && t.do[i % TRIG_STRIDE];
+      if (a) { delete a.x; delete a.z; }
+    }
     this.sel = null;
     this._dirty = true;
     this._refresh(true);
@@ -531,6 +649,31 @@ export class StageEditor {
 
   // -------------------------------------------------------------- 右側
 
+  /**
+   * 動く地上ユニットの欄（§67.3・§103）: 攻撃目標のタグ・地上の行動・持ち場・下がる先・進路。
+   * 動かない陣地には出さない
+   */
+  _groundMoveRows(rows, ref, text) {
+    const spec = GROUND_TYPES[ref.type];
+    if (!spec || spec.static) return;
+    // 進んで壊しに行く相手（§67.3）。空なら巡回だけ
+    rows.push(text('attackTag', '攻撃目標のタグ', 14)
+      + '<span class="ed-note">このタグを持つ相手へ寄って、射程で止まって撃つ</span>');
+    const cur = ref.groundMode || '';
+    rows.push(`<label>地上の行動<select data-edsel="groundMode">${[['', '既定'], ...Object.entries(GROUND_MODE_NAME)]
+      .map(([v, n]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${n}</option>`).join('')}</select></label>`
+      + '<span class="ed-note">既定: 攻撃目標のタグがあれば前進、進路があれば巡回、どちらも無ければその場で持つ。トリガーで切り替えられます</span>');
+    rows.push(`<label>持ち場を置く<input type="checkbox" data-edsel="holdAt"${ref.holdAt ? ' checked' : ''}></label>`
+      + `<label>下がる先を置く<input type="checkbox" data-edsel="retreatTo"${ref.retreatTo ? ' checked' : ''}></label>`
+      + '<span class="ed-note">無ければ「持つ」はその場・「下がる」は置いた位置</span>');
+    // 進む相手（COASTAL WALL の車両部隊）。点は地図に出して掴めるようにする
+    const rt = ref.route;
+    rows.push(`<label>進路を持つ<input type="checkbox" data-edsel="route"${rt ? ' checked' : ''}></label>`
+      + (rt ? `<button data-edcmd="addwp">点を足す</button>`
+        + `<span class="ed-note">${rt.length}点を順に回ります（最後まで行くと先頭へ戻る）。地図の点を掴んで動かせます</span>`
+        : '<span class="ed-note">入れると地図に経路の点が出ます。動かない陣地なら切ったままで構いません</span>'));
+  }
+
   _props() {
     const ref = this._selRef();
     if (!ref) return '<div class="ed-empty">地図の何かを選ぶと、ここで細かく設定できます</div>';
@@ -546,7 +689,8 @@ export class StageEditor {
         `<option value="${esc(o)}"${getPath(ref, path) === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
 
     const item = this._selItem();
-    const KIND_NAME = { fbase: '自軍飛行場', ebase: '敵飛行場', fsupTo: '支援機の行き先' };
+    const KIND_NAME = { fbase: '自軍飛行場', ebase: '敵飛行場', abase: '友軍飛行場', fsupTo: '支援機の行き先',
+      tenter: `トリガーの区域`, tguard: 'トリガーの陣取る地点' };
     rows.push(`<div class="ed-selname">${KIND_NAME[k] || esc(ref.name || ref.label || '')}</div>`);
     // 自動配置の機体は座標を持たない。空の欄を出すと、打ち込めるように見えて
     // **打ち込んだ瞬間に指定配置へ化ける**（しかも片方だけ埋まる）
@@ -557,6 +701,34 @@ export class StageEditor {
       rows.push(pick('type', '機種', custom.FRIENDLY_AIR_TYPES) + text('name', '名前'));
       rows.push(this._loadoutRow(ref));
       rows.push(text('tags', 'タグ（カンマ区切り）', 18));
+    } else if (k === 'aair') {
+      // 友軍機（§102）。プレイヤーは操作できない。友軍の司令官が「友軍の任務」（目標タブ）を読んで動かす
+      rows.push(pick('type', '機種', custom.FRIENDLY_AIR_TYPES) + text('name', '名前'));
+      if (item && item.auto) {
+        const al = this.stage.ally || {};
+        rows.push(al.base
+          ? `<label>待機する飛行場<select data-edsel="allyBase">
+              <option value="ally"${ref.base !== 'home' ? ' selected' : ''}>友軍飛行場</option>
+              <option value="home"${ref.base === 'home' ? ' selected' : ''}>自軍飛行場（共用）</option></select></label>`
+          : '<span class="ed-note">自軍飛行場で待機して始まります（共用・整備枠は使いません）</span>');
+      } else {
+        rows.push(num('agl', '対地高度', 100) + '<span class="ed-note">空中で出現します。飛行場の近くに置くと待機になります</span>');
+      }
+      rows.push(this._loadoutRow(ref));
+      rows.push(text('tags', 'タグ', 18) + pick('aiMode', 'AIモード', Object.keys(AI_MODES)));
+      rows.push('<div class="ed-note">兵装ポイントは使いません。積み直しは最初の搭載に戻します</div>');
+    } else if (k === 'abase') {
+      rows.push(`<label>敵に判明<input type="checkbox" data-edsel="known"${ref.known ? ' checked' : ''}></label>`
+        + '<span class="ed-note">友軍専用。プレイヤーの機体は使えず、全滅の判定（飛行場をすべて失う）にも数えません</span>');
+      const r = ref.reinforce;
+      rows.push(`<label>友軍の増援<input type="checkbox" data-edsel="reinforce"${r ? ' checked' : ''}></label>`
+        + (r ? num('reinforce.every', '間隔(秒)', 10) + num('reinforce.max', '最大機数')
+          + num('reinforce.burst', '1波の機数') + num('reinforce.first', '初回まで(秒)', 10) : ''));
+      if (r) {
+        rows.push(`<label>機種（カンマ区切り）<input data-edsel="reinforce.types"
+            value="${esc((r.types || (r.type ? [r.type] : ['F-1'])).join(','))}" size="20"></label>`
+          + '<span class="ed-note">搭載はその機種の既定になります</span>');
+      }
     } else if (k === 'fsup') {
       rows.push(pick('type', '機種', custom.SUPPORT_AIR_TYPES) + text('name', '名前'));
       rows.push(num('agl', '対地高度', 100) + pick('aiMode', 'AIモード', Object.keys(AI_MODES)));
@@ -569,7 +741,11 @@ export class StageEditor {
         ref.moveTo ? ' checked' : ''}></label>`
         + (ref.moveTo ? '<span class="ed-note">地図に出た点を掴んで動かせます</span>'
           : '<span class="ed-note">入れると地図に行き先の点が出ます（護衛の到達目標と組で使う）</span>'));
-    } else if (k === 'eroute') {
+    } else if (k === 'egpt' || k === 'fgpt') {
+      rows.push(`<div class="ed-note">${this.sel.i % 10 === 0
+        ? '行動が「持つ」のとき、ここへ動いて留まります'
+        : '行動が「下がる」のとき、ここへ下がって留まります'}。右クリックで点を消せます</div>`);
+    } else if (k === 'eroute' || k === 'froute') {
       rows.push('<div class="ed-note">車両はこの点を順に回ります。'
         + '右クリックで点だけ消せます（最後の1点を消すと進路ごと外れます）</div>');
     } else if (k === 'fsupTo') {
@@ -580,8 +756,11 @@ export class StageEditor {
       rows.push(pick('type', '種別', custom.GROUND_PLACEABLE) + text('name', '名前'));
       rows.push(text('tags', 'タグ', 18)
         + `<label>敵に判明<input type="checkbox" data-edsel="known"${ref.known ? ' checked' : ''}></label>`
-        + `<label>武装なし<input type="checkbox" data-edsel="unarmed"${ref.unarmed ? ' checked' : ''}></label>`);
-      rows.push('<div class="ed-note">守る対象なら protect、いくつ残すかで測るなら hold の目標と組で使います</div>');
+        + `<label>武装なし<input type="checkbox" data-edsel="unarmed"${ref.unarmed ? ' checked' : ''}></label>`
+        + `<label>友軍<input type="checkbox" data-edsel="owner"${ref.owner === 'ally' ? ' checked' : ''}></label>`);
+      rows.push('<div class="ed-note">守る対象なら protect、いくつ残すかで測るなら hold の目標と組で使います。'
+        + '「友軍」は指揮系統だけの印（色は自軍と同じ青・§102）。地上の行動を動かすトリガーは友軍側から書けます</div>');
+      this._groundMoveRows(rows, ref, text);
     } else if (k === 'eair') {
       rows.push(pick('type', '機種', custom.ENEMY_AIR_TYPES) + text('name', '名前'));
       rows.push(num('agl', '対地高度', 100) + pick('aiMode', 'AIモード', Object.keys(AI_MODES)));
@@ -595,15 +774,7 @@ export class StageEditor {
       rows.push(text('tags', 'タグ', 18)
         + `<label>判明<input type="checkbox" data-edsel="known"${ref.known ? ' checked' : ''}></label>`
         + `<label>武装なし<input type="checkbox" data-edsel="unarmed"${ref.unarmed ? ' checked' : ''}></label>`);
-      // 進んで壊しに行く相手（§67.3）。空なら巡回だけ
-      rows.push(text('attackTag', '攻撃目標のタグ', 14)
-        + '<span class="ed-note">このタグを持つ相手へ寄って、射程で止まって撃つ</span>');
-      // 進む相手（COASTAL WALL の車両部隊）。点は地図に出して掴めるようにする
-      const rt = ref.route;
-      rows.push(`<label>進路を持つ<input type="checkbox" data-edsel="route"${rt ? ' checked' : ''}></label>`
-        + (rt ? `<button data-edcmd="addwp">点を足す</button>`
-          + `<span class="ed-note">${rt.length}点を順に回ります（最後まで行くと先頭へ戻る）。地図の点を掴んで動かせます</span>`
-          : '<span class="ed-note">入れると地図に経路の点が出ます。動かない陣地なら切ったままで構いません</span>'));
+      this._groundMoveRows(rows, ref, text);
     } else if (k === 'ebase') {
       rows.push(text('tags', 'タグ', 18)
         + `<label>判明<input type="checkbox" data-edsel="known"${ref.known ? ' checked' : ''}></label>`);
@@ -625,9 +796,12 @@ export class StageEditor {
         rows.push(`<label>増援のタグ<input data-edsel="reinforce.tags"
             value="${esc((r.tags || []).join(','))}" size="16"></label>`
           + '<span class="ed-warn">空だと、湧いた機体は destroyAll の数に入りません（§74.3）</span>');
-        rows.push(`<label>見つかってから数える<input type="checkbox" data-edsel="reinforce.after"${
-          r.after === 'detected' ? ' checked' : ''}></label>`
-          + '<span class="ed-note">入れると、こちらが敵に掴まれるまで時計が動きません（§80.5）</span>');
+        // 開始の3通り（§80.5・§12.3）
+        const START = [['', '開始から数える'], ['detected', '見つかってから数える'], ['trigger', 'トリガーで開始']];
+        rows.push(`<label>増援の開始<select data-edsel="reinforce.after">${START.map(([v, l]) =>
+          `<option value="${v}"${(r.after || '') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`
+          + '<span class="ed-note">「見つかってから」はこちらが敵に掴まれるまで時計が動きません。'
+          + '「トリガーで開始」は「増援を動かす」行動が実行されるまで湧きません</span>');
       }
     } else if (k === 'fbase') {
       const air = !!this.stage.friendly.startAirborne;
@@ -636,12 +810,44 @@ export class StageEditor {
         : 'ここに駐機した状態で始まります（点線で結んだ印）'}</div>`);
       rows.push('<div class="ed-note">本体は近くの平らな場所へ飛行場を寄せるので、'
         + '実際の位置は 2km ほどずれることがあります</div>');
+    } else if (k === 'tenter') {
+      const ally = this.sel.i >= TRIG_ALLY;
+      rows.push(num('r', '半径(m)', 500));
+      rows.push(`<div class="ed-note">${ally ? '自軍側（プレイヤー・友軍）がいま探知している敵機' : '敵がいま探知している自軍機'}`
+        + 'がこの輪に入ると成立します。見えていない侵入には反応しません。細目は「トリガー」タブで</div>');
+    } else if (k === 'tground') {
+      rows.push('<div class="ed-note">トリガーが動かす地上部隊の持ち場／下がる先。右クリックで点だけ消せます'
+        + '（消すと、持つならその場・下がるなら置いた位置）。細目は「トリガー」タブで</div>');
+    } else if (k === 'tguard') {
+      const ally = this.sel.i >= TRIG_ALLY;
+      rows.push(num('alt', '対地高度(m)', 100) + num('r', '半径(m)', 500));
+      rows.push(`<div class="ed-note">その時点で生きているタグの${ally ? '友軍機' : '機体'}が、この輪の上を回って守ります。`
+        + '細目は「トリガー」タブで</div>');
     } else if (k === 'reach') {
       rows.push(text('tag', 'タグ') + num('radius', '半径', 500));
       rows.push(text('label', '説明', 26));
     }
     rows.push(`<button data-edcmd="del" class="ed-del">この配置を消す</button>`);
     return rows.map((r) => `<div class="ed-row">${r}</div>`).join('');
+  }
+
+  /**
+   * 友軍の任務（§102）。敵側の任務と同じ形で、友軍の司令官AIが読む。
+   * **書かなければ友軍は動かない**（Q5）—— 友軍機を置いただけでは何もしないので、ここで気付けるように書く。
+   */
+  _allyObjectives(row) {
+    const al = this.stage.ally || {};
+    const list = (al.objectives || []).map((o, i) => row(o, i, 'edallyobj', { del: 'delallyobj', fail: false })).join('');
+    const has = (al.aircraft || []).length;
+    return `<div class="bf-section">友軍の任務（§102）</div>${list
+      || `<div class="ed-empty">${has ? '<span class="ed-warn">友軍機を置いたのに任務がありません。書かなければ友軍の司令官は動きません</span>'
+        : '友軍機（地図の「友軍機」）を置いて任務を書くと、友軍の司令官AIが動かします'}</div>`}
+      <div class="ed-row"><button data-edcmd="addallyobj">友軍の任務を足す</button>
+        <label>友軍の練度<input type="number" step="0.1" data-ed="ally.skill" value="${esc(al.skill ?? 1)}"></label>
+        <label>こちらの攻撃機も護衛する<input type="checkbox" data-ed="ally.escortPlayer"${
+          al.escortPlayer === false ? '' : ' checked'}></label>
+        <span class="ed-note">destroyAll は敵のタグ、protect は味方のタグ（プレイヤーの機体も護れる）。
+          勝敗にも評価にも入りません</span></div>`;
   }
 
   /**
@@ -665,6 +871,212 @@ export class StageEditor {
       + '<button data-edcmd="unpin">飛行場にまかせる</button>'
       + (air ? '' : '<span class="ed-warn">空中発進が切れているので、'
         + 'この座標は使われません（飛行場から出ます）</span>');
+  }
+
+  /**
+   * トリガーの一覧（§12.3）。1件ずつ枠に入れ、条件の行と行動の行を並べる。
+   *
+   * タグ・飛行場・機種・別のトリガーは**選択肢から選ばせる** ——
+   * 打ち間違いは「黙って何も起きない」形でしか現れないので、打たせないのが一番効く。
+   */
+  _triggerTab() {
+    // 敵側と友軍側（§102 A2）で違うのは、タグ・飛行場・機種の選択肢と言葉だけ
+    const ally = this.trigSide === 'ally';
+    const e = this._trigHost() || {};
+    const list = e.triggers || [];
+    const actTags = ally ? this._allyTags() : this._enemyTags();
+    // 友軍の条件はどちらの陣営のタグも読む（行動が触るのは友軍機だけ）
+    const condTags = ally ? [...new Set([...actTags, ...this._friendlyTags(), ...this._enemyTags()])] : actTags;
+    const bases = this._trigBases();
+    const baseName = ally ? ALLY_BASE_NAME : BASE_NAME;
+    const condName = ally ? COND_NAME_ALLY : COND_NAME;
+    const opt = (pairs, cur) => pairs.map(([v, l]) =>
+      `<option value="${esc(v)}"${String(cur ?? '') === String(v) ? ' selected' : ''}>${esc(l)}</option>`).join('');
+    const sel = (path, pairs, cur, title = '') =>
+      `<select data-edtrig="${path}" title="${title}">${opt(pairs, cur)}</select>`;
+    // 今の値が選択肢に無ければ残す（読み込んだ定義を黙って書き換えない）
+    const withCur = (pairs, cur) => (cur && !pairs.some(([v]) => v === cur)
+      ? [[cur, `${cur}（見つかりません）`], ...pairs] : pairs);
+    const tagSel = (path, cur, blank, tags = actTags) => sel(path,
+      withCur([...(blank ? [['', blank]] : []), ...tags.map((t) => [t, t])], cur), cur, 'タグ');
+    const baseSel = (path, cur) => sel(path, withCur(bases.map((k) => [k, baseName[k]]), cur), cur, '飛行場');
+    const num = (path, label, cur, step = 1) =>
+      `<label>${label}<input type="number" step="${step}" data-edtrig="${path}" value="${esc(cur ?? '')}"></label>`;
+
+    const condRow = (c, i, j) => {
+      const p = `${i}.when.${j}`;
+      let f = '';
+      if (c.type === 'time') f = num(`${p}.seconds`, '秒', c.seconds, 10);
+      else if (c.type === 'destroyed') {
+        f = tagSel(`${p}.tag`, c.tag, '', condTags) + num(`${p}.count`, '個数（0＝全滅）', c.count ?? 0);
+      } else if (c.type === 'below') {
+        f = tagSel(`${p}.tag`, c.tag, ally ? '（友軍機すべて）' : '（敵の航空機すべて）', condTags)
+          + num(`${p}.n`, '機以下', c.n);
+      } else if (c.type === 'enter') {
+        f = '<span class="ed-note">地図の紫の輪を動かして決めます</span>' + num(`${p}.r`, '半径', c.r, 500);
+      } else if (c.type === 'fired') {
+        f = sel(`${p}.id`, withCur(list.filter((o, k) => k !== i).map((o) => [o.id, o.label || o.id]), c.id), c.id);
+      }
+      return `<div class="ed-row ed-trigline"><span class="ed-trigtag">もし</span>
+        ${sel(`${p}.type`, TRIGGER_CONDITIONS.map((v) => [v, condName[v]]), c.type)}${f}
+        <button data-edcmd="delcond:${i}.${j}" class="ed-del">×</button></div>`;
+    };
+    const actRow = (a, i, j) => {
+      const p = `${i}.do.${j}`;
+      let f = '';
+      if (a.type === 'guard') {
+        f = tagSel(`${p}.tag`, a.tag) + num(`${p}.alt`, '対地高度', a.alt, 100) + num(`${p}.r`, '半径', a.r, 500)
+          + '<span class="ed-note">地点は地図の紫の四角</span>';
+      } else if (a.type === 'defend') f = tagSel(`${p}.tag`, a.tag) + baseSel(`${p}.base`, a.base);
+      else if (a.type === 'restore') f = tagSel(`${p}.tag`, a.tag);
+      else if (a.type === 'launch') {
+        f = baseSel(`${p}.base`, a.base)
+          + sel(`${p}.aircraft`, (ally ? custom.FRIENDLY_AIR_TYPES : custom.ENEMY_AIR_TYPES).map((v) => [v, v]),
+            a.aircraft, '機種')
+          + num(`${p}.n`, '機数', a.n)
+          + `<label>付けるタグ<input data-edtrig="${p}.tag" value="${esc(a.tag || '')}" size="8"></label>`;
+      } else if (a.type === 'reinforce') {
+        f = baseSel(`${p}.base`, a.base)
+          + sel(`${p}.on`, [['true', '動かす'], ['false', '止める']], String(!!a.on));
+      } else if (a.type === 'notice') {
+        f = `<input data-edtrig="${p}.text" value="${esc(a.text || '')}" size="36" title="画面のログに【状況】として出る">`;
+      } else if (a.type === 'ground') {
+        // 地上の行動（§103）。動かせるのは動く地上ユニットだけ
+        f = tagSel(`${p}.tag`, a.tag, '', this._groundTags(ally))
+          + sel(`${p}.mode`, Object.entries(GROUND_MODE_NAME), a.mode, '行動')
+          + (a.mode === 'advance'
+            ? `<label>攻撃目標のタグ<input data-edtrig="${p}.attackTag" value="${esc(a.attackTag || '')}" size="8" title="空ならステージに書いたもの"></label>`
+            : '')
+          + (a.mode === 'hold' || a.mode === 'retreat'
+            ? `<button data-edcmd="trgpt:${i}.${j}">${a.x == null ? '地点を置く' : '地点を外す'}</button>`
+              + `<span class="ed-note">${a.x == null ? (a.mode === 'hold' ? 'その場で持つ' : '置いた位置へ下がる') : '地図の紫の点'}</span>`
+            : '');
+      }
+      return `<div class="ed-row ed-trigline"><span class="ed-trigtag">→</span>
+        ${sel(`${p}.type`, TRIGGER_ACTIONS.map((v) => [v, ACT_NAME[v]]), a.type)}${f}
+        <button data-edcmd="delact:${i}.${j}" class="ed-del">×</button></div>`;
+    };
+
+    const blocks = list.map((t, i) => `<div class="ed-trig">
+      <div class="ed-row">
+        <input data-edtrig="${i}.id" value="${esc(t.id)}" size="8" title="ID（別のトリガーから指すときの名前）">
+        <input data-edtrig="${i}.label" value="${esc(t.label || '')}" size="28" title="メモ（画面には出ません）">
+        ${sel(`${i}.match`, [['all', '条件をすべて満たしたら'], ['any', '条件のどれか1つで']], t.match || 'all')}
+        ${num(`${i}.delay`, '遅らせる(秒)', t.delay ?? 0, 5)}
+        <button data-edcmd="deltrig:${i}" class="ed-del">消す</button>
+      </div>
+      ${(t.when || []).map((c, j) => condRow(c, i, j)).join('')}
+      <div class="ed-row"><button data-edcmd="addcond:${i}">条件を足す</button></div>
+      ${(t.do || []).map((a, j) => actRow(a, i, j)).join('')}
+      <div class="ed-row"><button data-edcmd="addact:${i}">行動を足す</button></div>
+    </div>`).join('');
+
+    const sideRow = `<div class="ed-row ed-trigside">
+      <button data-edcmd="trigside:enemy"${ally ? '' : ' class="on"'}>敵側 (${((this.stage.enemy || {}).triggers || []).length})</button>
+      <button data-edcmd="trigside:ally"${ally ? ' class="on"' : ''}>友軍側 (${((this.stage.ally || {}).triggers || []).length})</button></div>`;
+    const empty = ally ? 'トリガーはありません。友軍は最初の設定のまま動きます'
+      : 'トリガーはありません。敵は最初の設定のまま動きます';
+    const note = ally
+      ? `友軍側のトリガーは、敵味方どちらのタグの損害も数えます（「敵の SAM が壊れたら」が書けます）。区域は自軍側が探知している敵機だけを数えます。
+          行動が動かすのは友軍機だけで、プレイヤーの機体は動きません。友軍の任務が無くても動きます`
+      : '数えるのは敵自身の損害と、敵が探知している自軍機だけです。';
+    return `${sideRow}${blocks || `<div class="ed-empty">${empty}</div>`}
+      <div class="ed-row"><button data-edcmd="addtrig">トリガーを足す</button>
+        <span class="ed-note">条件がそろったら一度だけ行動します。${note}
+          「陣取る」「元に戻す」はその時点で生きている機体にだけ効きます（あとで出る機体には、同じトリガーで「出撃」→「陣取る」の順に書く）</span></div>`;
+  }
+
+  /** トリガータブで見ている側の入れ物（`stage.enemy` / `stage.ally`）。`create` で無ければ作る */
+  _trigHost(create = false) {
+    const s = this.stage;
+    const key = this.trigSide === 'ally' ? 'ally' : 'enemy';
+    if (create && !s[key]) s[key] = {};
+    return s[key] || null;
+  }
+
+  /** トリガーの行動が指せる飛行場。敵は `base`/`base2`、友軍は `base`（友軍飛行場）/`home`（共用） */
+  _trigBases() {
+    const s = this.stage;
+    if (this.trigSide === 'ally') {
+      return [...((s.ally || {}).base ? ['base'] : []), ...((s.friendly || {}).base ? ['home'] : [])];
+    }
+    const e = s.enemy || {};
+    return ['base', 'base2'].filter((k) => e[k]);
+  }
+
+  /** 友軍が持つタグ（友軍機・友軍の増援・友軍のトリガーの出撃）。行動が触れるもの（§102 A2） */
+  _allyTags() {
+    const al = this.stage.ally || {};
+    const set = new Set();
+    for (const u of al.aircraft || []) for (const t of u.tags || []) set.add(t);
+    for (const r of [al.reinforce, al.base && al.base.reinforce]) for (const t of (r && r.tags) || []) set.add(t);
+    for (const t of al.triggers || []) for (const a of t.do || []) if (a.type === 'launch' && a.tag) set.add(a.tag);
+    return [...set];
+  }
+
+  /** 自軍側（プレイヤー・友軍の地上・支援機・飛行場）のタグ。友軍の条件が読む */
+  _friendlyTags() {
+    const f = this.stage.friendly || {};
+    const set = new Set(['home']);
+    if ((this.stage.ally || {}).base) set.add('ally-home');
+    for (const u of [...(f.aircraft || []), ...(f.ground || []), ...(f.support || [])]) {
+      for (const t of u.tags || []) set.add(t);
+    }
+    return [...set];
+  }
+
+  /** 敵側のタグ。配置・飛行場・増援・トリガーの出撃が付けるものまで（§12.3） */
+  /** 動く地上ユニットのタグ（§103）。敵側は敵の、友軍側は友軍（`owner: 'ally'`）の */
+  _groundTags(ally) {
+    const list = ally ? ((this.stage.friendly || {}).ground || []).filter((g) => g.owner === 'ally')
+      : ((this.stage.enemy || {}).ground || []);
+    const set = new Set();
+    for (const g of list) if (GROUND_TYPES[g.type] && !GROUND_TYPES[g.type].static) for (const t of g.tags || []) set.add(t);
+    return [...set];
+  }
+
+  _enemyTags() {
+    const e = this.stage.enemy || {};
+    const set = new Set();
+    for (const u of [...(e.aircraft || []), ...(e.ground || [])]) for (const t of u.tags || []) set.add(t);
+    for (const k of ['base', 'base2']) {
+      const b = e[k];
+      if (!b) continue;
+      for (const t of b.tags || []) set.add(t);
+      for (const t of (b.reinforce && b.reinforce.tags) || []) set.add(t);
+    }
+    for (const t of e.triggers || []) for (const a of t.do || []) if (a.type === 'launch' && a.tag) set.add(a.tag);
+    return [...set];
+  }
+
+  /** 条件・行動を足したとき、型を変えたときの既定（§12.3） */
+  _trigDefault(kind, type) {
+    const ally = this.trigSide === 'ally';
+    const e = this._trigHost() || {};
+    const tag = (ally ? this._allyTags() : this._enemyTags())[0] || '';
+    const base = this._trigBases()[0] || 'base';
+    const at = (ally ? (base === 'home' ? (this.stage.friendly || {}).base : e.base) : e[base])
+      || { x: MAP_SIZE / 2, z: MAP_SIZE / 2 };
+    const near = { x: clampPos(at.x + 6000), z: clampPos(at.z + 6000) };
+    if (kind === 'when') {
+      switch (type) {
+        case 'time': return { type, seconds: 120 };
+        case 'destroyed': return { type, tag: ally ? (this._enemyTags()[0] || tag) : tag, count: 0 };
+        case 'below': return { type, n: 1 };
+        case 'enter': return { type, ...near, r: 8000 };
+        case 'fired': return { type, id: ((e.triggers || [])[0] || {}).id || '' };
+        default: return { type };
+      }
+    }
+    switch (type) {
+      case 'guard': return { type, tag, ...near, alt: GUARD_DEFAULT.agl, r: GUARD_DEFAULT.radius };
+      case 'defend': return { type, tag, base };
+      case 'restore': return { type, tag };
+      case 'launch': return { type, base, aircraft: ally ? 'F-1' : 'J-7', n: 2 };
+      case 'reinforce': return { type, base, on: true };
+      case 'ground': return { type, tag: this._groundTags(ally)[0] || '', mode: 'advance' };
+      default: return { type, text: '' };
+    }
   }
 
   _loadoutRow(ref) {
@@ -770,8 +1182,10 @@ export class StageEditor {
           || '<div class="ed-empty">書かなければ、敵は陣営としての目標を持ちません（各機が勝手に戦います）</div>'}
         <div class="ed-row"><button data-edcmd="addfoeobj">敵の任務を足す</button>
           <span class="ed-note">敵の司令官AIが「何を壊すか・誰を護るか」を読みます。
-            勝敗には出ません</span></div>`;
+            勝敗には出ません</span></div>
+        ${this._allyObjectives(row)}`;
     }
+    if (this.tab === 'triggers') return this._triggerTab();
     if (this.tab === 'rating') {
       const r = s.rating || (s.rating = { time: [300, 600], points: [10, 18], losses: [0, 1] });
       return `<div class="ed-row">${num('weaponPoints', '兵装ポイント上限')}
@@ -884,13 +1298,24 @@ export class StageEditor {
         return;
       } else if (path === 'reinforce.after') {
         ref.reinforce = ref.reinforce || {};
-        if (t.checked) ref.reinforce.after = 'detected';
+        if (t.value) ref.reinforce.after = t.value;
         else delete ref.reinforce.after;
         return;
       } else if (path === 'route') {
         if (t.checked) ref.route = ref.route
           || [{ x: clampPos(ref.x - 8000), z: clampPos(ref.z) }, { x: clampPos(ref.x + 8000), z: clampPos(ref.z) }];
         else delete ref.route;
+        this._refresh(true);
+        return;
+      } else if (path === 'groundMode') {
+        if (t.value) ref.groundMode = t.value; else delete ref.groundMode;
+        this._draw();
+        return;
+      } else if (path === 'holdAt' || path === 'retreatTo') {
+        // 持ち場・下がる先（§103）。入れたら**いまの位置から少し離して**置く（重なると掴めない）
+        const off = path === 'holdAt' ? 2500 : -2500;
+        if (t.checked) ref[path] = ref[path] || { x: clampPos(ref.x + off), z: clampPos(ref.z) };
+        else delete ref[path];
         this._refresh(true);
         return;
       } else if (path === 'moveTo') {
@@ -900,8 +1325,18 @@ export class StageEditor {
         else delete ref.moveTo;
         this._refresh(true);
         return;
+      } else if (path === 'owner') {
+        // 指揮系統（§102）。書くのは 'ally' のときだけ
+        if (t.checked) ref.owner = 'ally'; else delete ref.owner;
+        this._draw();
+        return;
+      } else if (path === 'allyBase') {
+        if (t.value === 'home') ref.base = 'home'; else delete ref.base;
+        this._draw();
+        return;
       } else if (path === 'reinforce') {
-        if (t.checked) ref.reinforce = ref.reinforce || { every: 180, max: 4, burst: 1, types: ['J-7'] };
+        const ally = this.sel && this.sel.kind === 'abase';
+        if (t.checked) ref.reinforce = ref.reinforce || { every: 180, max: 4, burst: 1, types: [ally ? 'F-1' : 'J-7'] };
         else delete ref.reinforce;
         this._refresh();
         return;
@@ -915,12 +1350,43 @@ export class StageEditor {
       this._draw();
       return;
     }
-    const objAttr = t.dataset.edobj ? 'edobj' : (t.dataset.edfoeobj ? 'edfoeobj' : null);
+    if (t.dataset.edtrig) {
+      // トリガー（§12.3）。道は見ている側（`enemy` / `ally`）の `triggers` からの相対
+      const host = this._trigHost();
+      const list = host && host.triggers;
+      if (!list) return;
+      const path = t.dataset.edtrig;
+      const keys = path.split('.');
+      const key = keys[keys.length - 1];
+      // 条件・行動の型を変えたら、欄ごと既定に差し替える（前の型の欄を残さない）
+      if (key === 'type' && keys.length === 4) {
+        const [i, kind, j] = keys;
+        list[Number(i)][kind][Number(j)] = this._trigDefault(kind, t.value);
+        this._refresh(true);
+        return;
+      }
+      let v = val(t.value);
+      if (key === 'on') v = t.value === 'true';
+      if (key === 'tag' && keys.length > 2 && v === '') {
+        // 「敵の航空機すべて」・出撃のタグなし は欄ごと消す
+        const o = getPath(list, keys.slice(0, -1).join('.'));
+        if (o) delete o.tag;
+      } else if (key === 'attackTag' && v === '') {
+        const o = getPath(list, keys.slice(0, -1).join('.'));
+        if (o) delete o.attackTag;
+      } else setPath(list, path, v);
+      // 地上の行動を替えたら欄の組が変わる（攻撃目標のタグ／地点）
+      if (key === 'mode') { this._refresh(true); return; }
+      this._draw();
+      return;
+    }
+    const objAttr = t.dataset.edobj ? 'edobj' : (t.dataset.edfoeobj ? 'edfoeobj'
+      : (t.dataset.edallyobj ? 'edallyobj' : null));
     if (objAttr) {
       const [i, key] = t.dataset[objAttr].split('.');
-      const list = objAttr === 'edobj'
-        ? this.stage.objectives
-        : (this.stage.enemy && this.stage.enemy.objectives);
+      const list = objAttr === 'edobj' ? this.stage.objectives
+        : objAttr === 'edallyobj' ? (this.stage.ally && this.stage.ally.objectives)
+          : (this.stage.enemy && this.stage.enemy.objectives);
       const o = list && list[Number(i)];
       if (!o) return;
       o[key] = (key === 'x' || key === 'z') ? clampPos(val(t.value)) : val(t.value);
@@ -1014,6 +1480,22 @@ export class StageEditor {
         this._render();
         break;
       }
+      case 'addallyobj': {
+        const al = s.ally = s.ally || {};
+        al.objectives = al.objectives || [];
+        al.objectives.push({ id: 'ally' + (al.objectives.length + 1), type: 'destroyAll',
+          tag: 'target', label: '目標を叩く' });
+        this._dirty = true;
+        this._render();
+        break;
+      }
+      case 'delallyobj':
+        s.ally.objectives.splice(Number(arg), 1);
+        // 空の配列は残さない。`main.js` は「書いてあるか」で友軍の司令官を出す
+        if (!s.ally.objectives.length) delete s.ally.objectives;
+        this._dirty = true;
+        this._render();
+        break;
       case 'delfoeobj':
         s.enemy.objectives.splice(Number(arg), 1);
         // **空の配列は残さない。** `main.js` は「書いてあるか」で敵司令官を出す
@@ -1021,6 +1503,65 @@ export class StageEditor {
         this._dirty = true;
         this._render();
         break;
+      case 'trigside':
+        this.trigSide = arg === 'ally' ? 'ally' : 'enemy';
+        this._render();
+        break;
+      case 'addtrig': {
+        const e = this._trigHost(true);
+        e.triggers = e.triggers || [];
+        let n = e.triggers.length + 1;
+        while (e.triggers.some((t) => t.id === 'trig' + n)) n++;
+        e.triggers.push({ id: 'trig' + n, label: '', match: 'all',
+          when: [this._trigDefault('when', 'destroyed')], do: [this._trigDefault('do', 'defend')] });
+        this._dirty = true;
+        this._refresh(true);
+        break;
+      }
+      case 'deltrig': {
+        const e = this._trigHost();
+        e.triggers.splice(Number(arg), 1);
+        // **空の配列は残さない**（敵の任務と同じ）
+        if (!e.triggers.length) delete e.triggers;
+        this.sel = null;
+        this._dirty = true;
+        this._refresh(true);
+        break;
+      }
+      case 'addcond':
+      case 'addact': {
+        const t = this._trigHost().triggers[Number(arg)];
+        const kind = op === 'addcond' ? 'when' : 'do';
+        t[kind] = t[kind] || [];
+        t[kind].push(this._trigDefault(kind, op === 'addcond' ? 'time' : 'notice'));
+        this._dirty = true;
+        this._refresh(true);
+        break;
+      }
+      case 'trgpt': {
+        // 地上の行動の地点（§103）を置く／外す。置くときは**そのタグの地上部隊の近く**へ
+        const [i, j] = arg.split('.').map(Number);
+        const a = this._trigHost().triggers[i].do[j];
+        if (a.x != null) { delete a.x; delete a.z; } else {
+          const ally = this.trigSide === 'ally';
+          const list = ally ? ((s.friendly || {}).ground || []) : ((s.enemy || {}).ground || []);
+          const g = list.find((u) => (u.tags || []).includes(a.tag)) || { x: MAP_SIZE / 2, z: MAP_SIZE / 2 };
+          a.x = clampPos(g.x + (a.mode === 'retreat' ? -3000 : 3000));
+          a.z = clampPos(g.z);
+        }
+        this._dirty = true;
+        this._refresh(true);
+        break;
+      }
+      case 'delcond':
+      case 'delact': {
+        const [i, j] = arg.split('.').map(Number);
+        this._trigHost().triggers[i][op === 'delcond' ? 'when' : 'do'].splice(j, 1);
+        this.sel = null;
+        this._dirty = true;
+        this._refresh(true);
+        break;
+      }
       case 'delobj':
         s.objectives.splice(Number(arg), 1);
         this._dirty = true;

@@ -354,7 +354,12 @@ function approachAlt(self, target, flat) {
     // 上限を単に外すと、高いところから降りてこなくなって別の問題が出た
     // （実測でミッション1のクリアが 5/6 → 3/6）。
     const taper = clamp(1 - (above - PERCH_ALT) / PERCH_ALT, 0, 1);
-    return target.pos.y + PERCH_ALT * taper;
+    // **上へは追わない**（§98.3）。上に付けるために登ると、下の側は
+    // 「相手の高度」へ登ってくるので、追いつかれるたびに +900m を付け直して
+    // **撃ち合いが始まるまで両機とも天井まで上がり続けた**（SCRAMBLE で
+    // 18戦に22機が 11,000m 超）。上にいるならその高度を保ち、
+    // 高すぎるぶんだけ上の式どおり降りる。
+    return Math.min(self.pos.y, target.pos.y + PERCH_ALT * taper);
   }
   return target.pos.y;
 }
@@ -443,7 +448,7 @@ const REATTACK_RANGE = 3500;
  * @returns {{heading:number, phase:'in'|'out', flat:number}}
  */
 /** 重力加速度(m/s^2)。無誘導爆弾の弾道解に使う */
-const G = 9.8;
+export const G = 9.8;
 
 /**
  * 偏差の掛け率。1 で「落下時間ぶんきっちり先」（§32.5）。
@@ -457,14 +462,17 @@ const BOMB_LEAD = 1;
  * 落下時間は**高度だけ**で決まり、水平距離には依らないので一度で解ける。
  * 母機の上下速度を含めた `h = -vy·t + g·t²/2` を t について解く。
  *
+ * 爆弾の初速はこの式と同じ `speed·(cos p, sin p)`（`missile.js`・§95）。
+ *
  * @param {object} shooter 投下する機体
  * @param {number} aimY    狙点の標高(m)
+ * @param {number} [pitch] 上昇角。省けば今の上昇角 —— トスの「いま上げたら届く距離」を
+ *                         仮の角で解くときだけ渡す（§95）
  * @returns {{h:number, fallTime:number, throwRange:number}}
  *   h … 狙点からの高度差 / throwRange … 投下点から着弾点までの水平距離
  */
-export function bombSolution(shooter, aimY) {
+export function bombSolution(shooter, aimY, pitch = shooter.pitch || 0) {
   const h = shooter.pos.y - aimY;
-  const pitch = shooter.pitch || 0;
   const vy = shooter.speed * Math.sin(pitch);
   const vh = shooter.speed * Math.cos(pitch);
   const fallTime = (vy + Math.sqrt(Math.max(0, vy * vy + 2 * G * h))) / G;
@@ -531,6 +539,190 @@ export function groundAttackRun(self, target, aimPos = target.pos) {
 
   return {
     heading: self._runPhase === 'out' ? self._runHeading : bearing,
+    phase: self._runPhase,
+    flat,
+  };
+}
+
+/**
+ * トス爆撃の定数（§95）。**書き換えられるように1つの入れ物にしてある** ——
+ * 計測の道具（`tools/_tossai.js`）が値を差し替えて比べるため。本体は書き換えない。
+ */
+export const TOSS = {
+  /** 離脱は、投げられる距離よりこれだけ離れてから入り直す(m) */
+  reentry: 3000,
+  /**
+   * 機首上げを窓の手前へずらす量（爆風半径に掛ける）。
+   *
+   * 機首を上げた瞬間に落下点が**この量だけ手前へ跳び、そこで1発目が出る**（§95.5）。
+   * 初めは 0.8（窓の手前の縁から入れて一連投下で目標を挟む）にしたが、上昇中は落下点が
+   * 速く走るので2発目は奥へ離れ、挟むにならなかった。0.1 にすると1発目が目標の上に落ち、
+   * A-3 は平均 1.0 発で 6/6 撃破（0.8 では 2.0 発）。0 にしないのは、刻みの遅れで
+   * 跳んだ先が窓の奥へ出ると一発も放さないため（§95.1）。
+   */
+  pullLead: 0.1,
+  /** 機首を上げてよい、目標への方位のずれ(rad)。4倍を超えたら上げるのをやめる */
+  align: 10 * DEG,
+  /**
+   * 機首上げ中の爆弾の投下間隔(秒)。水平の一連投下（`combat.js` の `BOMB_COOLDOWN`）と
+   * 同じ値から始める。上昇中は落下点が速く前へ走るので、間隔が同じでも着弾は散る
+   */
+  releaseInterval: 0.5,
+  /**
+   * 進入 `in`・離脱 `out` の床に見込む上昇の余地（§95.9）。先読みした地形のうち、
+   * **そこへ着くまでに `この値 × climbRate` で登れるぶん**を差し引く。0 で見込まない（今までの床）。
+   *
+   * 今までの床は「先読み 4〜11km の最高点＋220m」で、稜線のずっと手前から稜線の上を飛び、
+   * 高所の SAM から見えていた。c3 で 0.6／0.8／1.0 を測り、1.0 で初めて地形に衝突した
+   * （15本中1件）。0.8 は 45本で衝突 0・最低の地上高 88m
+   */
+  climbCredit: 0.8,
+  /** 機首上げは「投射の床」（`tossClearAlt`）のこれだけ下まで来てから(m) */
+  clearTol: 30,
+  /** 弾道が地形からこれだけ離れていれば「越えた」とみなす(m) */
+  pathClearance: 15,
+};
+
+/**
+ * 爆弾の弾道が、落下点に着くまでに地形へ当たらないか（§95.9）。
+ *
+ * **弾道解（`bombSolution`）は地形を見ない**。低く入ったトスは、落下点が窓に入っていても
+ * 目標を囲む谷の縁に当たっていた（c3 で放した弾の 45%・目標から中央値 1.2km）。
+ * 放物線を刻んで地形と比べる。落下点の手前 `skipNear` は見ない —— 目標のそばの地面に
+ * 落ちるのは外れではない。
+ *
+ * @param {object} terrain  `world.terrain`
+ * @param {{x:number,y:number,z:number}} from 放す位置
+ * @param {number} heading  投げる向き
+ * @param {number} speed    初速の大きさ（機体の速さ）
+ * @param {number} pitch    初速の上昇角
+ * @param {number} throwRange 放す位置から落下点までの水平距離
+ * @param {number} skipNear 落下点の手前、見ない距離(m)
+ * @returns {boolean} 途中で地形に当たらなければ true
+ */
+export function bombPathClear(terrain, from, heading, speed, pitch, throwRange, skipNear) {
+  const vh = Math.max(1, speed * Math.cos(pitch));
+  const vy = speed * Math.sin(pitch);
+  const sx = Math.sin(heading), sz = -Math.cos(heading);
+  const end = throwRange - skipNear;
+  for (let s = BOMB_PATH_STEP; s < end; s += BOMB_PATH_STEP) {
+    const t = s / vh;
+    const y = from.y + vy * t - 0.5 * G * t * t;
+    if (y < terrain.heightAt(from.x + sx * s, from.z + sz * s) + TOSS.pathClearance) return false;
+  }
+  return true;
+}
+
+/** `bombPathClear` の刻み(m)。地形の格子より細かくする */
+const BOMB_PATH_STEP = 100;
+
+/**
+ * トスで投げた弾が目標までの地形を越えられる、いちばん低い投下高度（§95.9）＝**投射の床**。
+ *
+ * 投げる位置は高さで決まる（高いほど遠くから届く）ので、高さを二分探索する。
+ * 投げる向きは今の機体から目標への方位、上昇角は `tossRange` と同じ仮の角。
+ * 高いほど投げる位置が遠くなり、弾道が越える地形も変わるので厳密には単調でないが、
+ * 探すのは「このくらいまで上がれば越える」の目安で足りる。
+ *
+ * @returns {{alt:number, range:number}} alt … 絶対高度(m)（上限まで上げても越えなければ上限）、
+ *   range … その高さから投げたときの投射距離(m)。呼ぶ側が「どこから上がり始めるか」に使う
+ */
+export function tossClearAlt(self, aimPos, terrain, blastRadius) {
+  const bearing = headingOf(aimPos.x - self.pos.x, aimPos.z - self.pos.z);
+  const speed = Math.max(40, self.speed);
+  const pitch = Math.atan2(self.climbCap, speed);
+  const bx = -Math.sin(bearing), bz = Math.cos(bearing);   // 目標から機体の側へ
+  const rangeAt = (y) => bombSolution({ pos: { y }, speed }, aimPos.y, pitch).throwRange;
+  const clears = (y) => {
+    const range = rangeAt(y);
+    const from = { x: aimPos.x + bx * range, y, z: aimPos.z + bz * range };
+    return bombPathClear(terrain, from, bearing, speed, pitch, range, blastRadius);
+  };
+  let lo = aimPos.y, hi = aimPos.y + TOSS_CLEAR_SEARCH;
+  if (clears(lo)) hi = lo;
+  else if (clears(hi)) {
+    while (hi - lo > 25) {
+      const mid = (lo + hi) / 2;
+      if (clears(mid)) hi = mid; else lo = mid;
+    }
+  }
+  return { alt: hi, range: rangeAt(hi) };
+}
+
+/** 投射の床を探す上限（目標からの高さ, m） */
+const TOSS_CLEAR_SEARCH = 4000;
+
+/**
+ * いま最大上昇に入ったら爆弾が届く水平距離（§95）。
+ *
+ * 上昇率は `_integrate` で `altErr × 0.9` から即座に上限へ張り付くので、
+ * 機首上げは一瞬で入る。その角を仮に渡して弾道解を解く ——
+ * 投下の判定と**同じ式**なので、ここで届くと出れば判定もそこで放す。
+ */
+export function tossRange(self, aimY) {
+  const pitch = Math.atan2(self.climbCap, Math.max(40, self.speed));
+  return bombSolution(self, aimY, pitch).throwRange;
+}
+
+/**
+ * トス爆撃の攻撃パス（§95）。進入 `in` → 機首上げ `pull` → 離脱 `out`。
+ *
+ * 放す瞬間は決めない。投下の判定（`combat.js`）が実落下点で見ているので、
+ * 機首を上げれば落下点が前へ伸び、窓に掛かったところで放される。
+ * ここが決めるのは**いつ上げるか**と**投げたあとどう離れるか**だけ。
+ *
+ * **`tossRange` より近くで上げてはいけない**（§95.1）。上げた瞬間に投射距離が
+ * 水平投下ぶんからトスの距離へ跳ぶので、跳んだ先が窓の奥なら、落下点は
+ * 前へ進むだけで二度と窓へ戻らない（測ったら 20 条件中 6 条件で1発も放さなかった）。
+ * 近すぎたら上げずに離れて入り直す。
+ *
+ * 離脱中は `self._tossEgress` を立てる。爆弾が尽きても離れきるまではこの飛び方を続け、
+ * 投げた直後に目標へ向き直らないようにする（呼ぶ側 `aircraft.js` が見る）。
+ *
+ * `clearAlt`（投射の床・§95.9）を渡すと、**その高さまで来るまでは上げない**。
+ * 低く入って谷の縁より下から投げると、弾が縁に当たる。上がりきる前に近づきすぎたら、
+ * ほかの「近すぎる」と同じく離れて入り直す。
+ *
+ * @returns {{heading:number, phase:'in'|'pull'|'out', flat:number}}
+ */
+export function tossAttackRun(self, target, aimPos, blastRadius, clearAlt = null) {
+  const dx = aimPos.x - self.pos.x;
+  const dz = aimPos.z - self.pos.z;
+  const flat = Math.hypot(dx, dz);
+  const bearing = headingOf(dx, dz);
+
+  if (self._runTarget !== target) {
+    self._runTarget = target;
+    self._runPhase = 'in';
+    self._tossEgress = false;
+  }
+
+  const reach = tossRange(self, aimPos.y);
+  const angleOff = Math.abs(angleDiff(bearing, self.heading));
+  if (self._runPhase === 'in') {
+    // 上げるのは**目標へ向いてから**。向き直りの途中で上げると、落下点が
+    // 針路の横へ出て窓に掛からないまま登り続ける。
+    const high = clearAlt == null || self.pos.y >= clearAlt - TOSS.clearTol;
+    if (flat < reach - blastRadius) self._runPhase = 'out';
+    else if (flat <= reach + TOSS.pullLead * blastRadius && angleOff < TOSS.align && high) {
+      self._runPhase = 'pull';
+    }
+  } else if (self._runPhase === 'pull') {
+    // 落下点が窓の奥の縁を越えたら、もう放せない
+    const sol = bombSolution(self, aimPos.y);
+    const hit = bombImpactPoint(self, sol.throwRange);
+    const ahead = ((hit.x - self.pos.x) * dx + (hit.z - self.pos.z) * dz) / Math.max(1, flat);
+    if (ahead > flat + blastRadius || angleOff > 4 * TOSS.align) self._runPhase = 'out';
+  } else if (flat > reach + TOSS.reentry) {
+    self._runPhase = 'in';
+  }
+  // 以前の `groundAttackRun` の離脱と取り違えないよう、ここで毎回決め直す
+  self._tossEgress = self._runPhase === 'out';
+  // 途中で水平へ切り替えられたとき、`groundAttackRun` の離脱がこの向きを読む
+  if (self._tossEgress) self._runHeading = bearing + Math.PI;
+
+  return {
+    heading: self._runPhase === 'out' ? bearing + Math.PI : bearing,
     phase: self._runPhase,
     flat,
   };

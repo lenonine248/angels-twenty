@@ -20,10 +20,16 @@
 //
 // 両陣営に付けられる。青に付ければベンチの測定器、赤に付ければ敵が
 // 陣営として動く（§27.5）。プレイヤーには付けない。
+//
+// **指揮系統で絞れる**（§102）。`{ owner: 'ally' }` を渡すと友軍の機体だけを動かし、
+// `{ owner: 'player' }` ならプレイヤーの機体だけ（ベンチの席）。渡さなければ陣営全体。
+// 動かす機体は絞るが、**「誰が何に向かっているか」は陣営で数える** ——
+// 友軍の攻撃機がプレイヤーの攻撃機と同じ目標に群がらないように。
 
 import { LEVEL } from '../sim/detection.js';
 import { isArmed, WEAPONS } from '../data/weapons.js';
 import { samRangeOf } from '../data/ground.js';
+import { OWNER } from '../sim/unit.js';
 
 /** 考える間隔(秒)。パイロットより遅くてよい */
 const THINK_INTERVAL = 2;
@@ -83,11 +89,19 @@ export class Commander {
    * @param {object} world
    * @param {string} side  'blue' | 'red'
    * @param {object} mission 目標の一覧を持つもの（sim/mission.js）
+   * @param {object} [opts]
+   *   owner … 'ally' | 'player'（§102）。渡さなければ陣営全体を動かす
+   *   escortPlayer … 友軍の戦闘機がプレイヤーの攻撃機も護衛する（§102・既定 true）
    */
-  constructor(world, side, mission) {
+  constructor(world, side, mission, opts = {}) {
     this.world = world;
     this.side = side;
     this.mission = mission;
+    this.owner = opts.owner || null;
+    this.escortPlayer = opts.escortPlayer !== false;
+    /** 判断をログに出すか（友軍だけ・§102）。同じ文を2秒ごとに出さないよう、機体ごとに最後の文を覚える */
+    this.talk = !!opts.talk;
+    this._said = new Map();
     this.time = 0;
     this._next = 0;
     /**
@@ -173,6 +187,7 @@ export class Commander {
         if (w) {
           this._setMode(u, 'ESCORT');
           u.escortTarget = w;
+          this._say(u, 'esc' + w.id, `${u.name} ${w.name} の護衛に付きます`);
           continue;
         }
       }
@@ -185,12 +200,17 @@ export class Commander {
           u.strikeTarget = t;
           u.escortTarget = null;
           u.searchPlot = null;
+          this._say(u, 'str' + t.id, `${u.name} ${t.name} を攻撃に向かいます`);
           continue;
         }
         // **見えていないなら、最後に分かっていた場所へ探しに行く**（§72.5）。
         // 弾を積んで戻ってきたのに行き先が無い、という状態を無くす。
         const spot = this._pickSearch(u);
-        if (spot) { this._sendSearch(u, spot); continue; }
+        if (spot) {
+          this._sendSearch(u, spot);
+          this._say(u, 'srch' + spot.id, `${u.name} 見失った目標を探しに向かいます`);
+          continue;
+        }
       }
 
       // 3. **撃ち尽くした攻撃機は積み直しに帰る**（§72.2）。
@@ -201,6 +221,7 @@ export class Commander {
         u.strikeTarget = null;
         u.escortTarget = null;
         this.world.log?.(`${u.name} 対地兵装を撃ち尽くしました — 積み直しに帰投`, u);
+        this._said.set(u.id, 'rtb');
         continue;
       }
 
@@ -216,7 +237,18 @@ export class Commander {
       u.strikeTarget = null;
       u.escortTarget = null;
       u.searchPlot = null;
+      this._say(u, 'cap', `${u.name} 前線の空域を哨戒します`);
     }
+  }
+
+  /**
+   * 友軍の判断をログに出す（§102）。**変わったときだけ** —— 2秒ごとに同じ文を出さない。
+   * 行頭の「[友軍]」は `world.log` が付ける（陣営・指揮の判定を呼ぶ側に書かせない）
+   */
+  _say(u, key, msg) {
+    if (!this.talk || this._said.get(u.id) === key) return;
+    this._said.set(u.id, key);
+    this.world.log?.(msg, u);
   }
 
   /**
@@ -245,6 +277,18 @@ export class Commander {
       if (!this._hasAg(u)) continue;
       out.push(u);
     }
+    // **友軍はプレイヤーの攻撃機も護る**（§102・Q2）。面ごとに `ally.escortPlayer: false` で切れる。
+    // プレイヤーの機体は人が動かすので `MANUAL` でも外さない —— 手で飛ばしている攻撃機こそ護る相手。
+    // 帰投中は外す（護衛まで一緒に戦域を離れる・上と同じ理由）
+    if (this.owner === OWNER.ALLY && this.escortPlayer) {
+      for (const u of this._sideAircraft()) {
+        if (u.owner === OWNER.ALLY || !u.alive || u.onGround) continue;
+        if (u.state === 'takeoff' || u.state === 'landing') continue;
+        if (u.aiMode === 'RTB' || (u.order && u.order.type === 'rtb')) continue;
+        if (u.commandable === false || !this._hasAg(u)) continue;   // 支援機（§80.4）は別扱い（Q8）
+        out.push(u);
+      }
+    }
     return out;
   }
 
@@ -260,7 +304,7 @@ export class Commander {
     if (u.escortTarget && wards.includes(u.escortTarget)) return u.escortTarget;
 
     const assigned = new Map();
-    for (const o of this._myAircraft()) {
+    for (const o of this._sideAircraft()) {
       if (o === u || !o.alive || o.aiMode !== 'ESCORT' || !o.escortTarget) continue;
       assigned.set(o.escortTarget, (assigned.get(o.escortTarget) || 0) + 1);
     }
@@ -403,8 +447,9 @@ export class Commander {
       return u.strikeTarget;
     }
 
+    // **陣営で数える**（§102）。友軍とプレイヤーの攻撃機が同じ目標に群がらない
     const assigned = new Map();
-    for (const o of this._myAircraft()) {
+    for (const o of this._sideAircraft()) {
       if (o === u || !o.alive || !o.strikeTarget) continue;
       assigned.set(o.strikeTarget, (assigned.get(o.strikeTarget) || 0) + 1);
     }
@@ -520,7 +565,7 @@ export class Commander {
     if (!this._plots.size) return null;
 
     const assigned = new Map();
-    for (const o of this._myAircraft()) {
+    for (const o of this._sideAircraft()) {
       if (o === u || !o.alive || o.searchPlot == null) continue;
       assigned.set(o.searchPlot, (assigned.get(o.searchPlot) || 0) + 1);
     }
@@ -574,7 +619,8 @@ export class Commander {
   _ward() {
     for (const o of this.mission.objectives) {
       if (o.type !== 'protect' || o.failed || o.done) continue;
-      for (const u of this._myAircraft()) {
+      // 護る相手は**陣営から**探す（§102）。友軍に「プレイヤーの輸送機を護れ」と書ける
+      for (const u of this._sideAircraft()) {
         if (u.alive && u.tags && u.tags.includes(o.tag)) return u;
       }
     }
@@ -590,6 +636,19 @@ export class Commander {
    * 探知を通す必要が無い。敵を見るときは必ず detection を通すこと。
    */
   _myAircraft() {
+    const out = [];
+    for (const u of this.world.units) {
+      if (u.side !== this.side || u.kind !== 'aircraft') continue;
+      // 指揮系統で絞る（§102）。'player' はプレイヤーの席（ベンチ）＝友軍以外
+      if (this.owner === OWNER.ALLY && u.owner !== OWNER.ALLY) continue;
+      if (this.owner === 'player' && u.owner === OWNER.ALLY) continue;
+      out.push(u);
+    }
+    return out;
+  }
+
+  /** 陣営の機体すべて（§102）。「誰が何に向かっているか」を数えるときはこちら */
+  _sideAircraft() {
     const out = [];
     for (const u of this.world.units) {
       if (u.side === this.side && u.kind === 'aircraft') out.push(u);
@@ -643,7 +702,9 @@ export class Commander {
 
     // 兵装ポイントはブリーフィングで配られる**プレイヤー側の**原資。
     // 敵側の司令官（§27.6）にはこの縛りが無い。
-    const budget = this.side === this.world.playerSide
+    // **友軍もプレイヤーの財布から引かない**（§102）。友軍の積み直しで
+    // プレイヤーの弾が買えなくなるのは理不尽 —— 予算は敵と同じく無限
+    const budget = this.side === this.world.playerSide && this.owner !== OWNER.ALLY
       ? (this.world.weaponPoints ?? 0) : Infinity;
 
     const have = u.loadout.slice();

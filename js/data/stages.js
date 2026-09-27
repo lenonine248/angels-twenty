@@ -903,6 +903,119 @@ export const DEBUG_STAGES = [
       { id: 'watch', type: 'survive', seconds: 900, label: '15分間、雲ごしの探知を観察する' },
     ],
   },
+
+  // ------------------------------------------------------------------ d4
+  // 友軍の司令官AI（§102）の検証面。
+  //
+  // 見たいのは2つ（JOURNAL §102 の「確かめ方」）:
+  //   ・友軍の戦闘機（EAGLE）が**プレイヤーの攻撃機を護衛する**か
+  //   ・友軍の攻撃機（BISON）とプレイヤーの攻撃機が**同じ目標を奪い合わない**か
+  // BISON は**プレイヤーの飛行場で待機**させてある —— 共用の飛行場から友軍の司令官が出し、
+  // 撃ち尽くしたら枠の外の整備（`airbase.js` の `freeSlots`）で積み直して戻る、までを通す。
+  // 案（PROPOSAL §6）は「友軍戦闘機2機＋プレイヤーの攻撃機2機」。奪い合いを見るために BISON を足した。
+  {
+    id: 'd4',
+    debug: true,
+    name: 'ALLY TEST',
+    title: '友軍の検証',
+    brief: '検証用。友軍の戦闘機2機（EAGLE）がこちらの攻撃機を護衛し、'
+      + '友軍の攻撃機（BISON）が同じ補給施設群を狙う。\n'
+      + '友軍は操作できない。地図と一覧では緑で出る。',
+    hint: '友軍の損失は評価に入らない。こちらの機体が全滅すれば、友軍が残っていても負け。',
+    terrain: { seed: 44004, mountainAmount: 0.3, coast: 'none', valleyDepth: 0.3, rivers: 1, baseAltitude: 200 },
+    weaponPoints: 30,
+    friendly: {
+      base: { x: 9000, z: 42000 },
+      startAirborne: false,
+      aircraft: [
+        { type: 'A-3', name: 'HAMMER 1', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S', 'AAM-S'] },
+        { type: 'A-3', name: 'HAMMER 2', loadout: ['AGM', 'AGM', 'AAM-S', 'AAM-S'] },
+      ],
+    },
+    ally: {
+      skill: 1,
+      objectives: [
+        { id: 'ally-strike', type: 'destroyAll', tag: 'target', label: '補給施設群を叩く' },
+      ],
+      aircraft: [
+        { type: 'F-1', name: 'EAGLE 1', x: 12000, z: 38000, agl: 4500,
+          loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'F-1', name: 'EAGLE 2', x: 13000, z: 39500, agl: 4500,
+          loadout: ['AAM-M', 'AAM-M', 'AAM-S', 'AAM-S'] },
+        { type: 'A-3', name: 'BISON 1', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB', 'AAM-S', 'AAM-S'] },
+      ],
+    },
+    enemy: {
+      aircraft: [
+        { type: 'J-7', name: 'BANDIT 1', x: 30000, z: 22000, agl: 5000, aiMode: 'PATROL', tags: ['cap'] },
+        { type: 'J-7', name: 'BANDIT 2', x: 33000, z: 20000, agl: 5000, aiMode: 'PATROL', tags: ['cap'] },
+      ],
+      ground: [
+        { type: 'DEPOT', name: '補給施設 A', x: 31000, z: 18000, tags: ['target'], known: true },
+        { type: 'DEPOT', name: '補給施設 B', x: 34000, z: 20000, tags: ['target'], known: true },
+        { type: 'DEPOT', name: '補給施設 C', x: 33000, z: 15500, tags: ['target'], known: true },
+        { type: 'AAA', name: '対空砲 A', x: 32500, z: 18000, tags: [] },
+      ],
+    },
+    rating: { time: [600, 900], points: [10, 20], losses: [0, 1] },
+    objectives: [
+      { id: 'strike', type: 'destroyAll', tag: 'target', label: '補給施設3か所を破壊する' },
+      { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
+    ],
+  },
+
+  // ------------------------------------------------------------------ d5
+  // 地上戦（§103・A3）の検証面。
+  //
+  // 見たいのは「**空が何もしなければ友軍の地上部隊が負け、空の支援で傾く**」（PROPOSAL §3.4）。
+  // 友軍（操作できない）の戦車隊が敵の防衛線へ前進し、抜ければ町へ向かう。
+  // 友軍は戦車3・偵察1。敵は戦車3・榴弾砲2・車両1で持つ。車両部隊が見て、榴弾砲が撃つ（着弾観測）。
+  // プレイヤーは攻撃機2機で、**敵の榴弾砲**（優先して壊したい相手）を叩く。
+  {
+    id: 'd5',
+    debug: true,
+    name: 'GROUND TEST',
+    title: '地上戦の検証',
+    brief: '検証用。友軍の戦車隊が敵の防衛線へ前進する。\n'
+      + '敵の榴弾砲は、前に出ている車両部隊が見た相手を遠くから撃つ。榴弾砲を空から潰せ。',
+    hint: '友軍の地上部隊は操作できない。戦車は機銃では倒せない（A-3 の機銃だけ装甲を抜く）。',
+    terrain: { seed: 55005, mountainAmount: 0.3, coast: 'none', valleyDepth: 0.3, rivers: 1, baseAltitude: 200 },
+    weaponPoints: 40,
+    friendly: {
+      base: { x: 8000, z: 40000 },
+      startAirborne: false,
+      aircraft: [
+        { type: 'A-3', name: 'HAMMER 1', loadout: ['AGM', 'AGM', 'AGM', 'AGM'] },
+        { type: 'A-3', name: 'HAMMER 2', loadout: ['BOMB', 'BOMB', 'BOMB', 'BOMB'] },
+      ],
+      ground: [
+        ...[0, 1, 2].map((i) => ({ type: 'TANK', name: `友軍戦車 ${i + 1}`, x: 18500, z: 28800 + i * 1200,
+          tags: ['armor'], owner: 'ally', attackTag: 'eline', route: [{ x: 24500, z: 30000 }] })),
+        { type: 'CONVOY', name: '友軍偵察', x: 17500, z: 32500, tags: ['ally-scout'], owner: 'ally',
+          groundMode: 'hold' },
+      ],
+    },
+    enemy: {
+      aircraft: [],
+      ground: [
+        ...[0, 1, 2].map((i) => ({ type: 'TANK', name: `敵戦車 ${i + 1}`, x: 22000, z: 28800 + i * 1200,
+          tags: ['eline'], groundMode: 'hold' })),
+        // 位置はブリーフィングで判明（`known`）。見えていない地上目標は司令官AIが狙えない
+        { type: 'ARTILLERY', name: '敵榴弾砲 1', x: 25000, z: 29200, tags: ['eline', 'eart'], groundMode: 'hold', known: true },
+        { type: 'ARTILLERY', name: '敵榴弾砲 2', x: 25000, z: 30800, tags: ['eline', 'eart'], groundMode: 'hold', known: true },
+        // 見る役は線の後ろ（8km 先まで見える）。前に出すと真っ先に撃たれる
+        { type: 'CONVOY', name: '敵偵察', x: 23500, z: 30000, tags: ['eline'], groundMode: 'hold' },
+        { type: 'AAA', name: '対空砲', x: 25400, z: 30000, tags: [] },
+      ],
+    },
+    rating: { time: [600, 900], points: [20, 30], losses: [0, 1] },
+    objectives: [
+      { id: 'reach', type: 'reach', tag: 'armor', x: 24500, z: 30000, radius: 2000, label: '友軍の戦車隊を町へ届ける' },
+      { id: 'art', type: 'destroyAll', tag: 'eart', label: '敵の榴弾砲2門を破壊する' },
+      { id: 'tanks', type: 'hold', tag: 'armor', min: 1, label: '友軍の戦車を1両以上残す', fail: true },
+      { id: 'alive', type: 'protect', tag: 'home', label: '自軍飛行場を守る', fail: true },
+    ],
+  },
 ];
 
 /** いま選べるステージ（デバッグモードなら検証用も並ぶ） */

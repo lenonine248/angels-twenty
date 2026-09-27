@@ -62,7 +62,9 @@
   function step() {
     const b = AT.battle;
     const w = b.world;
-    const auto = new AT.Commander(w, w.playerSide, b.mission);
+    // **プレイヤーの機体だけ**（§102）。友軍の機体は友軍の司令官（`b.allyCommander`）が動かす ——
+    // ベンチが動かすと、友軍の指揮を横取りして測ることになる
+    const auto = new AT.Commander(w, w.playerSide, b.mission, { owner: 'player' });
     const foe = b.enemyCommander;              // 敵側の司令官（§27.6）
     let steps = 0;
 
@@ -154,6 +156,9 @@
       auto.update(DT);
       b.enemyPlan?.update(DT);
       if (foe) foe.update(DT);
+      // 友軍の司令官（§102）。`main.js` の `fixedUpdate` と同じ順番
+      b.allyPlan?.update(DT);
+      b.allyCommander?.update(DT);
       steps++;
     }
 

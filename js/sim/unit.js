@@ -27,6 +27,34 @@ export function resetUnitIds() { nextId = 1; }
 
 export const SIDE = { BLUE: 'blue', RED: 'red' };
 
+/**
+ * **指揮系統**（§102）。陣営（`side`）とは別の軸。
+ *
+ * 自軍の中に「プレイヤーが動かすもの」と「友軍の司令官AIが動かすもの」が並ぶ。
+ * 友軍は `owner: 'ally'`、それ以外（プレイヤーの機体・敵のすべて）は持たない。
+ *
+ * **`side === playerSide` と書く前に、それが陣営の意味か指揮の意味かを決める。**
+ * 探知・霧・撃墜の記録は陣営、選択・一覧・敗北・評価・兵装ポイントは指揮
+ * （仕分けの表は JOURNAL §102）。指揮の意味なら `isPlayerOwned` を使う。
+ */
+export const OWNER = { ALLY: 'ally' };
+
+/** 友軍の司令官AIの指揮下か（§102） */
+export function isAlly(u) { return !!u && u.owner === OWNER.ALLY; }
+
+/** **プレイヤーの指揮下か**（§102）。自軍で、友軍ではないもの */
+export function isPlayerOwned(u, world) {
+  return !!u && u.side === world.playerSide && u.owner !== OWNER.ALLY;
+}
+
+/**
+ * 印の色の鍵（§102）。**友軍の航空機だけ `'ally'`（緑）**、ほかは陣営のまま。
+ * 友軍の地上部隊は自軍と同じ青（プレイヤーの決め・Q7）。
+ */
+export function colorKeyOf(u) {
+  return u && u.owner === OWNER.ALLY && u.kind === 'aircraft' ? 'ally' : (u ? u.side : 'red');
+}
+
 export class Unit {
   /**
    * @param {object} o
@@ -51,6 +79,9 @@ export class Unit {
 
     /** ミッション目標の判定に使うタグ（data/stages.js が付ける） */
     this.tags = o.tags ? o.tags.slice() : [];
+
+    /** 指揮系統（§102）。友軍なら 'ally'、それ以外は null */
+    this.owner = o.owner === OWNER.ALLY ? OWNER.ALLY : null;
 
     /** 3D表示オブジェクト（world/models.js が設定する） */
     this.view = null;
@@ -77,6 +108,9 @@ export class Unit {
 
   damage(amount, source = null) {
     if (!this.alive) return;
+    // **最後に当てたものを残す**（§12.3 の P0）。`destroy()` は受け取った相手を捨てるので、
+    // ここで取らないと「誰に落とされたか」がどこにも残らない
+    if (source) this.lastHit = hitOf(source, this) || this.lastHit;
     this.hp -= amount;
     if (this.hp <= 0) {
       this.hp = 0;
@@ -87,6 +121,31 @@ export class Unit {
   destroy(_source = null) {
     this.alive = false;
   }
+}
+
+/**
+ * 当てたものを `{ by, weapon }` にする（§12.3 の P0）。
+ *
+ * | 渡ってくるもの | by | weapon |
+ * |---|---|---|
+ * | ミサイル・爆弾（`missile.js`） | 発射した機体・陣地（`launcher`） | 兵装ID |
+ * | 弾（`bullet.js` は撃った機体をそのまま渡す） | 撃った機体・陣地 | `GUN` |
+ * | 自分の飛行場（駐機中に飛行場ごと壊された） | 飛行場を壊したもの | その兵装 |
+ */
+function hitOf(source, victim) {
+  if (source.launcher) return { by: source.launcher, weapon: source.weapon ? source.weapon.id : null };
+  if (source.kind === 'airbase' && source.side === victim.side) return source.lastHit || null;
+  if (source.kind) return { by: source, weapon: 'GUN' };
+  return null;
+}
+
+/**
+ * 落とした相手（§12.3 の P0）。**地形・燃料・撤退で死んだものは null** ——
+ * 直前に被弾していても、死因はそちらではない。攻撃者が分からないことを「地形」と混ぜない。
+ */
+export function killedBy(u) {
+  if (u.deathCause && u.deathCause !== '地上撃破') return null;
+  return u.lastHit && u.lastHit.by ? u.lastHit : null;
 }
 
 /** 方位ベクトル(dx,dz) → 方位角ラジアン（0=北, 時計回り） */

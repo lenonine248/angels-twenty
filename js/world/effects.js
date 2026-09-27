@@ -9,6 +9,7 @@
 //   ズームに依存しない大きさなので、粒子だけ実寸だと縮尺が合わない。
 
 import * as THREE from 'three';
+import { getJetGeometry, getMaterial, sideTint } from './models.js';
 
 const MISSILE_COLOR = { blue: 0x9fd8ff, red: 0xffb08a };
 /**
@@ -28,6 +29,32 @@ const BULLET_COLOR = { blue: [0.65, 0.88, 1.0], red: [1.0, 0.72, 0.38] };
 
 const SMOKE_CAP = 1400;
 const SPARK_CAP = 900;
+
+/**
+ * 燃料切れの墜落演出（§100）。数秒直進 → 射出・パラシュート → 機首がゆっくり下がって墜落
+ * → 撃墜と同じ爆発。**描画だけ**で、撃墜の確定は今と同じく燃料0の瞬間
+ * （`sim/aircraft.js` の `_consumeFuel`）。ここの機体は sim のどこからも見えない。
+ * 秒はゲーム内の時間（倍速で速くなる）。機体が sim と同じ世界を飛ぶので、実時間にすると
+ * 倍速中だけ墜落機が周りより遅く見える。
+ */
+const FUEL_CRASH = {
+  glide: 3.0,        // 燃料0から射出までの直進(秒)
+  drag: 0.012,       // 推力が無いぶんの減速(1/秒)。速さ×これ が減速度
+  pitchRate: 0.09,   // 射出後に機首が下がる速さ(rad/秒)。約5°/秒
+  pitchMin: -1.15,   // 最後に落ち着く降下角(rad)。約66°
+  rollRate: 0.05,    // 片翼が落ちる速さ(rad/秒)
+  rollMax: 0.6,
+  minSpeed: 90,
+  maxSpeed: 330,
+  maxTime: 240,      // 念のための打ち切り(秒)。地面に着かないまま残らないように
+  chuteDelay: 1.0,   // 射出から傘が開き始めるまで(秒)
+  chuteOpen: 0.6,    // 傘が開ききるまで(秒)
+  chuteSink: 6,      // 開いた傘の降下率(m/秒)
+  chuteLife: 24,     // 傘を描いておく時間(秒)。先に地面に着いたらそこで消す
+  chuteFade: 2,
+  chuteScale: 0.28,  // 傘の半径 / 機体の表示全長。機体と同じく画面上の大きさで描く
+};
+const CHUTE_COLOR = 0xf0ece2;
 
 const PARTICLE_VERT = `
 attribute float aSize;
@@ -165,6 +192,8 @@ export class Effects {
     this.group.add(this.bulletLines);
     this.rings = [];
     this.emitters = [];        // 時間をかけて出し続ける煙（撃破後の火災など）
+    this.crashes = [];         // 燃料切れで落ちていく機体（§100）
+    this.chutes = [];          // 射出したパイロット（墜落機より長く残る）
 
     this.smoke = new ParticleField(SMOKE_CAP, false);
     this.sparks = new ParticleField(SPARK_CAP, true);
@@ -302,6 +331,175 @@ export class Effects {
     });
   }
 
+  /**
+   * 燃料切れで落ちる機体の演出を始める（§100）。呼んだ時点で sim の機体はもう死んでいる。
+   * 姿勢と速さを写し取り、ここから先は独りで飛ばす。
+   * @param {Aircraft} ac
+   */
+  fuelCrash(ac) {
+    const body = new THREE.Mesh(getJetGeometry(ac.spec.shape, ac.spec.id),
+      getMaterial(sideTint(ac.spec.color, ac.side)));
+    this.group.add(body);
+    const pitch = ac.pitch || 0;
+    this.crashes.push({
+      body, pos: ac.pos.clone(), heading: ac.heading, pitch, roll: ac.roll || 0,
+      // sim の `speed` は水平の速さ（`pitch = atan2(上昇率, speed)`）。経路に沿った速さに直す
+      speed: Math.max(FUEL_CRASH.minSpeed, (ac.speed || 0) / Math.max(0.3, Math.cos(pitch))),
+      t: 0, ejected: false,
+    });
+  }
+
+  _updateCrashes(dt, world, size) {
+    const F = FUEL_CRASH;
+    for (let i = this.crashes.length - 1; i >= 0; i--) {
+      const c = this.crashes[i];
+      c.t += dt;
+      if (c.t < F.glide) {
+        // 直進。旋回中に切れても翼を水平に戻し、向きはそのまま
+        c.roll -= c.roll * Math.min(1, dt * 1.5);
+      } else {
+        if (!c.ejected) { c.ejected = true; this._eject(c, size); }
+        c.pitch = Math.max(F.pitchMin, c.pitch - F.pitchRate * dt);
+        c.roll = Math.min(F.rollMax, c.roll + F.rollRate * dt);
+      }
+      // 推力は無い。降下角のぶん重力で速くなり、空気で遅くなる
+      c.speed += (-9.8 * Math.sin(c.pitch) - F.drag * c.speed) * dt;
+      c.speed = Math.min(F.maxSpeed, Math.max(F.minSpeed, c.speed));
+      crashDir(c, _vel);
+      c.pos.addScaledVector(_vel, c.speed * dt);
+
+      const ground = Math.max(0, world.terrain.heightAt(c.pos.x, c.pos.z));
+      if (c.pos.y <= ground || c.t >= F.maxTime) {
+        c.pos.y = Math.max(c.pos.y, ground);
+        this._crashImpact(c, ground <= 0);
+        this.group.remove(c.body);   // 形と材質は機体どうしで共有しているので捨てない
+        this.crashes.splice(i, 1);
+        continue;
+      }
+
+      // 姿勢の付け方は `syncAircraftView` と同じ
+      const b = c.body;
+      b.position.copy(c.pos);
+      b.scale.setScalar(size);
+      b.rotation.set(0, 0, 0);
+      b.rotateY(-c.heading);
+      b.rotateX(c.pitch);
+      b.rotateZ(-c.roll * 0.9);
+    }
+  }
+
+  /** 地面（海面）に突っ込んだ。爆発は撃墜と同じ大きさ。陸なら燃え残る */
+  _crashImpact(c, water) {
+    this.explosion(c.pos, 420, water ? 'air' : 'ground');
+    if (!water) this.wreck(c.pos, null, 'ground');
+  }
+
+  /** 射出。座席のロケットの閃光と噴煙を出し、パイロットを放り出す */
+  _eject(c, size) {
+    const p = c.pos;
+    this.sparks.emit({
+      x: p.x, y: p.y, z: p.z, vx: 0, vy: 0, vz: 0,
+      life: 0.2, color: [1, 0.82, 0.5],
+      size0: 16, size1: 4, alpha: 1, drag: 0, grav: 0,
+    });
+    for (let i = 0; i < 6; i++) {
+      const r = randomDir();
+      this.smoke.emit({
+        x: p.x, y: p.y, z: p.z,
+        vx: r.x * 14, vy: 30 + Math.random() * 30, vz: r.z * 14,
+        life: 0.8 + Math.random() * 0.6,
+        color: [0.78, 0.78, 0.8],
+        size0: 4, size1: 16, alpha: 0.55, drag: 2.4, grav: -6,
+      });
+    }
+    crashDir(c, _vel);
+    const view = this._chuteView();
+    view.scale.setScalar(size * FUEL_CRASH.chuteScale);
+    view.position.copy(p);
+    this.group.add(view);
+    this.chutes.push({
+      view, pos: p.clone(), t: 0, fading: -1,
+      // 機体の惰性を少しだけ残し、上へ打ち出す
+      vx: _vel.x * c.speed * 0.3, vy: _vel.y * c.speed * 0.3 + 45, vz: _vel.z * c.speed * 0.3,
+    });
+  }
+
+  /** 傘・吊り索・人。傘の中心が原点、人は下に吊る。材質は薄れさせるので1つずつ持つ */
+  _chuteView() {
+    if (!this._chuteGeo) {
+      this._chuteGeo = new THREE.SphereGeometry(1, 12, 5, 0, Math.PI * 2, 0, Math.PI * 0.42);
+      this._chuteGeo.translate(0, -Math.cos(Math.PI * 0.42), 0);   // 縁を y=0 に
+      const pts = [];
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        const r = Math.sin(Math.PI * 0.42);
+        pts.push(new THREE.Vector3(Math.cos(a) * r, 0, Math.sin(a) * r),
+          new THREE.Vector3(0, -2.2, 0));
+      }
+      this._chuteLineGeo = new THREE.BufferGeometry().setFromPoints(pts);
+      this._pilotGeo = new THREE.SphereGeometry(0.2, 6, 4);
+      this._pilotGeo.translate(0, -2.35, 0);
+    }
+    const g = new THREE.Group();
+    const canopy = new THREE.Mesh(this._chuteGeo, new THREE.MeshLambertMaterial({
+      color: CHUTE_COLOR, emissive: new THREE.Color(CHUTE_COLOR).multiplyScalar(0.3),
+      side: THREE.DoubleSide, transparent: true,
+    }));
+    canopy.name = 'canopy';
+    canopy.visible = false;
+    const lines = new THREE.LineSegments(this._chuteLineGeo, new THREE.LineBasicMaterial({
+      color: 0xd8d4c8, transparent: true, opacity: 0.8,
+    }));
+    lines.name = 'lines';
+    lines.visible = false;
+    const pilot = new THREE.Mesh(this._pilotGeo, new THREE.MeshBasicMaterial({
+      color: 0x34383a, transparent: true,
+    }));
+    g.add(canopy, lines, pilot);
+    return g;
+  }
+
+  _updateChutes(dt, world, size) {
+    const F = FUEL_CRASH;
+    for (let i = this.chutes.length - 1; i >= 0; i--) {
+      const ch = this.chutes[i];
+      ch.t += dt;
+      const open = Math.min(1, Math.max(0, (ch.t - F.chuteDelay) / F.chuteOpen));
+      // 開く前は放物線、開いたら横の惰性が抜けて一定の降下率に落ち着く
+      const k = Math.min(1, dt * (0.4 + open * 1.6));
+      ch.vx -= ch.vx * k; ch.vz -= ch.vz * k;
+      if (open > 0) ch.vy += (-F.chuteSink - ch.vy) * Math.min(1, dt * 2 * open);
+      else ch.vy -= 9.8 * dt;
+      ch.pos.x += ch.vx * dt; ch.pos.y += ch.vy * dt; ch.pos.z += ch.vz * dt;
+
+      const s = size * F.chuteScale;
+      const ground = Math.max(0, world.terrain.heightAt(ch.pos.x, ch.pos.z));
+      // 人（原点から 2.35 下）が地面に着いたら止めて薄れさせる
+      const floor = ground + 2.35 * s;
+      if (ch.pos.y <= floor) { ch.pos.y = floor; ch.vy = 0; if (ch.fading < 0) ch.fading = 0; }
+      if (ch.fading < 0 && ch.t >= F.chuteLife) ch.fading = 0;
+      if (ch.fading >= 0) ch.fading += dt;
+      const alpha = ch.fading < 0 ? 1 : 1 - ch.fading / F.chuteFade;
+      if (alpha <= 0) {
+        this.group.remove(ch.view);
+        ch.view.traverse((o) => { if (o.material) o.material.dispose(); });
+        this.chutes.splice(i, 1);
+        continue;
+      }
+
+      const v = ch.view;
+      v.position.copy(ch.pos);
+      v.scale.setScalar(s);
+      const canopy = v.getObjectByName('canopy');
+      const lines = v.getObjectByName('lines');
+      canopy.visible = lines.visible = open > 0;
+      // 開きかけは細く縦長、開ききると丸く
+      canopy.scale.set(0.25 + open * 0.75, 1.6 - open * 0.6, 0.25 + open * 0.75);
+      lines.scale.set(0.25 + open * 0.75, 1, 0.25 + open * 0.75);
+      v.traverse((o) => { if (o.material) o.material.opacity = alpha * (o === lines ? 0.8 : 1); });
+    }
+  }
+
   /** ミサイル発射の閃光と噴煙 */
   launchFlash(pos, dir) {
     this.sparks.emit({
@@ -390,8 +588,12 @@ export class Effects {
 
   /**
    * @param {number} size 機体表示長(m)。ミサイルもこれに合わせて見えるサイズにする。
+   * @param {number} simDt ゲーム内の経過時間（倍速込み）。sim と同じ世界を動く燃料切れの
+   *   墜落機（§100）だけがこちらで進む。粒子は従来どおり実時間
    */
-  update(dt, world, size) {
+  update(dt, world, size, simDt = dt) {
+    this._updateCrashes(simDt, world, size);
+    this._updateChutes(simDt, world, size);
     this._syncMissiles(world, size);
     this._syncDecoys(world, size);
     this._syncBullets(world);
@@ -408,6 +610,9 @@ export class Effects {
   _updateDamageTrails(dt, world) {
     for (const u of world.units) {
       if (!u.alive || u.kind !== 'aircraft' || u.onGround) continue;
+      // 本体を描いていない敵機は煙も出さない（§98）。
+      // 描くかどうかは main.js が本体と同じ判定（contacts.showsBody）で立てる
+      if (u.side !== world.playerSide && !u._bodyShown) continue;
       const r = u.hp / u.maxHp;
       if (r > 0.72) continue;
       const severity = Math.min(1, (0.72 - r) / 0.62);
@@ -628,6 +833,12 @@ export class Effects {
 
 const _look = new THREE.Vector3();
 const _vel = new THREE.Vector3();
+
+/** 墜落機の進む向き（`sim/bullet.js` の `velocityOf` と同じ式・長さ1） */
+function crashDir(c, out) {
+  const cp = Math.cos(c.pitch);
+  return out.set(Math.sin(c.heading) * cp, Math.sin(c.pitch), -Math.cos(c.heading) * cp);
+}
 
 function randomDir() {
   const z = Math.random() * 2 - 1;

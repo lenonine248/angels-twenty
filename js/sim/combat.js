@@ -10,7 +10,7 @@ import { WEAPONS } from '../data/weapons.js';
 import { Missile, Decoy, decoyMatches, NOTCH_TOLERANCE, irBrightness, illuminates } from './missile.js';
 import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.js';
 import { headingOf, angleDiff, radarElevation, DEG } from './unit.js';
-import { bombAimPoint, bombImpactPoint } from './acm.js';
+import { bombAimPoint, bombImpactPoint, bombPathClear, bombSolution, G, TOSS } from './acm.js';
 import { clamp } from '../core/rng.js';
 import { opticalSight } from './sight.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
@@ -29,8 +29,8 @@ import { effectiveMissileRange } from '../core/atmosphere.js';
  * 対空と同じ 14度 では永久に撃てない（実体弾にしたとき、対地用の
  * 広いコーンを落としてしまい、実際に掃射できなくなっていた）。
  */
-const GUN_AIM_CONE = 14 * DEG;
-const GUN_AIM_CONE_GROUND = 26 * DEG;
+export const GUN_AIM_CONE = 14 * DEG;
+export const GUN_AIM_CONE_GROUND = 26 * DEG;
 /** 撃つ気になる上限距離。弾が届く範囲より広く取り、実際の可否はしきい値に任せる */
 const GUN_MAX_ENGAGE = 3200;
 /** 拡散を広げる要因の効き */
@@ -59,6 +59,12 @@ const MAX_AAM_PER_TARGET = 1;
 /** 連続発射の間隔(秒)。爆弾は一連射（スティック投下）できるよう短くする。 */
 const FIRE_COOLDOWN = 3.5;
 const BOMB_COOLDOWN = 0.5;
+
+/** 次の爆弾までの間隔。トスの機首上げ中だけ `TOSS.releaseInterval`（§95） */
+function bombInterval(shooter) {
+  return shooter.bombProfile === 'toss' && shooter._runPhase === 'pull'
+    ? TOSS.releaseInterval : BOMB_COOLDOWN;
+}
 
 // 偏差の掛け率 `BOMB_LEAD` は `sim/acm.js` へ移した（§71.6）。
 // 進入の狙点と投下の判定が**同じ点**を使う必要があるため、式ごと1か所にまとめてある。
@@ -371,10 +377,10 @@ export function aspectOf(shooter, target) {
 }
 
 /** ミサイルの最小射程（近すぎると誘導が間に合わない） */
-const MIN_RANGE = { 'AAM-S': 400, default: 1500 };
+export const MIN_RANGE = { 'AAM-S': 400, default: 1500 };
 
 /** 実効射程のうち発射を許す割合。射程の端で撃った弾は届く前に失速するので手前で切る */
-const LAUNCH_RANGE_FRAC = 0.85;
+export const LAUNCH_RANGE_FRAC = 0.85;
 
 /**
  * AIが自動発射に踏み切る命中期待度のしきい値。
@@ -770,7 +776,7 @@ export class CombatSystem {
 
     this.fire(shooter, target, weapon);
     // 練度が低いほど次弾までが遅い。手数そのものを減らす、副作用の少ない効かせ方。
-    const cd = weapon.kind === 'bomb' ? BOMB_COOLDOWN : FIRE_COOLDOWN;
+    const cd = weapon.kind === 'bomb' ? bombInterval(shooter) : FIRE_COOLDOWN;
     shooter.fireCooldown = cd / (0.5 + 0.5 * (shooter.skill ?? 1));
   }
 
@@ -802,7 +808,7 @@ export class CombatSystem {
       if (!this.world.detection.isVisible(shooter.side, t.target)) continue;
       if (!this.inEnvelope(shooter, t.target, w)) continue;
       this.fire(shooter, t.target, w);
-      shooter.fireCooldown = w.kind === 'bomb' ? BOMB_COOLDOWN : FIRE_COOLDOWN;
+      shooter.fireCooldown = w.kind === 'bomb' ? bombInterval(shooter) : FIRE_COOLDOWN;
       tasks.splice(i, 1);
       return true;
     }
@@ -924,6 +930,14 @@ export class CombatSystem {
     } else if (off > 45) {
       return `射角外 ${Math.round(off)}度`;
     }
+    // **赤外線は掴める距離が向きで変わる**（§34）。射程の内側でも、正面からは
+    // 排気が見えないので近づくまで撃てない。ここを書いていなかったので、
+    // この理由で落ちた発射は `'視線なし'` と出ていた（§75 の「機首から遠い」と同じ形・§93.12）。
+    // 距離は `canFire` と同じ式で、いまの向きのまま掴める距離を添える。
+    if (w.guidance === 'ir' && target.kind === 'aircraft') {
+      const lock = irLockRange(w, aspectOf(shooter, target), target.heat);
+      if (dist > lock) return `熱を掴めない（この向きでは ${(lock / 1000).toFixed(1)}km まで）`;
+    }
     return '視線なし';
   }
 
@@ -978,7 +992,13 @@ export class CombatSystem {
       // 書いてあったが、式はそうなっていない —— 0.5秒間隔で続く2本目以降が
       // 95m ずつ手前へ寄るので、**一連投下として目標を挟む**形になっている。
       const hit = bombImpactPoint(shooter, sol.throwRange);
-      return Math.hypot(sol.x - hit.x, sol.z - hit.z) < w.blastRadius;
+      if (Math.hypot(sol.x - hit.x, sol.z - hit.z) >= w.blastRadius) return false;
+      // **トスは弾道が途中の地形に当たるなら放さない**（§95.9）。弾道解は地形を見ないので、
+      // 低く入ったトスは落下点が窓に入っていても目標を囲む谷の縁に当てていた（c3 で 45%）。
+      // 水平爆撃には掛けない —— 今の高さでは遮られず、掛けるとベンチの面が動くかを別に見る要がある。
+      if (shooter.bombProfile === 'toss' && !bombPathClear(this.world.terrain, shooter.pos,
+        shooter.heading, shooter.speed, shooter.pitch || 0, sol.throwRange, w.blastRadius)) return false;
+      return true;
     }
 
     // 実効射程は高度で変わる。撃ち下ろしは終末が濃い空気になるので、
@@ -1059,9 +1079,15 @@ export class CombatSystem {
       m.dir.set(dx0 * c - dz0 * sn, m.dir.y, dx0 * sn + dz0 * c).normalize();
     }
 
-    // 無誘導爆弾は投下高度に応じて散布界が広がる
+    // 無誘導爆弾は落ちている時間に応じて散布界が広がる。
+    //
+    // **高さは「その落下時間で自由落下する高さ」`½·g·t²` で測る**（§95）。
+    // 水平に放せば放した高さそのもの（§6.2.2 の表は動かない）。
+    // 放した高さで測っていたので、低空で投げ上げるトスは
+    // 20秒飛んでもほとんど散らなかった。降下しながら放すと t が縮むぶん締まる。
     if (weapon.kind === 'bomb' && weapon.dispersionPerKm) {
-      const h = Math.max(0, shooter.pos.y - target.pos.y);
+      const t = bombSolution(shooter, target.pos.y).fallTime;
+      const h = Math.max(0, 0.5 * G * t * t);
       m.bombDispersion = weapon.dispersionPerKm * (h / 1000);
     }
 
@@ -1185,6 +1211,7 @@ export class CombatSystem {
         speed: g.muzzleSpeed,
         damage: dmg[0] + rng() * (dmg[1] - dmg[0]),
         shooter,
+        pierce: !!g.pierce,            // 戦車の装甲を抜くか（§103・A-3 だけ）
       }));
     }
     this.world.onGunFire?.(shooter, target, n);

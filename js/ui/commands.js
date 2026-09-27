@@ -17,6 +17,8 @@ import { notify } from './actions.js';
 
 const PICK_RADIUS_PX = 26;
 const DRAG_THRESHOLD_PX = 6;
+/** Z / X で指示高度を変える刻み(m)。資料の操作一覧も読む */
+export const ALT_STEP = 500;
 
 export class CommandController {
   constructor({ canvas, camera, world, sceneRoot }) {
@@ -108,8 +110,8 @@ export class CommandController {
           else window.dispatchEvent(new CustomEvent('at:menu'));
           break;
         case 'Tab':    e.preventDefault(); this._cycleSelect(e.shiftKey ? -1 : 1); break;
-        case 'KeyZ':   this.adjustAltitude(-500); break;
-        case 'KeyX':   this.adjustAltitude(+500); break;
+        case 'KeyZ':   this.adjustAltitude(-ALT_STEP); break;
+        case 'KeyX':   this.adjustAltitude(+ALT_STEP); break;
         case 'KeyC':   this.centerOnSelection(); break;
         case 'KeyB':   this.orderRtb(); break;
         case 'KeyG':   e.shiftKey ? this.disbandFormation() : this.makeFormation(); break;

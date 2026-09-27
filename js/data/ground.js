@@ -44,6 +44,9 @@ export const GROUND_TYPES = {
     category: 'radar',
     hp: 120,
     static: true,
+    // **`canSilence` は効いていない**（§93.12）。ARM を受けて黙るのは SAM の発射処理
+    // （`sim/ground.js` の `_updateSam`）の中だけで、発射台の無いサイトは最後まで電波を出す。
+    // この旗を読むのは呼ばれない `setRadarActive` だけ（艦船・空母も同じ）。
     radar: { range: 45000, emits: true, canSilence: true },
     color: 0x8b8578,
     size: 220,
@@ -127,6 +130,8 @@ export const GROUND_TYPES = {
     static: false,               // 移動するため記憶の対象外
     speed: 12,                   // m/s
     radar: null,
+    // 地上の相手を見る距離（§103・偵察）。3種で最も広い —— 撃つより見る役
+    sight: 8000,
     /**
      * **短射程の機銃**（§67.3）。地上も低空も撃つ。
      *
@@ -181,18 +186,60 @@ export const GROUND_TYPES = {
     static: false,
     speed: 9,
     radar: null,
+    // **射程の半分も見えない**（§103）。榴弾は陣営のコンタクトにある相手を撃つので、
+    // 誰かに見てもらわないと射程を使い切れない
+    sight: 2000,
     weapons: [
       // **拡散は締める。** 低い発射角では、仰角のわずかな誤差が
       // 着弾距離の大きな誤差になる（0.8°で射程誤差187m・当たり半径は50m）。
       // 実測では30発中2発しか当たらなかった。
-      { kind: 'howitzer', targets: 'ground', range: 4500,
+      //
+      // **最短射程 1.8km**（§103）。寄られると撃てない —— 車両部隊が遊撃で詰める相性（車両＞榴弾砲）の芯。
+      // 1v1 の総当たりで車両部隊の勝ち 1.5km 58%・1.8km 92%・2km 100%（2km は自分の目＝2km で見た相手を一切撃てない）
+      //
+      // **着弾した地点でだけ当たる**（`impactOnly`・§103）。途中で当たる形だと、正面から寄るものは
+      // 何でも弾の通り道に入って当たり、車両部隊が詰められない（1v1 で 4勝16敗）。
+      // **遅い相手（`leadBelow` m/s 以下）には偏差を取る**（プレイヤーの決め）—— 戦車（8）・榴弾砲（9）は読まれ、
+      // 車両部隊（12）は読まれない。「走っている車両には当たらない・遅い戦車は詰めるあいだに削られる」
+      { kind: 'howitzer', targets: 'ground', range: 4500, minRange: 1800, impactOnly: true, leadBelow: 10,
         muzzle: 260, spread: 0.25 * DEG, reloadSeconds: 8, dmg: [55, 70], life: 40 },
-      // 対空は車両部隊相当。近づかないと何もできない
-      { kind: 'aaa', targets: 'both', range: 800, maxAlt: 500,
+      // 対空は車両部隊相当。近づかないと何もできない。
+      // **地上は撃たない**（§103）。車両部隊と同じ機銃で耐久が倍だと、寄られても撃ち勝ってしまう
+      { kind: 'aaa', targets: 'air', range: 800, maxAlt: 500,
         muzzle: 700, spread: 1.2 * DEG, rps: 5, dmg: [1.2, 2.4], life: 1.6 },
     ],
     color: 0x54503f,
     size: 200,
+  },
+
+  /**
+   * 戦車（§103・A3）。**遅い・中くらいの打撃・固い。前線の要。**
+   *
+   * 地上3種の相性（車両部隊 ＞ 榴弾砲 ＞ 戦車 ＞ 車両部隊）の1角。
+   * **装甲 `armor`** は弾1発ごとに一定量を引く —— 機銃の弾だけに効き、
+   * 主砲・榴弾・**A-3 の機銃**（`pierce` の弾・プレイヤーの決め）・爆風・ミサイルは素通り。
+   * 車両部隊の機銃（1.2〜2.4）と、A-3 以外の機体の機銃（地上へ 1.0〜2.2）はこれで 0 になる。
+   * hp 250 は**空から見た固さ**で決めた: 爆弾（260）の直撃1発・AGM（180）2発で落ちる。
+   * **対空は持たない** —— 上からは一方的に叩かれる。
+   */
+  TANK: {
+    id: 'TANK',
+    name: '戦車',
+    category: 'ground',
+    hp: 250,
+    armor: 3,
+    static: false,
+    speed: 8,
+    radar: null,
+    // 自分の撃てる所だけ見える（主砲 2.5km に対して 3km）
+    sight: 3000,
+    weapons: [
+      // 主砲は直射（`kind: 'cannon'`）。偏差を取り、弾は重力で落ちるぶんだけ上へ向ける
+      { kind: 'cannon', targets: 'ground', range: 2500,
+        muzzle: 900, spread: 0.12 * DEG, reloadSeconds: 6, dmg: [40, 50], life: 4 },
+    ],
+    color: 0x565a40,
+    size: 170,
   },
 
   SHIP: {

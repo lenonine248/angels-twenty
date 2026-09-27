@@ -220,6 +220,26 @@ html, body {
 }
 #minimap { display: block; width: 220px; height: 220px; }
 
+/* ===== 右上：方位盤（§98） =====
+   視点は Q/E とドラッグで自由に回るので、画面のどちらが北かを常に出す。
+   ミニマップ（北が上に固定）の左隣。 */
+#compass {
+  position: absolute;
+  top: 48px; right: 242px;
+  width: 64px; height: 64px;
+  cursor: pointer;
+}
+#compass svg { display: block; }
+#compass .cp-ring { fill: var(--panel-bg); stroke: var(--panel-line); stroke-width: 1; }
+#compass .cp-tick { stroke: var(--cyan); stroke-width: 1.2; fill: none; }
+#compass .cp-minor { opacity: 0.45; }
+#compass .cp-north { fill: var(--amber); }
+#compass .cp-south { fill: var(--text-dim); opacity: 0.5; }
+#compass text { font-size: 9px; text-anchor: middle; dominant-baseline: central; }
+#compass .cp-n { fill: var(--amber); font-weight: bold; }
+#compass .cp-l { fill: var(--text-dim); }
+#compass:hover .cp-ring { stroke: var(--cyan); }
+
 /* ===== 左：ロースター行 ===== */
 #rosterBody { padding: 3px; }
 .unit-row {
@@ -237,6 +257,17 @@ html, body {
   background: rgba(255, 182, 72, 0.13);
 }
 .unit-row.dead { opacity: 0.35; border-left-color: var(--hostile); }
+/* 友軍（§102）。操作できないので押しても選ばれない。印は緑（友軍の航空機の色） */
+.unit-row.ally { border-left-color: #5fd68a; background: rgba(95, 214, 138, 0.05); cursor: zoom-in; }
+.unit-row.ally.dead { border-left-color: var(--hostile); }
+.roster-sep { margin: 6px 0 3px; font-size: 10px; color: #5fd68a; letter-spacing: 0.08em; }
+.roster-sep.ally-toggle { cursor: pointer; user-select: none; }
+.roster-sep.ally-toggle:hover { color: #8ff0b0; }
+.roster-fm { margin: 6px 0 3px; font-size: 10px; color: #8fb8d8; letter-spacing: 0.08em; cursor: pointer; user-select: none; }
+.roster-fm:hover { color: #c0dcf0; }
+.roster-fm .rf-n { color: #6f8aa0; }
+.roster-fm.selected { color: #e8f4ff; }
+.roster-fm.threat::after { content: ' ⚠'; color: #ff6a5a; }
 .ur-top { display: flex; justify-content: space-between; align-items: baseline; }
 .ur-name { color: var(--text); font-size: 12px; }
 .ur-state { color: var(--amber); font-size: 9px; letter-spacing: 0.04em; }
@@ -754,12 +785,58 @@ button.go.warn:hover + .dt-warn { display: block; }
 .tg-sub { color: var(--text-dim); letter-spacing: 0.06em; margin-left: 12px; }
 .tg-count { float: right; color: var(--text-dim); letter-spacing: 0.1em; }
 
+/* 詳細の資料（§93.13）。一覧では5列、資料画面は左に目次・右に本文 */
+.tut-grid.ref-grid { grid-template-columns: repeat(5, 1fr); }
+.stage-card.tut.ref .sc-no { color: var(--cyan-dim); }
+.ref-body { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 22px; align-items: start; }
+.ref-toc { display: flex; flex-direction: column; gap: 4px; position: sticky; top: 12px; }
+#screens .ref-toc button {
+  text-align: left; padding: 6px 10px; font-size: 12px; letter-spacing: 0.04em;
+  color: var(--text-dim); background: rgba(111, 216, 232, 0.04);
+}
+#screens .ref-toc button span { color: var(--cyan-dim); margin-right: 8px; font-size: 10px; letter-spacing: 0.1em; }
+#screens .ref-toc button:hover { color: var(--text); }
+#screens .ref-toc button.active { color: var(--amber); border-color: var(--amber); background: rgba(255, 182, 72, 0.10); }
+.ref-main { font-size: 12px; line-height: 1.8; color: var(--text); }
+.ref-main h3 {
+  font-size: 11px; letter-spacing: 0.2em; color: var(--cyan); font-weight: normal;
+  margin: 20px 0 6px; padding-bottom: 3px; border-bottom: 1px solid var(--panel-line);
+}
+.ref-main > p:first-child { margin-top: 0; }
+.ref-main p { margin: 0 0 8px; }
+.ref-main b { color: var(--amber); font-weight: normal; }
+.ref-dim { color: var(--text-dim); }
+.ref-notes { margin: 6px 0 10px; padding-left: 18px; }
+.ref-notes li { margin-bottom: 4px; }
+.ref-scroll { overflow-x: auto; margin: 4px 0 10px; }
+.ref-table { width: 100%; border-collapse: collapse; font-size: 11.5px; line-height: 1.55; }
+.ref-table th, .ref-table td {
+  padding: 5px 9px; text-align: left; vertical-align: top;
+  border-bottom: 1px solid rgba(111, 216, 232, 0.14);
+}
+.ref-table thead th {
+  color: var(--text-dim); font-weight: normal; font-size: 10.5px; letter-spacing: 0.06em;
+  border-bottom-color: var(--panel-line); white-space: nowrap;
+}
+.ref-table tbody th { color: var(--cyan); font-weight: normal; white-space: nowrap; }
+.ref-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+#screens .ref-trybtn { font-size: 10px; padding: 2px 9px; letter-spacing: 0.06em; }
+.ref-try { margin-top: 18px; }
+.ref-trylist { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+#screens .ref-trylist button { text-align: left; padding: 7px 14px; font-size: 13px; color: #7ec87e; border-color: #7ec87e; }
+#screens .ref-trylist button span { display: block; font-size: 10px; color: var(--text-dim); letter-spacing: 0.04em; }
+@media (max-width: 760px) {
+  .tut-grid.ref-grid { grid-template-columns: repeat(2, 1fr); }
+  .ref-body { grid-template-columns: 1fr; }
+  .ref-toc { position: static; flex-direction: row; flex-wrap: wrap; }
+}
+
 /* ===== チュートリアルの手順（§19） =====
-   上部、目標パネルと同じ場所。チュートリアルには目標が無いので取り合いにならない。
-   下部に置くと操作ヘルプ（#helpBox）と重なる。 */
+   上部、目標パネルと同じ場所。目標のある本（k2）では ui/tutorial.js が
+   目標パネルの下へずらす（§98）。下部に置くと操作ヘルプ（#helpBox）と重なる。 */
 #tutorial {
   position: absolute;
-  top: 48px; left: 230px; right: 242px;
+  top: 48px; left: 230px; right: 314px;   /* 右は方位盤（§98）のぶん空ける */
   max-width: 620px;
   pointer-events: none;
 }
@@ -912,6 +989,9 @@ button.go.warn:hover + .dt-warn { display: block; }
 .lg.dim { color: var(--text-dim); }
 .bf-roster { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 .bf-plane { border: 1px solid var(--panel-line); background: rgba(8, 16, 18, 0.6); padding: 10px 12px; }
+.bf-plane.bf-ally { border-color: rgba(95, 214, 138, 0.45); }
+.bf-plane.bf-ally .bf-head b { color: #5fd68a; }
+.bf-ally-note { grid-column: 1 / -1; font-size: 11px; color: var(--text-dim); }
 .bf-head { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
 .bf-head b { color: var(--amber); font-weight: normal; }
 .bf-head span { color: var(--text-dim); font-size: 10px; }
@@ -1214,6 +1294,12 @@ button.go.warn:hover + .dt-warn { display: block; }
 .ed-tabbody { margin-top: 10px; min-height: 90px; }
 .ed-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 7px; }
 .ed-row.col { display: block; }
+/* トリガー（§12.3）。1件ずつ枠に入れて、条件と行動の行を字下げする */
+.ed-trig { border: 1px solid rgba(199, 146, 255, 0.35); border-radius: 3px; padding: 6px 8px 0; margin-bottom: 8px; }
+.ed-trigline { padding-left: 12px; }
+/* 敵側／友軍側の切り替え（§102 A2） */
+.ed-trigside button.on { color: var(--bg); background: var(--amber); border-color: var(--amber); }
+.ed-trigtag { color: #c792ff; font-size: 11px; min-width: 2.2em; }
 .ed-row.col textarea { width: 100%; }
 .ed-selname { color: var(--amber); font-size: 12px; letter-spacing: 0.1em; }
 .ed-note, .ed-empty, .ed-empty2 { color: var(--text-dim); font-size: 10px; }

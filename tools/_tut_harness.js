@@ -3,6 +3,12 @@
 // rAF はブラウザのペインが隠れていると絞られるので、時間の進行はここで自前に回す。
 // ブラウザのコンソールで次のように読み込む:
 //   fetch('/tools/_tut_harness.js').then(r => r.text()).then(eval)
+//
+// **1回の通しは1回の呼び出しの中で回す**（§93.12）。`__fast` は刻みを自分で呼ぶが、
+// 本体の rAF ループ（`core/loop.js` の `_tick`）も止まってはいない。止める手順が済んで
+// 再開したまま呼び出しを分けると、**呼び出しの合間の実時間ぶん本体が戦闘を進める**
+// （止めずに2秒待つと simTime が2秒進んだ）。1本の async 関数の中で `__open` から最後まで回せば、
+// 待つのは `__open` の中だけなので混ざらない。
 (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -12,13 +18,14 @@
     const b = AT.battle;
     if (!b) return 'no battle';
     for (let i = 0, n = Math.round(seconds / DT); i < n; i++) {
-      for (const u of b.world.units) if (u.alive) u.update(DT, b.world);
-      b.world.detection.update(DT);
-      b.pilotAI.update(DT);
-      b.combat.update(DT);
-      b.mission.update(DT);
+      // **本体の固定刻みをそのまま呼ぶ**（`main.js` の `fixedUpdate`）。
+      // 以前は刻みの中身を写していたが、雲の流れ（§88.15）・撃墜の処理・編隊の掃除・
+      // 敵の司令官AI が抜けていた。雲の本（k1）と防衛の本（k2）はそこに頼るので、
+      // 写しのままでは本体と違う動きで通すことになる
+      // （§88.16 の「写しは1つではなかった」と同じ形）。記録も中で取る。
+      // 時刻を足す順も本体（`core/loop.js`）に合わせる —— 刻みのあとで足す
+      AT.loop.onFixedUpdate(DT);
       AT.loop.simTime += DT;
-      b.recorder?.tick(AT.loop.simTime);      // 手で進めるときも記録を取る（§23）
       if (AT.tutorial && !AT.tutorial.finished) {
         AT.tutorial.update({
           world: b.world, commands: AT.commands, loop: AT.loop, rig: AT.scene.rig,

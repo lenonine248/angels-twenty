@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import { angleDiff, headingOf, radarElevation, DEG } from './unit.js';
 import { clamp } from '../core/rng.js';
 import { notchQuality, chaffScreen } from './missile.js';
-import { opticalSight, radarSight, radarReach } from './sight.js';
+import { opticalSight, radarSight, radarReach, groundSight } from './sight.js';
 
 /** 全走査の間隔(秒)。毎フレーム回すには重いので5Hzに落とす。 */
 const SCAN_INTERVAL = 0.2;
@@ -61,7 +61,7 @@ export const LOST_ERROR = 3000;
  * `LOST_ERROR / (v × WANDER)` は同じ —— 300m/s の戦闘機でちょうど10秒。
  * 変わったのは**画面に出る数字と円の大きさ**だけ。
  */
-const WANDER = 1.0;
+export const WANDER = 1.0;
 
 /** ほぼ止まっている目標でも、最低これだけは不確かになる(m/s) */
 const MIN_DRIFT = 6;
@@ -79,7 +79,7 @@ export const LOST_HARD_CAP = 150;
  * 逆探知の誤差を距離で割るときの基準(m)（§25.3）。
  * 探知そのものの距離は `rwrSignature`（射程×1.5）で決まる（§30.3）。
  */
-const RWR_RANGE = 60000;
+export const RWR_RANGE = 60000;
 /**
  * 逆探知の位置誤差(m)。**最大距離のときの値**で、近づくほど縮む（§25.2）。
  *
@@ -106,20 +106,20 @@ export const RWR_POS_ERROR = 1000;
  */
 const JAM_ANGULAR_ERR = 1.5 * (Math.PI / 180);
 /** ルックダウン減衰: 目標が自機より低く、地表からこの高度以下なら探知距離が半減 */
-const LOOKDOWN_AGL = 1000;
-const LOOKDOWN_FACTOR = 0.5;
+export const LOOKDOWN_AGL = 1000;
+export const LOOKDOWN_FACTOR = 0.5;
 /** 探知距離のこの割合以内なら即座に識別できる */
-const IDENT_RANGE_RATIO = 0.5;
+export const IDENT_RANGE_RATIO = 0.5;
 /** 継続追尾でこの秒数を超えたら識別できる */
-const IDENT_TRACK_TIME = 10;
+export const IDENT_TRACK_TIME = 10;
 /** 地上ユニットが目視で空を見張れる距離(m) */
-const GROUND_VISUAL_RANGE = 5000;
+export const GROUND_VISUAL_RANGE = 5000;
 /** 探知の視線判定のサンプル間隔(m)。ミサイルより粗くてよい。 */
 const LOS_STEP = 400;
 /** 地上レーダーが満額の探知距離を出せる対地高度(m) */
-const GROUND_RADAR_FULL_ALT = 3000;
+export const GROUND_RADAR_FULL_ALT = 3000;
 /** 地上レーダーの最低倍率（地表すれすれでもこれだけは見える） */
-const GROUND_RADAR_FLOOR = 0.4;
+export const GROUND_RADAR_FLOOR = 0.4;
 
 export const LEVEL = { UNKNOWN: 0, IDENTIFIED: 1, DETAILED: 2 };
 
@@ -419,14 +419,20 @@ function evaluate(sensor, target, world, stats) {
 
 /** 目視: 全方位・短距離・地形遮蔽あり。見えれば機種まで分かる。 */
 function byVisual(sensor, target, world, stats) {
+  // 地上ユニットが**地上の相手**を見る距離は種類ごと（`spec.sight`・§103 偵察）。
+  // 空を見る距離は全部 GROUND_VISUAL_RANGE のまま
   const range = sensor.kind === 'aircraft'
     ? (sensor.spec.visualRange || 0)
-    : GROUND_VISUAL_RANGE;
+    : (sensor.spec?.sight && !(target.kind === 'aircraft' && !target.onGround)
+      ? sensor.spec.sight : GROUND_VISUAL_RANGE);
   if (range <= 0) return -1;
   if (sensor.pos.distanceTo(target.pos) > range) return -1;
   stats.losChecks++;
-  // **雲は目視を切る**（§88.3）。地形と同じ扱いで、量ではなく二値
-  if (!opticalSight(world, sensor.pos, target.pos, 8, LOS_STEP)) return -1;
+  // **雲は目視を切る**（§88.3）。地形と同じ扱いで、量ではなく二値。
+  // 地上から地上は目の高さを取る（§103）—— 両端が地表だと少しの起伏で切れる
+  const g2g = sensor.kind !== 'aircraft' && !(target.kind === 'aircraft' && !target.onGround);
+  if (!(g2g ? groundSight(world, sensor.pos, target.pos, 8, LOS_STEP)
+    : opticalSight(world, sensor.pos, target.pos, 8, LOS_STEP))) return -1;
   return LEVEL.DETAILED;
 }
 

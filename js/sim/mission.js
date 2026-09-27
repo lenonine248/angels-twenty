@@ -4,6 +4,9 @@
 // 目標が自軍の視界外で破壊された場合も、条件を満たしていればクリアになる
 // （プレイヤーの画面上は「状態不明」のままでも、実際に壊れていれば達成）。
 
+import { SideTriggers } from './triggers.js';
+import { SIDE, OWNER } from './unit.js';
+
 export const MISSION = { ACTIVE: 'active', CLEAR: 'clear', FAIL: 'fail' };
 
 /** タグを持つユニット。**陣営で絞らない** —— タグはどちらの側のものも指せる */
@@ -138,22 +141,39 @@ export class Mission {
     /** 敵飛行場からの増援管理 */
     this.reinforce = [];
     this._accum = 0;
+    /** `enemy.base` / `enemy.base2` の実体。トリガーの行動が飛行場を名前で引く（§12.3） */
+    this.enemyBases = {};
+    /** 友軍のトリガーが引く飛行場（§102 A2）。`base`＝友軍飛行場・`home`＝共用のプレイヤーの飛行場 */
+    this.allyBases = {};
+
+    /** 敵側のトリガー（§12.3）。書いた面でだけ作る */
+    const triggers = stage.enemy && stage.enemy.triggers;
+    this.triggers = triggers && triggers.length ? new SideTriggers(world, triggers, this) : null;
+    /** 友軍側のトリガー（§102 A2）。友軍の司令官の有無とは別に、書いた面でだけ作る */
+    const allyTriggers = stage.ally && stage.ally.triggers;
+    this.allyTriggers = allyTriggers && allyTriggers.length
+      ? new SideTriggers(world, allyTriggers, this, { side: SIDE.BLUE, owner: OWNER.ALLY }) : null;
 
     /** §12.2。全機失ったあと、まだ当たりうる自軍の弾が空に何発あるか */
     this.lastStand = 0;
     this._lastStandLogged = false;
   }
 
-  registerReinforcement(airbase, config) {
+  registerReinforcement(airbase, config, owner = null) {
     // `after: 'detected'` を書くと、**こちらが敵に見つかるまで時計が動かない**（§80.5）
     this.reinforce.push({
+      /** 友軍の増援なら 'ally'（§102）。湧いた機体は友軍の司令官の指揮下に入る */
+      owner,
       // **第1波までの時間は間隔と別に決められる**（`first`）。
       //
       // 一緒くたにしていたので、「中盤の圧力を緩める」ために間隔を伸ばすと
       // **第1波も同じだけ遅れて、開幕の強襲がそのぶん楽になる** ——
       // 緩めたい所と締めたい所が反対に動いていた。書かなければ従来どおり。
       airbase, config, timer: config.first ?? config.every, spawned: 0,
-      armed: config.after !== 'detected',
+      // `after: 'trigger'` はトリガーの `reinforce on` まで待つ（§12.3）
+      armed: config.after !== 'detected' && config.after !== 'trigger',
+      /** トリガーの `reinforce off` で止められている */
+      held: false,
     });
   }
 
@@ -166,6 +186,9 @@ export class Mission {
     const step = this._accum;
     this._accum = 0;
 
+    // トリガーは増援より先に回す —— `reinforce on` をこの拍の時計から効かせるため
+    this.triggers?.update(this.time);
+    this.allyTriggers?.update(this.time);
     this._updateReinforcements(step);
     this._evaluate();
   }
@@ -189,8 +212,10 @@ export class Mission {
     // 護衛目標の喪失も、制限時間もそのまま負けになる。
     // 敵の司令官AIも動き続けるので、防衛面では
     // **猶予のあいだに守るものを壊されて負ける**ことがありうる。
+    // **プレイヤーの指揮下だけで数える**（§102・Q3）。友軍機が残っていても、自分の機体が全滅すれば負け。
+    // 支援機（`friendly.support`）は今までどおり数える（Q8）
     const myAircraft = w.units.filter(
-      (u) => u.kind === 'aircraft' && u.side === w.playerSide);
+      (u) => u.kind === 'aircraft' && u.side === w.playerSide && u.owner !== 'ally');
     const wiped = myAircraft.length > 0 && myAircraft.every((u) => !u.alive);
     this.lastStand = wiped ? this._ordnanceAloft() : 0;
     if (wiped && this.lastStand === 0) {
@@ -202,7 +227,9 @@ export class Mission {
       this._lastStandLogged = true;
       w.log?.(`【最後の一撃】自軍機は全滅。飛翔中の兵装 ${this.lastStand} 発の行方を待つ`);
     }
-    const myBases = w.units.filter((u) => u.kind === 'airbase' && u.side === w.playerSide);
+    // 数えるのは**プレイヤーの機体が使える飛行場**（§102）。友軍専用の飛行場は数えない
+    const myBases = w.units.filter((u) => u.kind === 'airbase' && u.side === w.playerSide
+      && u.owner !== 'ally');
     if (myBases.length > 0 && myBases.every((u) => !u.alive)) {
       return this._fail('自軍の飛行場をすべて失いました');
     }
@@ -250,6 +277,7 @@ export class Mission {
       if (!m.alive || m.lost) continue;
       if (m.side !== w.playerSide) continue;
       if (!m.launcher || m.launcher.kind !== 'aircraft') continue;
+      if (m.launcher.owner === 'ally') continue;    // 待つのはプレイヤーの弾だけ（§102）
       n++;
     }
     return n;
@@ -261,7 +289,8 @@ export class Mission {
     if (!d) return false;
     for (const [, c] of d.contactsFor(side)) {
       const t = c.unit;
-      if (t && t.alive && t.kind === 'aircraft' && t.side === this.world.playerSide) return true;
+      // 相手の陣営の機体（§102 で友軍の飛行場にも付くようになった。敵側から見れば今までどおり自軍機）
+      if (t && t.alive && t.kind === 'aircraft' && t.side !== side) return true;
     }
     return false;
   }
@@ -274,8 +303,12 @@ export class Mission {
   _pendingTags() {
     const set = new Set();
     for (const r of this.reinforce) {
+      if (r.owner === 'ally') continue;             // 友軍の増援は敵のタグを持たない（§102）
       if (!r.airbase.alive) continue;               // 潰せば止まる
       if (r.spawned >= r.config.max) continue;      // 出し切った
+      // **止まっている・トリガー待ちの増援は数えない**（§12.3）。数えると、
+      // トリガーが一度も成立しなかった面で destroyAll が永久に達成できない
+      if (r.held || (r.config.after === 'trigger' && !r.armed)) continue;
       for (const t of r.config.tags || []) set.add(t);
     }
     return set;
@@ -310,6 +343,7 @@ export class Mission {
     for (const r of this.reinforce) {
       if (!r.airbase.alive) continue;              // 飛行場を潰せば増援は止まる
       if (r.spawned >= r.config.max) continue;
+      if (r.held) continue;                        // トリガーで止められている（§12.3）
       // **見つかってから上げる**（§80.5）。
       //
       // 迎撃機を時計だけで上げると、こちらがまだ自陣にいるうちから
@@ -318,6 +352,7 @@ export class Mission {
       // 一度動き出した時計は止めない —— 隠れ直せば湧かなくなる、では
       // **見つからないように往復するのが最適手**になってしまう。
       if (!r.armed) {
+        if (r.config.after === 'trigger') continue;  // トリガーの `reinforce on` を待つ
         if (!this._spotted(r.airbase.side)) continue;
         r.armed = true;
       }
@@ -329,7 +364,7 @@ export class Mission {
       for (let i = 0; i < burst && r.spawned < r.config.max; i++) {
         const type = list ? list[r.spawned % list.length] : r.config.type;
         r.spawned++;
-        this.world.spawnReinforcement?.(r.airbase, type, r.spawned, r.config.tags);
+        this.world.spawnReinforcement?.(r.airbase, type, r.spawned, r.config.tags, r.owner, r.config.loadout);
       }
     }
   }

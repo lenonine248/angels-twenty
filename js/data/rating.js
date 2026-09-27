@@ -33,10 +33,10 @@ export const RANKS = ['S', 'A', 'B', 'C'];
 export const MARKS = { GOOD: '◎', OK: '○', POOR: '△' };
 
 /** ◎=2 / ○=1 / △=0 */
-const MARK_SCORE = { [MARKS.GOOD]: 2, [MARKS.OK]: 1, [MARKS.POOR]: 0 };
+export const MARK_SCORE = { [MARKS.GOOD]: 2, [MARKS.OK]: 1, [MARKS.POOR]: 0 };
 
 /** 合計点 → 総合ランク。6:S ／ 4〜5:A ／ 2〜3:B ／ 0〜1:C */
-function rankOf(score) {
+export function rankOf(score) {
   if (score >= 6) return 'S';
   if (score >= 4) return 'A';
   if (score >= 2) return 'B';
@@ -53,7 +53,7 @@ function mmss(sec) {
  * 軸の定義。value は「小さいほど良い」量を返す。
  * fmt は画面に出す文字列。
  */
-const AXES = [
+export const AXES = [
   {
     key: 'time',
     label: '迅速',
@@ -71,7 +71,7 @@ const AXES = [
   {
     key: 'losses',
     label: '練度',
-    desc: '失った機体の数',
+    desc: '失った味方の数（機体も地上も）',
     value: (st) => st.losses,
     fmt: (v) => `${v}機`,
   },

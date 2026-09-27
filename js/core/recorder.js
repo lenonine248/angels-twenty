@@ -30,12 +30,13 @@ export const SAMPLE_DT = 0.5;
  * |---|---|
  * | 1 | 最初の形 |
  * | **2** | **天候・到達目標・チャフ／フレアを足し、コンタクトを厚くした**（§23.9）|
+ * | **3** | **名簿に指揮系統 `owner` を足した**（§102）。友軍機の色を再現するため。友軍が居ない面の記録は v2 と同じ中身 |
  *
  * **足しただけなので v1 も開ける。** 変わったのはコンタクト1件の長さだけで、
  * そこは `v` を見て読み分ける（`contactStride`）。
  * 古い記録は新しい要素が空のまま開く —— 弾くよりそのほうが役に立つ。
  */
-export const FORMAT = 2;
+export const FORMAT = 3;
 
 /** コンタクト1件が何個の数値で書かれているか（形式版ごと）*/
 export function contactStride(v) { return v >= 2 ? 9 : 5; }
@@ -78,6 +79,8 @@ export class Recorder {
       side: u.side,
       kind: u.kind,
       type: u.typeId || (u.spec && u.spec.id) || '',
+      // 指揮系統（§102・v3）。友軍だけ書く —— 古い記録は無い＝プレイヤーのものとして開く
+      ...(u.owner ? { owner: u.owner } : {}),
     });
   }
 
@@ -148,6 +151,7 @@ export class Recorder {
     const e = { t: Math.round(time * 10) / 10, type };
     if (o.unit) { this._roster(o.unit); e.id = o.unit.id; e.side = o.unit.side; }
     if (o.target) { this._roster(o.target); e.tid = o.target.id; }
+    if (o.by) { this._roster(o.by); e.by = o.by.id; }   // 落とした相手（§12.3 の P0）
     if (o.pos) { e.x = Math.round(o.pos.x); e.y = Math.round(o.pos.y); e.z = Math.round(o.pos.z); }
     if (o.weapon) e.w = o.weapon;
     if (o.cause) e.cause = o.cause;
