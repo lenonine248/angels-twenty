@@ -59,3 +59,17 @@ export function radarReach(world, range, a, b) {
   if (!range || !world.clouds || !world.clouds.active) return range;
   return range * world.clouds.radarFactor(a, b);
 }
+
+/**
+ * **反射断面積**（§68.1）を掛けた、この目標に対するレーダーの距離。
+ *
+ * 探知（`byRadar`）・発射の門（`combat.js` の `inRadarFan`）・照射の継続（`illuminates`）の
+ * **3か所とも同じものを使う**（§104）。以前は探知にだけ掛かっていたので、
+ * 逆探知で10秒追って識別した J-13 へ、見えていない 18km から AAM-M を撃ち、
+ * そのまま照らし続けられた —— ステルスが「見つける」にしか効いていなかった。
+ * **目視・逆探知・赤外線には掛けない**（近づけば見える、電波を出せば見つかる）。
+ */
+export function stealthRange(range, target) {
+  const rcs = target && target.spec && target.spec.rcs;
+  return rcs != null ? range * rcs : range;
+}

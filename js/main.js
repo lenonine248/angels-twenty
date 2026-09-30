@@ -656,6 +656,15 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   // （敵の枝は機種の既定を積むので読まない）
   world.spawnReinforcement = (airbase, type, index, tags, owner, loadout) =>
     spawnReinforcement(world, airbase, type, index, tags, owner, loadout);
+  // 戦闘の途中で地上部隊を出す（§107・トリガーの `spawn`）。開始時の `ground` と同じ書き方・同じ生成。
+  // `known` は相手の陣営にだけ知らせる（敵の揚陸ならプレイヤーの地図に出る）
+  world.spawnGround = (g, side, owner) => {
+    const u = world.spawn(new GroundUnit({ ...g, side, owner: owner ?? undefined }).groundTo(terrain));
+    if (g.known) {
+      seedKnownContacts(world, [u], side === SIDE.RED ? world.playerSide : SIDE.RED, world.detection.time);
+    }
+    return u;
+  };
   for (const { airbase, config, owner } of spawned.reinforcements) {
     mission.registerReinforcement(airbase, config, owner);
   }
@@ -1188,10 +1197,10 @@ function applyModes(ac, def) {
 }
 
 /** ブリーフィングで判明していた敵を、記憶コンタクトとして地図に載せる */
-function seedKnownContacts(world, units, side = world.playerSide) {
+function seedKnownContacts(world, units, side = world.playerSide, time = 0) {
   const map = world.detection.contactsFor(side);
   for (const u of units) {
-    const c = new Contact(u, 0);
+    const c = new Contact(u, time);
     c.level = LEVEL.DETAILED;
     c.ever = true;
     c.detected = false;

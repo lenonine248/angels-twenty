@@ -258,6 +258,10 @@ export function validate(stage) {
   // 「増援の編隊が n 機以下になったら」が書けない
   for (const k of eBases) for (const tg of (e[k].reinforce && e[k].reinforce.tags) || []) enemyOwn.add(tg);
   for (const t of e.triggers || []) for (const a of t.do || []) if (a.type === 'launch' && a.tag) enemyOwn.add(a.tag);
+  // トリガーで出す地上部隊（§107）のタグも同じ
+  const spawnedGround = (e.triggers || []).flatMap((t) => (t.do || []).filter((a) => a.type === 'spawn')
+    .flatMap((a) => a.units || []));
+  for (const g of spawnedGround) for (const tg of g.tags || []) enemyOwn.add(tg);
   // 地上の行動（§103）が動かせるのは**動く地上ユニット**だけ
   const movableTags = (list) => {
     const out = new Set();
@@ -266,7 +270,7 @@ export function validate(stage) {
   };
   validateTriggers({
     list: e.triggers, side: '敵', bases: eBases, condTags: enemyOwn, actTags: enemyOwn,
-    groundTags: movableTags(e.ground || []),
+    groundTags: movableTags([...(e.ground || []), ...spawnedGround]),
     baseName: (k) => `敵飛行場「${k}」`, reinforceOf: (k) => e[k] && e[k].reinforce,
     airTypes: ENEMY_AIR_TYPES,
   }, fatal, warn);
@@ -405,7 +409,7 @@ function validateTriggers(o, fatal, warn) {
     const name = `${pre}トリガー「${t.label || t.id}」`;
     for (const c of t.when || []) {
       if (!TRIGGER_CONDITIONS.includes(c.type)) { fatal.push(`${name} の条件「${c.type}」は使えません`); continue; }
-      if ((c.type === 'destroyed' || (c.type === 'below' && c.tag)) && !o.condTags.has(c.tag)) {
+      if ((c.type === 'destroyed' || c.type === 'reach' || (c.type === 'below' && c.tag)) && !o.condTags.has(c.tag)) {
         fatal.push(`${name} の条件のタグ「${c.tag}」を持つ${o.side === '敵' ? '敵' : 'ユニット'}がいません`);
       }
       if (c.type === 'fired' && !ids.has(c.id)) fatal.push(`${name} の条件が指すトリガー「${c.id}」がありません`);
@@ -427,6 +431,14 @@ function validateTriggers(o, fatal, warn) {
         if (!GROUND_MODES.includes(a.mode)) fatal.push(`${name} の地上の行動「${a.mode}」は使えません`);
         if (!o.groundTags.has(a.tag)) {
           fatal.push(`${name} の行動のタグ「${a.tag}」を持つ${o.side === '敵' ? '敵の' : '友軍の'}動く地上部隊がいません`);
+        }
+      }
+      if (a.type === 'spawn') {
+        // 地上部隊を出す（§107）。書き方はステージの `ground` と同じ
+        if (!(a.units || []).length) warn.push(`${name} の「地上部隊を出す」に部隊がありません`);
+        for (const g of a.units || []) {
+          if (!GROUND_PLACEABLE.includes(g.type)) fatal.push(`${name} の出す地上部隊「${g.type}」は使えません`);
+          if (!Number.isFinite(g.x) || !Number.isFinite(g.z)) fatal.push(`${name} の出す地上部隊に位置がありません`);
         }
       }
       if (a.type === 'launch' && !o.airTypes.includes(a.aircraft)) {

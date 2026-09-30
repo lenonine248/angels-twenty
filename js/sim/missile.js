@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { clamp } from '../core/rng.js';
 import { missileDragFactor, turnFactor } from '../core/atmosphere.js';
 import { angleDiff, headingOf, radarElevation } from './unit.js';
-import { opticalSight, radarReach } from './sight.js';
+import { opticalSight, radarReach, stealthRange } from './sight.js';
 import { CLOUD_AS_BACKGROUND } from '../world/clouds.js';
 
 /**
@@ -68,13 +68,21 @@ const OVERSHOOT_MARGIN = 150;
  * 完全に止めると20秒ぶん位置が更新されず、誤差が6kmに達して
  * **AAM-M は構造上ぜったいに当たらない兵装**になる。
  * 遅らせる形なら誤差が有界になり、命中率だけが落ちる。
+ *
+ * **強さはこの `max` で決まる**（§105.2）。外挿が縦を含むようになって（§105.1）
+ * 2.0 のままではチャフがほぼ効かなくなったので、本編8面の
+ * 「AAM-M・空・撃たれていない・目標のチャフ10」の命中が直す前の 0.21 になる値を測って選んだ
+ * （2 → 0.44・16 → 0.32・32 → 0.23・**40 → 0.21**・64 → 0.17）。
+ * 上の「止めると当たらなくなる」は外挿が水平だけだったころの話で、
+ * 縦を含む外挿なら 40×q 秒の合間でも直進・定常の降下には当たる。
+ * 道具から振れるように `FIRE_THRESHOLD` と同じ形で出す。
  */
-const GUIDE_GAP_MAX = 2.0;
+export const GUIDE_GAP = { max: 40 };
 /**
  * 位置を測り直せないまま何秒で諦めるか（§70.4.2）。
  *
- * 妨害されているだけなら `GUIDE_GAP_MAX` で必ず測り直せるので、
- * ここに掛かるのは**シーカーの受信範囲から目標が出た**とき。
+ * 数えるのは**受信範囲の外に続けて居た秒数**（§105.1 の3）。「最後に測ってからの秒数」で
+ * 数えると、`GUIDE_GAP.max` を伸ばしたとき妨害で待っているだけの弾が自爆する。
  */
 const FIX_LOST_SEC = 3.0;
 /**
@@ -306,6 +314,7 @@ export class Missile {
     this._fix = null;
     this._fixVel = new THREE.Vector3();
     this._noFixFor = 0;           // 最後に測ってからの秒数
+    this._blindFor = 0;           // 受信範囲の外に続けて居た秒数（§105.1 の3）
     this._irAim = null;           // 赤外線シーカーの狙点（§70.5.1）
     this._jam = 0;                // いま受けている妨害の強さ 0..1
     this._jamPeak = 0;            // その最大値（計測用）
@@ -795,12 +804,14 @@ export class Missile {
     if (this._fix) this._fix.pos.addScaledVector(this._fixVel, dt);
 
     this._noFixFor += dt;
-    if (this._noFixFor >= GUIDE_GAP_MAX * q && this._canSee(t)) {
+    const see = this._canSee(t);
+    this._blindFor = see ? 0 : this._blindFor + dt;
+    if (this._noFixFor >= GUIDE_GAP.max * q && see) {
       this._takeFix(t);
       this._noFixFor = 0;
-    } else if (this._fix && this._noFixFor > FIX_LOST_SEC) {
-      // 妨害だけなら必ず測り直せる（間隔は GUIDE_GAP_MAX で頭打ち）。
-      // ここに掛かるのは**受信範囲から出た**とき
+    } else if (this._fix && this._blindFor > FIX_LOST_SEC) {
+      // 妨害で待っているだけなら諦めない（間隔が何秒でも）。
+      // 諦めるのは**受信範囲から出たまま**のとき
       this._goStupid('受信範囲外');
       return false;
     }
@@ -910,16 +921,22 @@ export class Missile {
     return this.dir.angleTo(to.normalize()) <= this._seekerGimbal();
   }
 
-  /** いま測れた位置と速度で `_fix` を置き換える */
+  /**
+   * いま測れた位置と速度で `_fix` を置き換える。
+   *
+   * **速度は縦も含める**（§105.1 の1）。水平だけだった間は、降りて逃げる目標の点が
+   * 合間に高さを止めて測り直しの1フレームで段に跳び、弾が目標の上を抜けていた。
+   * チャフとビームの効きはほぼ全部この欠けが作っていた（§104.7）。
+   */
   _takeFix(t) {
-    if (!this._fix) this._fix = { pos: new THREE.Vector3(), alive: true, speed: 0, isPoint: true };
+    if (!this._fix) this._fix = { pos: new THREE.Vector3(), alive: true, speed: 0, isPoint: true, extrap: true };
     this._fix.pos.copy(t.pos);
-    // 速度は水平だけ見る（`_leadPoint` の会合点計算と揃える）
+    const vy = Number.isFinite(t.vs) ? t.vs : 0;
     if (t.forward && t.speed) {
       const f = t.forward(_v11);
-      this._fixVel.set(f.x * t.speed, 0, f.z * t.speed);
+      this._fixVel.set(f.x * t.speed, vy, f.z * t.speed);
     } else {
-      this._fixVel.set(0, 0, 0);
+      this._fixVel.set(0, vy, 0);
     }
   }
 
@@ -1067,8 +1084,15 @@ export class Missile {
     // **誘導対象が入れ替わったら測り直す。** デコイに移った・掴み直した・
     // 照射が切れて座標を追い始めた、のいずれでも前の目標の位置が残っていると、
     // 1フレームだけ**とんでもない速度**が出て弾が明後日へ飛ぶ。
+    //
+    // **電波で測った点（`_takeFix` が作る `_fix`）を狙うときは、信じている速度を使う**
+    // （§105.1 の2）。差分で取ると測り直した1フレームに点が跳んで速度が跳ね、
+    // 指令が上限で切られる。跳びは視線の変化として比例航法に渡る。
+    // 赤外線の狙点には掛けない —— フレアに引かれる動きは差分で取るのが正しい。
     const tv = _v6.set(0, 0, 0);
-    if (this._prevTargetRef === t && this._prevTargetPos) {
+    if (t === this._fix && t.extrap) {
+      tv.copy(this._fixVel);
+    } else if (this._prevTargetRef === t && this._prevTargetPos) {
       tv.copy(t.pos).sub(this._prevTargetPos).divideScalar(dt);
     }
     if (!this._prevTargetPos) this._prevTargetPos = new THREE.Vector3();
@@ -1370,7 +1394,8 @@ export function illuminates(launcher, target, world, lock = false) {
     // **雲を通ったぶんだけ実効射程が縮む**（§88.3.1）。
     // 探知と同じ式を使う —— 「見つけられる距離」と「誘導し続けられる距離」が
     // ずれると、掴んだのに誘導できない（またはその逆）が起きる。
-    const reach = radarReach(world, launcher.radarRange, launcher.pos, target.pos);
+    // 反射断面積も探知と同じく掛ける（§104）
+    const reach = radarReach(world, stealthRange(launcher.radarRange, target), launcher.pos, target.pos);
     if (launcher.pos.distanceTo(target.pos) > reach) return false;
     return world.terrain.hasLineOfSight(launcher.pos, target.pos, 8, 400);
   }
@@ -1381,8 +1406,9 @@ export function illuminates(launcher, target, world, lock = false) {
   const flat = Math.hypot(dx, dz);
   const dist = Math.hypot(flat, dy);
   // 切っていれば誘導できない（§26.4）。
-  // 雲を通ったぶんは縮む（§88.3.1・上の地上発射と同じ式）
-  if (dist > radarReach(world, launcher.radarRange || 0, launcher.pos, target.pos)) return false;
+  // 雲を通ったぶんは縮む（§88.3.1・上の地上発射と同じ式）。
+  // **反射断面積も掛ける**（§104）—— 見えない距離の J-13 は照らし続けられない
+  if (dist > radarReach(world, stealthRange(launcher.radarRange || 0, target), launcher.pos, target.pos)) return false;
 
   if (!launcher.spec.omniRadar) {
     const bearing = Math.atan2(dx, -dz);

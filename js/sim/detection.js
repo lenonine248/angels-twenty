@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import { angleDiff, headingOf, radarElevation, DEG } from './unit.js';
 import { clamp } from '../core/rng.js';
 import { notchQuality, chaffScreen } from './missile.js';
-import { opticalSight, radarSight, radarReach, groundSight } from './sight.js';
+import { opticalSight, radarSight, radarReach, groundSight, stealthRange } from './sight.js';
 
 /** 全走査の間隔(秒)。毎フレーム回すには重いので5Hzに落とす。 */
 const SCAN_INTERVAL = 0.2;
@@ -470,8 +470,8 @@ function byRadar(sensor, target, world, stats) {
   // ここ1か所で済むのは、探知距離の計算が全部この関数に集まっているから。
   // **目視には掛からない**（`byVisual`）。近づけば見える、は変わらない。
   // **逆探知にも掛からない**（`byRwr`）—— 電波を出せば、小さくても見つかる。
-  const rcs = target.spec && target.spec.rcs;
-  if (rcs != null) range *= rcs;
+  // 発射の門と照射の継続も同じ `stealthRange` を通す（§104）。
+  range = stealthRange(range, target);
 
   // **雲を通ったぶんだけ縮む**（§88.3.1）。遮断ではなく減衰 ——
   // 層を横切るだけなら1割ほど、層の中を飛べば半分まで落ちる。

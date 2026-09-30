@@ -128,6 +128,9 @@ window.__runW3 = async function () {
       !w.missiles.some((m) => m.alive && m.side === w.playerSide && m.weapon.id === 'AAM-M')) break;
   }
   diag.refired = refired;
+  // 最後の手順は済んでも「済」の表示が明けるまで finished にならない（`tutorial.js` の `_flash`）。
+  // 撃墜で上の輪を抜けると index 5/5・finished:false で返っていた
+  if (!AT.tutorial.finished) runFor(5, sample, () => AT.tutorial.finished);
 
   function outcomeOf(m) {
     if (!m) return null;
@@ -241,6 +244,9 @@ window.__runW4 = async function () {
       !w.missiles.some((m) => m.alive && m.side === w.playerSide && m.weapon.id === 'AAM-A')) break;
   }
   diag.refired = refired;
+  // 最後の手順は済んでも「済」の表示が明けるまで finished にならない（`tutorial.js` の `_flash`）。
+  // 撃墜で上の輪を抜けると index 5/5・finished:false で返っていた
+  if (!AT.tutorial.finished) runFor(5, sample, () => AT.tutorial.finished);
 
   function outcomeOf(m) {
     if (!m) return null;

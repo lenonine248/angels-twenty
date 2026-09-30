@@ -16,6 +16,7 @@ import {
   attackManeuver, defensiveManeuver, groundAttackRun, tossAttackRun, bombAimPoint, tossClearAlt, TOSS,
 } from './acm.js';
 import { SHAPE as FORMATION_SHAPE } from '../ai/formation.js';
+import { ARM_STANDOFF_ALT } from '../ai/pilot.js';
 import { clamp } from '../core/rng.js';
 import { thrustFactor, turnFactor, maxSpeedFactor } from '../core/atmosphere.js';
 import { APPROACH_DISTANCE } from './airbase.js';
@@ -1123,6 +1124,12 @@ export class Aircraft extends Unit {
           // プレイヤーが高度を指定していればそれに従う
           // （高高度からの爆撃など、意図した高度で攻撃させるため）
           desiredAlt = o.alt ?? this.commandedAlt;
+        } else if (this._armUsableOn(t)) {
+          // **ARM が残っていて、相手が電波を出すなら高く保つ**（§106.5）。
+          // 掃射の高度へ降りると最低発射高度を割って、ARM を積んだまま SAM に落とされていた
+          // （右クリック攻撃・出発 3000/4500m で 0発）。AI の対地攻撃モード（`_strike`）と同じ高さ。
+          // 撃ち尽くせば `loadout` から消えるので、残りの兵装の高度へ戻る。
+          desiredAlt = Math.max(ARM_STANDOFF_ALT, this._terrainFloor(world, desiredHeading) + 300);
         } else if (this.loadout.includes('BOMB')) {
           // 爆撃機は軽対空砲の射高より上から入る。攻撃機は低く入って正確に落とす。
           // 目標+900m だと対空砲(射高1800m)の内側で、1回投下したら落とされて終わる。
@@ -1281,6 +1288,13 @@ export class Aircraft extends Unit {
       // 掃射の余地は「目標へ向かって降り、目標の上を過ぎてから登る」前提（§96）。
       // 回避で針路が変わればその前提が無いので、今までの床に戻す（測っていない）
       if (strafeCredit) { climbCredit = 0; creditFrom = 0; }
+    }
+    // エースの振る舞いの差し込み口（PROPOSAL_ace §2・いまは測定の道具だけが使う）。
+    // 無ければ何もしない。回避・機動の答えを受け取り、置き換えるなら返す
+    if (this.steerHook) {
+      const o = this.steerHook(world, dt,
+        { heading: desiredHeading, alt: desiredAlt, speed: desiredSpeed, evading: !!evade });
+      if (o) { desiredHeading = o.heading; desiredAlt = o.alt; desiredSpeed = o.speed; }
     }
 
     // --- 地形回避（さらに優先） ---
@@ -1522,6 +1536,11 @@ export class Aircraft extends Unit {
    * 自分の弾もたいてい着弾間際にいる。
    */
   _crankHeading(world, heading) {
+    // **撃ちっぱなしの弾（AAM-A）に対しては扇に留まらない**（PROPOSAL_ace E14・§2.4）。
+    // 実測で、AAM-A が当たっていたのは受けた側のクランクだった（外すと 36発とも失速）。
+    // 両陣営に効く —— プレイヤーの AAM-A も、誘導中の敵に当たりにくくなる（§2.5.2）。
+    const threat = this.threats[0];
+    if (threat && threat.guidance === 'arh') { this.cranking = false; return heading; }
     const mine = this._mySarh(world);
     const t = mine && mine.target;
     if (!t || !t.pos || t.alive === false) { this.cranking = false; return heading; }
@@ -1614,8 +1633,11 @@ export class Aircraft extends Unit {
     //
     // 「誘導を優先」を選んだ機体は常に。そうでない機体も、
     // **自分の弾のほうが先に着くなら**数秒だけ保つ（§28.13）。
+    // **撃ちっぱなしの弾（AAM-A）には保たない**（PROPOSAL_ace E14）。保つ見返りは
+    // 「撃った相手を先に落とせば相手の弾も死ぬ」だが、AAM-A は発射機を失っても止まらない。
+    // 「誘導を優先」の命令はプレイヤーの選択なので、そちらは今までどおり。
     if ((!this.evadeWhileGuiding && this._guidingSarh(world))
-        || this._worthHoldingLock(world, m)) {
+        || (m.guidance !== 'arh' && this._worthHoldingLock(world, m))) {
       const d = Math.hypot(m.pos.x - this.pos.x, m.pos.z - this.pos.z);
       this._maybeDeployDecoy(world, dt, m, d / Math.max(60, m.speed));
       return null;
@@ -1763,6 +1785,21 @@ export class Aircraft extends Unit {
     const t = mine && mine.target;
     if (!t || !t.pos) return alt;
     return this._holdInVerticalFan(alt, t.pos.x - this.pos.x, t.pos.z - this.pos.z, t.pos.y);
+  }
+
+  /**
+   * この相手に ARM を撃つつもりがあるか（§106.5・攻撃の高度を決めるため）。
+   *
+   * 相手が電波を出すかは `ai/pilot.js` の `_canUseArm` と同じ見方（黙っていても、
+   * 出す種類なら明ければ撃てる）。ARM の自動発射を切っていて射撃指示も無ければ、
+   * 撃たない弾のために高く居続けることになるので数えない。
+   */
+  _armUsableOn(t) {
+    if (!t || !this.loadout.includes('ARM')) return false;
+    if (!(t.emitting || (t.spec && t.spec.radar && t.spec.radar.emits))) return false;
+    if (this.autoWeapons && this.autoWeapons.ARM === false
+        && !this.fireTasks.some((f) => f.weapon === 'ARM')) return false;
+    return true;
   }
 
   /**

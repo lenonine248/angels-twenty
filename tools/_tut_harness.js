@@ -47,6 +47,26 @@
     return !!AT.battle;
   };
 
+  /**
+   * カメラの注視高度を、本体の描画ループと同じ式で入れる（`main.js` の `focusAltTarget`）。
+   *
+   * **ペインが隠れていると rAF が1回も回らない**（2026-09-29 実測: 1秒に0回）。
+   * 注視高度は描画ループが選択機の対地高度から毎フレーム入れているので、
+   * 回らないと初期値 2200m のまま。w4 では寄ったカメラが高度 4,850m、
+   * 的が 6,500m で、**的がカメラより上＝画面外**になり、右クリックが的を拾えなかった
+   * （地面への指示に落ち、選択機は待機旋回のまま）。§94.5 で通っていたのはペインが出ていたから。
+   */
+  function syncFocusAlt() {
+    const b = AT.battle, sel = AT.commands.selection;
+    const focusOn = sel.length ? sel : b.world.units.filter((u) => u.alive
+      && u.side === b.world.playerSide && u.owner !== 'ally' // isPlayerOwned
+      && u.kind === 'aircraft' && !u.onGround);
+    if (!focusOn.length) return;
+    let sum = 0;
+    for (const u of focusOn) sum += Math.max(0, u.pos.y - Math.max(0, b.world.terrain.heightAt(u.pos.x, u.pos.z)));
+    AT.scene.rig.focusAltTarget = Math.min(7000, Math.max(400, sum / focusOn.length));
+  }
+
   window.__u = (name) => AT.battle.world.units.find((u) => u.name === name);
   window.__sel = (name) => { const u = __u(name); AT.commands.select([u]); return u.name; };
 
@@ -61,6 +81,7 @@
     // 引きの画のままだと的が数ピクセルになり、拾えずに地面への移動指示へ落ちる。
     // 寄ってから撃つ。人が操作するときも同じことをしている。
     AT.scene.rig.distance = AT.scene.rig.minDistance * 3;
+    syncFocusAlt();
     for (let i = 0; i < 60; i++) AT.scene.update(0.15);
     AT.scene.render();
     const p = AT.commands._project(AT.battle.world.displayPosOf(target));
@@ -73,6 +94,7 @@
   /** 地面を右クリックして移動を指示する */
   window.__moveTo = (x, z) => {
     AT.scene.rig.lookAtPoint(x, z);
+    syncFocusAlt();
     for (let i = 0; i < 40; i++) AT.scene.update(0.15);
     AT.scene.render();
     const y = Math.max(0, AT.battle.world.terrain.heightAt(x, z));

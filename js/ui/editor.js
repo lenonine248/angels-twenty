@@ -16,7 +16,7 @@ import { CLOUD_COVER, CLOUD_SHAPE, CLOUD_WIND_SPEED } from '../world/clouds.js';
 import { loadoutCost } from '../data/weapons.js';
 import * as custom from '../data/custom.js';
 import * as stagetext from '../data/stagetext.js';
-import { TRIGGER_CONDITIONS, TRIGGER_ACTIONS, GUARD_DEFAULT } from '../sim/triggers.js';
+import { TRIGGER_CONDITIONS, TRIGGER_ACTIONS, GUARD_DEFAULT, REACH_DEFAULT_R } from '../sim/triggers.js';
 import { isTuned } from './tuning.js';
 import { onDevServer } from '../core/devserver.js';
 import { loadoutRow, removeOne, LOADOUT_HINT } from './loadout.js';
@@ -56,12 +56,13 @@ const COAST = ['none', 'n', 'e', 's', 'w'];
 /** トリガー（§12.3）の条件・行動の名前。値は本体の `type` */
 const COND_NAME = {
   time: '経過時間', detected: '敵に見つかった', destroyed: '敵のタグが破壊された',
-  below: '敵の残りが n 機以下', enter: '自軍機が区域に入った', fired: '別のトリガーが実行済み',
+  below: '敵の残りが n 機以下', enter: '自軍機が区域に入った', reach: '敵のタグが地点に着いた',
+  fired: '別のトリガーが実行済み',
 };
 const ACT_NAME = {
   guard: '地点に陣取る', defend: '飛行場の防空に戻る', restore: '元の動きに戻す',
   launch: '飛行場から出撃', reinforce: '増援を動かす／止める', notice: '状況文を出す',
-  ground: '地上部隊の行動を変える',
+  ground: '地上部隊の行動を変える', spawn: '地上部隊を出す',
 };
 /** 地上の行動（§103）の名前。値は本体の `groundMode` */
 const GROUND_MODE_NAME = { advance: '前進', hold: '持つ', route: '巡回', retreat: '下がる' };
@@ -85,7 +86,7 @@ const BASE_NAME = { base: '敵飛行場 1', base2: '敵飛行場 2' };
 /** 友軍側のトリガー（§102 A2）。条件の読み方が違うものだけ名前を替える */
 const COND_NAME_ALLY = {
   ...COND_NAME, detected: '友軍側が敵機を見つけた', destroyed: 'タグが破壊された（敵味方とも）',
-  below: '残りが n 機以下', enter: '敵機が区域に入った',
+  below: '残りが n 機以下', enter: '敵機が区域に入った', reach: '友軍のタグが地点に着いた',
 };
 const ALLY_BASE_NAME = { base: '友軍飛行場', home: '自軍飛行場（共用）' };
 /** 地図の上のトリガーの印。条件・行動の添字をこの数で畳んで1つの `i` にする */
@@ -447,6 +448,12 @@ export class StageEditor {
     // 友軍側（§102 A2）も同じ印で、`i` を `TRIG_ALLY` だけずらして分ける
     for (const [host, off, who] of [[e, 0, ''], [s.ally || {}, TRIG_ALLY, '（友軍）']]) {
       (host.triggers || []).forEach((t, ti) => {
+        // 着いたかを見る地点（§107）。区域と同じ輪で出す
+        (t.when || []).forEach((c, j) => {
+          if (c.type !== 'reach' || c.x == null) return;
+          out.push({ kind: 'treach', i: off + ti * TRIG_STRIDE + j, x: c.x, z: c.z, ref: c, color: '#c792ff',
+            round: true, radius: c.r || REACH_DEFAULT_R, label: `${t.label || t.id} の到達地点（${c.tag}）${who}` });
+        });
         (t.when || []).forEach((c, j) => {
           if (c.type !== 'enter' || c.x == null) return;
           out.push({ kind: 'tenter', i: off + ti * TRIG_STRIDE + j, x: c.x, z: c.z, ref: c, color: '#c792ff',
@@ -456,6 +463,13 @@ export class StageEditor {
           if (a.type !== 'guard' || a.x == null) return;
           out.push({ kind: 'tguard', i: off + ti * TRIG_STRIDE + j, x: a.x, z: a.z, ref: a, color: '#c792ff',
             radius: a.r || GUARD_DEFAULT.radius, label: `${t.label || t.id} の陣取る地点（${a.tag}）${who}` });
+        });
+        // 出す地上部隊の位置（§107）。1行動に1部隊（エディタで書けるのは先頭の1つ）
+        (t.do || []).forEach((a, j) => {
+          const g = a.type === 'spawn' && (a.units || [])[0];
+          if (!g || g.x == null) return;
+          out.push({ kind: 'tspawn', i: off + ti * TRIG_STRIDE + j, x: g.x, z: g.z, ref: g, color: '#c792ff',
+            label: `${t.label || t.id} で出る ${g.name || g.type}${who}` });
         });
         // 地上の行動の地点（§103）。持ち場・下がる先
         (t.do || []).forEach((a, j) => {
@@ -619,10 +633,10 @@ export class StageEditor {
     else if (kind === 'eground') s.enemy.ground.splice(i, 1);
     else if (kind === 'ebase') delete s.enemy[i === 0 ? 'base' : 'base2'];
     else if (kind === 'reach') s.objectives.splice(i, 1);
-    else if (kind === 'tenter' || kind === 'tguard') {
+    else if (kind === 'tenter' || kind === 'treach' || kind === 'tguard' || kind === 'tspawn') {
       const host = i >= TRIG_ALLY ? s.ally : s.enemy;
       const t = host && host.triggers && host.triggers[Math.floor((i % TRIG_ALLY) / TRIG_STRIDE)];
-      if (t) (kind === 'tenter' ? t.when : t.do).splice(i % TRIG_STRIDE, 1);
+      if (t) (kind === 'tguard' || kind === 'tspawn' ? t.do : t.when).splice(i % TRIG_STRIDE, 1);
     }
     else if (kind === 'tground') {
       // 点だけ消す（行動は残る —— 持つならその場、下がるなら置いた位置へ）
@@ -690,7 +704,7 @@ export class StageEditor {
 
     const item = this._selItem();
     const KIND_NAME = { fbase: '自軍飛行場', ebase: '敵飛行場', abase: '友軍飛行場', fsupTo: '支援機の行き先',
-      tenter: `トリガーの区域`, tguard: 'トリガーの陣取る地点' };
+      tenter: `トリガーの区域`, treach: 'トリガーの到達地点', tguard: 'トリガーの陣取る地点' };
     rows.push(`<div class="ed-selname">${KIND_NAME[k] || esc(ref.name || ref.label || '')}</div>`);
     // 自動配置の機体は座標を持たない。空の欄を出すと、打ち込めるように見えて
     // **打ち込んだ瞬間に指定配置へ化ける**（しかも片方だけ埋まる）
@@ -815,6 +829,12 @@ export class StageEditor {
       rows.push(num('r', '半径(m)', 500));
       rows.push(`<div class="ed-note">${ally ? '自軍側（プレイヤー・友軍）がいま探知している敵機' : '敵がいま探知している自軍機'}`
         + 'がこの輪に入ると成立します。見えていない侵入には反応しません。細目は「トリガー」タブで</div>');
+    } else if (k === 'treach') {
+      rows.push(num('r', '半径(m)', 50));
+      rows.push('<div class="ed-note">そのタグの自分の側のユニット（艦・地上・航空機）がこの輪に入ると成立します。'
+        + '細目は「トリガー」タブで</div>');
+    } else if (k === 'tspawn') {
+      rows.push('<div class="ed-note">トリガーで出る地上部隊の位置。陸に置くこと（艦は水の上）。細目は「トリガー」タブで</div>');
     } else if (k === 'tground') {
       rows.push('<div class="ed-note">トリガーが動かす地上部隊の持ち場／下がる先。右クリックで点だけ消せます'
         + '（消すと、持つならその場・下がるなら置いた位置）。細目は「トリガー」タブで</div>');
@@ -914,6 +934,9 @@ export class StageEditor {
           + num(`${p}.n`, '機以下', c.n);
       } else if (c.type === 'enter') {
         f = '<span class="ed-note">地図の紫の輪を動かして決めます</span>' + num(`${p}.r`, '半径', c.r, 500);
+      } else if (c.type === 'reach') {
+        f = tagSel(`${p}.tag`, c.tag, '', condTags) + num(`${p}.r`, '半径', c.r, 50)
+          + '<span class="ed-note">地点は地図の紫の輪</span>';
       } else if (c.type === 'fired') {
         f = sel(`${p}.id`, withCur(list.filter((o, k) => k !== i).map((o) => [o.id, o.label || o.id]), c.id), c.id);
       }
@@ -951,6 +974,17 @@ export class StageEditor {
             ? `<button data-edcmd="trgpt:${i}.${j}">${a.x == null ? '地点を置く' : '地点を外す'}</button>`
               + `<span class="ed-note">${a.x == null ? (a.mode === 'hold' ? 'その場で持つ' : '置いた位置へ下がる') : '地図の紫の点'}</span>`
             : '');
+      }
+      else if (a.type === 'spawn') {
+        // 1行動に1部隊。書き方はステージの `ground` と同じ（§107）
+        const g = (a.units || [])[0] || {};
+        const q = `${p}.units.0`;
+        f = sel(`${q}.type`, this._movableGroundTypes().map((v) => [v, v]), g.type, '種類')
+          + `<label>名前<input data-edtrig="${q}.name" value="${esc(g.name || '')}" size="8"></label>`
+          + `<label>タグ<input data-edtrig="${q}.tags" value="${esc((g.tags || []).join(','))}" size="10" title="カンマ区切り"></label>`
+          + `<label>攻撃目標のタグ<input data-edtrig="${q}.attackTag" value="${esc(g.attackTag || '')}" size="8" title="空ならその場で持つ"></label>`
+          + sel(`${q}.known`, [['true', '自軍の地図に出す'], ['false', '出さない']], String(!!g.known))
+          + '<span class="ed-note">位置は地図の紫の点</span>';
       }
       return `<div class="ed-row ed-trigline"><span class="ed-trigtag">→</span>
         ${sel(`${p}.type`, TRIGGER_ACTIONS.map((v) => [v, ACT_NAME[v]]), a.type)}${f}
@@ -1046,7 +1080,16 @@ export class StageEditor {
       for (const t of (b.reinforce && b.reinforce.tags) || []) set.add(t);
     }
     for (const t of e.triggers || []) for (const a of t.do || []) if (a.type === 'launch' && a.tag) set.add(a.tag);
+    // トリガーで出す地上部隊（§107）
+    for (const t of e.triggers || []) {
+      for (const a of t.do || []) if (a.type === 'spawn') for (const g of a.units || []) for (const tg of g.tags || []) set.add(tg);
+    }
     return [...set];
+  }
+
+  /** トリガーで出せる地上部隊の種類（§107）。動くものだけ */
+  _movableGroundTypes() {
+    return Object.keys(GROUND_TYPES).filter((k) => !GROUND_TYPES[k].static && k !== 'AIRBASE');
   }
 
   /** 条件・行動を足したとき、型を変えたときの既定（§12.3） */
@@ -1064,6 +1107,7 @@ export class StageEditor {
         case 'destroyed': return { type, tag: ally ? (this._enemyTags()[0] || tag) : tag, count: 0 };
         case 'below': return { type, n: 1 };
         case 'enter': return { type, ...near, r: 8000 };
+        case 'reach': return { type, tag: ally ? (this._allyTags()[0] || '') : tag, ...near, r: REACH_DEFAULT_R };
         case 'fired': return { type, id: ((e.triggers || [])[0] || {}).id || '' };
         default: return { type };
       }
@@ -1075,6 +1119,7 @@ export class StageEditor {
       case 'launch': return { type, base, aircraft: ally ? 'F-1' : 'J-7', n: 2 };
       case 'reinforce': return { type, base, on: true };
       case 'ground': return { type, tag: this._groundTags(ally)[0] || '', mode: 'advance' };
+      case 'spawn': return { type, units: [{ type: 'CONVOY', name: '上陸部隊', ...near, tags: [] }] };
       default: return { type, text: '' };
     }
   }
@@ -1366,7 +1411,8 @@ export class StageEditor {
         return;
       }
       let v = val(t.value);
-      if (key === 'on') v = t.value === 'true';
+      if (key === 'on' || key === 'known') v = t.value === 'true';
+      if (key === 'tags') v = String(t.value).split(/[,、\s]+/).filter(Boolean);
       if (key === 'tag' && keys.length > 2 && v === '') {
         // 「敵の航空機すべて」・出撃のタグなし は欄ごと消す
         const o = getPath(list, keys.slice(0, -1).join('.'));

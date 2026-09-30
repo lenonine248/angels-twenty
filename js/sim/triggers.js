@@ -16,8 +16,11 @@
 import { SIDE, OWNER } from './unit.js';
 import { GROUND_MODES } from './ground.js';
 
-export const TRIGGER_CONDITIONS = ['time', 'detected', 'destroyed', 'below', 'enter', 'fired'];
-export const TRIGGER_ACTIONS = ['guard', 'defend', 'restore', 'launch', 'reinforce', 'notice', 'ground'];
+export const TRIGGER_CONDITIONS = ['time', 'detected', 'destroyed', 'below', 'enter', 'reach', 'fired'];
+export const TRIGGER_ACTIONS = ['guard', 'defend', 'restore', 'launch', 'reinforce', 'notice', 'ground', 'spawn'];
+
+/** `reach` の半径の既定（m）。艦の持ち場の到達判定（150m）より広くとり、止まる手前でも拾う */
+export const REACH_DEFAULT_R = 500;
 
 /** 陣取る高さの既定（対地・m）と持ち場の半径の既定。`spawnStage` の敵機と同じ値 */
 export const GUARD_DEFAULT = { agl: 5000, radius: 4500 };
@@ -111,6 +114,13 @@ export class SideTriggers {
         }
         return false;
       }
+      case 'reach': {
+        // **自分の側のユニットがその地点に着いた**（§107）。艦・地上・航空機を問わない。
+        // 数えるのは自分の手の内の真の位置なので、「知りうることだけで判定する」に反しない
+        const r = c.r || REACH_DEFAULT_R;
+        return this._tagged(c.tag).some((u) => u.alive && u.side === this.side
+          && Math.hypot(u.pos.x - c.x, u.pos.z - c.z) <= r);
+      }
       case 'fired': return this.fired(c.id);
       default: return false;
     }
@@ -191,6 +201,15 @@ export class SideTriggers {
           if (a.mode === 'hold') u.holdAt = pt || { x: u.pos.x, z: u.pos.z };
           if (a.mode === 'retreat') u.retreatTo = pt || u.retreatTo;
           if (a.mode === 'advance' && a.attackTag) u.attackTag = a.attackTag;
+        }
+        break;
+      }
+      case 'spawn': {
+        // 地上部隊をその場に出す（§107・揚陸）。`{ units: [{ type, name, x, z, tags, attackTag, known }] }`。
+        // 書き方はステージの `ground` と同じ。出たものはこの司令官の手持ちになる
+        for (const g of a.units || []) {
+          if (!Number.isFinite(g.x) || !Number.isFinite(g.z)) continue;
+          w.spawnGround?.({ ...g }, this.side, this.owner);
         }
         break;
       }

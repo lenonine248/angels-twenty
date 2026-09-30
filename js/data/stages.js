@@ -354,9 +354,13 @@ export const STAGES = [
     id: 's5',
     name: 'COASTAL WALL',
     title: '沿岸の壁',
-    brief: '敵の上陸部隊が沿岸へ向かっている。艦船と車両部隊を阻止せよ。\n'
-      + '同時に、沿岸のレーダーサイトを守り抜くこと。これを失えば防空網が崩れる。',
-    hint: '艦船は近接防空を持つ。低空で近づくと危険。対地ミサイルで距離を取って撃つのが安全。',
+    brief: '敵の揚陸艦2隻が沿岸へ向かっている。岸に着けば車両部隊を揚げ、沿岸のレーダーサイトを狙ってくる。\n'
+      + '上陸を許すな。艦が岸に着く前に沈めること。起伏の多い陸に揚がった車両部隊は、空から捉えるのが難しい。\n'
+      + 'レーダーを失えば防空網が崩れる。',
+    // **上陸はほぼ負けにつながる罰**（§107.6・プレイヤーの決め）。上陸後に取り返す局面は作らない ——
+    // 起伏と雲で車両部隊は空から捉えにくい。だから文章で「上陸を許すな」とはっきり言う
+    hint: '艦船は近接防空を持つ。低空で近づくと危険。対地ミサイルで距離を取って撃つのが安全。'
+      + '揚陸艦 1 のほうが先に岸に着く。',
     terrain: { seed: 50505, mountainAmount: 0.9, coast: 'e', valleyDepth: 0.9, rivers: 2, baseAltitude: 400 },
     // 雲（§88.15）。s3 と同じ狙い（上陸部隊の対空を層で隔てる）
     weather: { cloud: 'scattered', base: 2200, top: 3600 },
@@ -385,30 +389,47 @@ export const STAGES = [
     enemy: {
       aircraft: [
         { type: 'J-7', name: 'BANDIT 1', x: 44000, z: 22000, agl: 5000, aiMode: 'PATROL', tags: ['cap'] },
+        // **2機目**（§107・プレイヤーの判断）。自軍4機に対して1機では、艦を急ぐ邪魔にならなかった
+        //（旧版の実測: BANDIT 1 は 152〜169秒で落ち、艦は 187・191秒で沈む）。艦2の北側を受け持つ
+        { type: 'J-7', name: 'BANDIT 2', x: 44000, z: 38000, agl: 5000, aiMode: 'PATROL', tags: ['cap'] },
       ],
       ground: [
-        { type: 'SHIP', name: '揚陸艦 1', x: 47000, z: 32000, tags: ['invasion'], known: true,
-          route: [{ x: 47000, z: 32000 }, { x: 43600, z: 31000 }] },
-        { type: 'SHIP', name: '揚陸艦 2', x: 47500, z: 36000, tags: ['invasion'], known: true,
-          route: [{ x: 47500, z: 36000 }, { x: 43200, z: 34500 }] },
-        // **沿岸レーダーへ向かう**（§67.3）。
+        // **岸際まで進んで止まり、車両部隊を揚げる**（§107）。
         //
-        // これまでは巡回するだけで、レーダーへの攻撃手段も無かった。
-        // 「沿岸レーダーを守る」は失敗条件として書いてあるのに、
-        // **放置しても全滅以外でゲームオーバーにならなかった**
-        // （実測: 6戦とも沿岸レーダーは無傷）。
-        // 機銃（射程800m）を持ったので、**着く前に倒す**という時間の勝負になる。
-        { type: 'CONVOY', name: '車両部隊', x: 44000, z: 27000, tags: ['invasion'],
-          attackTag: 'coastal-radar' },
+        // 以前は2点を往復するだけで、終点は岸の手前（艦1は 276m・艦2は 736m 足りない）だった ——
+        // 艦が陸へ寄る理由が無かった。行き先は旧進路の延長が水深 -40m（艦が入れる限界）に掛かる点。
+        // 着くのは艦1が約 424秒・艦2が約 588秒（9m/s・直進）。
+        { type: 'SHIP', name: '揚陸艦 1', x: 47000, z: 32000, tags: ['invasion', 'lst1'], known: true,
+          groundMode: 'hold', holdAt: { x: 43335, z: 30922 } },
+        { type: 'SHIP', name: '揚陸艦 2', x: 47500, z: 36000, tags: ['invasion', 'lst2'], known: true,
+          groundMode: 'hold', holdAt: { x: 42505, z: 34258 } },
+      ],
+      // 揚陸（§107）。**艦ごとに別**に起こす —— 1隻先に沈めれば上陸は半分で済む。
+      // 開始時から陸にいた車両部隊（§67.3）は消した。地上の相手は上陸を許したときだけ出る。
+      // 揚がる地点は岸際から陸（高さ20m以上）へ入った最初の点。レーダーまで約 9.1km・CONVOY で約 760秒
+      triggers: [
+        { id: 'land1', label: '揚陸艦1の揚陸', when: [{ type: 'reach', tag: 'lst1', x: 43335, z: 30922, r: 250 }],
+          do: [
+            { type: 'spawn', units: [{ type: 'CONVOY', name: '上陸部隊 1', x: 43076, z: 30846,
+              tags: ['invasion', 'landed'], attackTag: 'coastal-radar', known: true }] },
+            { type: 'notice', text: '揚陸艦 1 が接岸、車両部隊が上陸した' },
+          ] },
+        { id: 'land2', label: '揚陸艦2の揚陸', when: [{ type: 'reach', tag: 'lst2', x: 42505, z: 34258, r: 250 }],
+          do: [
+            { type: 'spawn', units: [{ type: 'CONVOY', name: '上陸部隊 2', x: 42382, z: 34215,
+              tags: ['invasion', 'landed'], attackTag: 'coastal-radar', known: true }] },
+            { type: 'notice', text: '揚陸艦 2 が接岸、車両部隊が上陸した' },
+          ] },
       ],
     },
     // 評価基準（§18）。**プリセットは 24P**（「31P」と書いてあったのは §57 以前の値）。
-    // 目標は西へ動いてくるので待てば距離は縮む。
     // **§90 で触ったのは上限だけ**（56 → 40P）。帯 16/24 と敵の数はそのまま ——
     // プリセット(24P)は○のままで、◎ を取るには積み直さずに終える必要がある。
-    rating: { time: [540, 900], points: [16, 24], losses: [0, 1] },
+    // **迅速の ◎ は「上陸させずに終えた」**（§107.5）。艦2 の接岸は約561秒なので、上陸なしのクリアは
+    // 必ずその前に終わる。上陸を許した回は ○（人の実測 641・707秒）。レーダー陥落は約1104秒
+    rating: { time: [560, 900], points: [16, 24], losses: [0, 1] },
     objectives: [
-      { id: 'stop', type: 'destroyAll', tag: 'invasion', label: '上陸部隊（艦船2・車両部隊）を撃破する' },
+      { id: 'stop', type: 'destroyAll', tag: 'invasion', label: '上陸部隊（揚陸艦2・上陸した車両部隊）を撃破する' },
       { id: 'radar', type: 'protect', tag: 'coastal-radar', label: '沿岸レーダーを守る', fail: true },
     ],
   },

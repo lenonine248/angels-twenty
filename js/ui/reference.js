@@ -337,7 +337,8 @@ function weaponsBody() {
         + `高く撃つほど遠くまで届く（射程 ${km(M.range)}km）。発射した機体が落ちると誘導が切れるので、最後の一撃になれない`,
       `**AAM-A** は僚機のレーダーでも導けるので、**自機のレーダーを切ったまま撃てる**。最後は自分で相手を捉え、AAM-M より強く曲がる。コストは AAM-M の ${A.cost / M.cost}倍`,
       `**AGM** は高度を上げてもあまり伸びない。爆風があり、半径 ${G.blastRadius}m の至近弾でも効く`,
-      `**ARM** は電波を出している相手にだけ撃てる。**高度 ${n0(R.minLaunchAlt)}m 以上から**。相手が電波を止めると最後の座標へ飛ぶ（爆風 ${R.blastRadius}m）`,
+      `**ARM** は電波を出している相手にだけ撃てる。**高度 ${n0(R.minLaunchAlt)}m 以上から**。相手が電波を止めると最後の座標へ飛ぶ（爆風 ${R.blastRadius}m）。`
+        + `高度を指示せずに攻撃させると、ARM が残っているうちは **${n0(ARM_STANDOFF_ALT)}m を保って**撃ち、撃ち尽くしてから降りる`,
       '**BOMB** は目標の真上を通って落とす。低く落とすほど正確で、高く落とすほど散る（散り方は落ちている時間で決まる）。'
         + '兵装パネルの「爆撃 トス」にすると、低く速く入って**手前で機首を上げて投げ上げ**、上を通らずに引き返す。'
         + '山地では**地形に沿って低く入り**、投げる前に爆弾が稜線を越えられる高さまで上がる —— 山の陰の目標を、陰にいる時間を長くして叩ける。'
@@ -444,6 +445,20 @@ const DODGE = {
 };
 const SAM_RANGE = { sam: WEAPONS['SAM-M'].range, irsam: WEAPONS['IR-SAM'].range };
 
+/**
+ * ミサイル艦は ARM 何発で沈むか（§106）。表に耐久の列が無いので、ここでだけ言う。
+ * SAM 陣地は1発で沈むので「黙らせてから近づく」がそのまま通るが、艦は足りないと
+ * 沈黙が明けて撃ち直してくる（実測で ARM×2＋AGM×2 は SAM 陣地 12/12・艦 0/12）。
+ */
+function samshipNote() {
+  const ship = GROUND_TYPES.SAMSHIP;
+  const arm = WEAPONS.ARM.damage;
+  const n = Math.ceil(ship.hp / arm);
+  const site = Math.ceil(GROUND_TYPES.SAM.hp / arm);
+  return `**${ship.name}は ARM ${n}発で沈む**（SAM陣地は ${site}発）。${n - 1}発では残り、`
+    + `黙った ${SILENCE_DURATION}秒が明けると撃ち直してくる。黙らせてから近づくなら、${n}発をまとめて当てる`;
+}
+
 function defenseBody() {
   const kinds = ['SAM', 'IRSAM', 'AAA', 'SAMSHIP', 'SHIP', 'CARRIER', 'RADAR'];
   const rows = kinds.filter((k) => GROUND_TYPES[k]).map((k) => {
@@ -468,6 +483,7 @@ function defenseBody() {
     + notes([
       `**SAM は ARM が来ると電波を止めて隠れる** —— ARM が ${km(ARM_NOTICE_RANGE)}km まで来ると ${ARM_REACTION}秒で止め、${SILENCE_DURATION}秒黙る。`
         + '黙っているあいだは撃ってこない（ARM は最後の座標へ飛ぶ）。レーダーサイトは止めない',
+      ...(GROUND_TYPES.SAMSHIP ? [samshipNote()] : []),
       '**対空砲の弾は実体。** まっすぐ突っ込めば当たり、横切る・蛇行で当たりにくい。射高より上がいちばん確実',
       `**パイロットは、知っている対空砲・赤外線SAM の射高より ${n0(GUN_CLEAR_MARGIN)}m 上へ自分で上がる**（手動と、高度を指示しているときを除く）。`
         + '**知らない砲は避けられない** —— 対空砲は電波を出さないので、目視でしか見つからない',

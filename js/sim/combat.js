@@ -12,7 +12,7 @@ import { Bullet, GUN_RPS, BULLET_LIFE, hitRadiusOf, aimPointOf } from './bullet.
 import { headingOf, angleDiff, radarElevation, DEG } from './unit.js';
 import { bombAimPoint, bombImpactPoint, bombPathClear, bombSolution, G, TOSS } from './acm.js';
 import { clamp } from '../core/rng.js';
-import { opticalSight } from './sight.js';
+import { opticalSight, stealthRange } from './sight.js';
 import { effectiveMissileRange } from '../core/atmosphere.js';
 
 // 機銃は実体弾（sim/bullet.js）。拡散・弾速・弾数は機種ごと（data/aircraft.js の gunSpec）。
@@ -155,40 +155,51 @@ const BASE_HIT = 0.82;
  * 旧式には最小射程の概念がまったく無く、2km を 0.65 と見積もっていた。
  *
  * 距離ではなく飛翔時間で見るのは、速い弾ほど必要な距離が伸びるため。
+ *
+ * **2.2 / 4.6 → 1.5 / 3.0**（§105.4）。測り直したら、AAM-S の飛翔 3〜4秒（2.2〜3km）が
+ * 予測 0.38・実測 0.78、AAM-M の 5〜7秒が 0.25・1.00。§38.1 の「2km で 0.20」はもう起きていない。
+ * AI はこの項で 2.2km より近くでは撃たないので、**3秒未満は測れていない** —— 縁は置いただけ。
  */
-const NEAR_MIN = 2.2;
-const NEAR_FULL = 4.6;
+const NEAR_MIN = 1.5;
+const NEAR_FULL = 3.0;
 
 /**
- * **運動で届くか**（§38.3）。実効射程に対する割合で見る。
+ * **遠すぎ**（§38.3・§105.4）。実効射程に対する割合 `frac` で見る。満額から 0 まで直線。
  *
- * **「距離の罰」はこの1本に集約する。** 旧式は距離で3回罰していて
- * （飛翔時間・デコイ・照射保持）、掛け算なので遠距離で 0 に潰れていた。
- * 実測で 14〜18km は 0.02 ではなく 0.4 前後当たる。
+ * **遠距離で当たらなくなるのは「レーダー弾 × 逃げてチャフを撒ける機体」だけ**（§105.4 の実測）。
+ * 1本の距離の罰を全員に掛けていたので、戦闘機には甘く、爆撃機・攻撃機・早期警戒機と
+ * 赤外線弾には厳しすぎた（面8つ・AAM-M 931発）:
  *
- * 0.62 までは満額、0.85 で 0。発射上限（実効射程×0.85）と揃えてある。
+ * | frac | 戦闘機（AB あり） | AB なし（A-3・B-9・E-8） |
+ * |---|---|---|
+ * | 0.5〜0.6 | 0.49 | 0.56 |
+ * | 0.6〜0.64 | 0.45 | 0.67 |
+ * | **0.64 以上** | **0.00〜0.13**（チャフ満タン） | **0.58** |
  *
- * **ここを 0.80 / 0.74 に締める試みは差し戻した**（§70.4.7）。
- * 較正そのものは良くなる（予測0.35／実測0.32）が、
- * **CLEAN SWEEP が 0/18 になる。** 詳細は SPEC §70.4.7。
+ * チャフを撒き切った戦闘機は 0.64 以上でも 0.5 当たる —— 崖を作っているのはチャフ。
+ * ただし**残りの数は見ない**（§38）。見るのは機種の性質（`spec.noAfterburner`）だけ。
+ * AB の有無そのものが原因かは測っていない（測った機種の群をきれいに分ける既存の欄がこれ）。
+ *
+ * **戦闘機の崖は距離ではなく「その相手への初弾か」についていた**（§105.5）。
+ * 崖に合わせて 0.56→0.64 に締めたら、AI の初弾は frac 0.70 → 0.61（17.6 → 15.5km）に詰まったが、
+ * チャフ満タンの相手への初弾は 0.09 → 0.13 のまま。同じ 0.61 で2発目以降は 0.47。
+ * そこで初弾だけ別の項にした（`KIN_EVADER_FIRST`）。2発目以降は旧の 0.62→0.74 のまま。
+ * 初弾の値は frac 0.40〜0.46 で 0.6 前後・0.48〜0.56 で 0.3 前後（各 20〜40発）からの置き値。
+ * **初弾の崖が撃つ点についてくる（距離で決まらない）なら、これも効かない** —— 測って確かめる。
+ *
+ * **AB のない相手と赤外線には傾きを付けない**（§105.7）。発射上限（`LAUNCH_RANGE_FRAC` 0.85）の手前は満額。
+ * 0.74→0.85 の傾きを付けていたときは、AB なし・AAM-M の frac 0.80〜0.85 を 0.21 と見て 0.59 当たり、
+ * AAM-S の 7km 以上を 0.37 と見て 0.86 当たっていた。平らにしても撃つ距離はほとんど伸びず
+ * （戦闘機への AAM-S の中央値 5.2km のまま）、ベンチも 88/144・損失 270 で同じ。
+ *
+ * 旧: 全員 0.62 → 0.74。§70.12 で「欺瞞をすり抜ける見込み」（`DECEPT_*`）を撤去したとき、
+ * その歯止めを全員の距離の罰へ寄せたもの。
  */
-const KIN_START = 0.62;
-const KIN_END = 0.74;
-
-/**
- * **レーダー誘導が長い飛翔を生き延びる見込み**（§38.3）。
- *
- * **名前の由来だった前提はもう無い**（§70.4.7）。元は
- * 「チャフとビーム欺瞞は飛翔時間が長いほど抽選の機会が増える」だったが、
- * §70.4.1 で抽選そのものを無くした（実測: ビーム欺瞞0件・チャフ遮蔽0件／493発）。
- *
- * **それでも撤去できなかった。** 外したら AI が遠射に歯止めを失い、
- * 20〜25km に162発を捨てて **CLEAN SWEEP と ESCORT が 0/18** になった。
- * この項は名前と違って**距離の歯止めとして働いていた**。
- * 名前を直すには、同じ強さの歯止めを別の形で用意してからにする。
- */
-const DECEPT_SEC = 45;
-const DECEPT_FLOOR = 0.30;
+const KIN_EVADER_FIRST = { start: 0.45, end: 0.60 };
+const KIN_EVADER = { start: 0.62, end: 0.74 };
+// 道具から A/B できるように書き換えられる形で出す（`GUIDE_GAP` と同じ）。
+// `start` と `end` が同じなら傾きは無く、`end` の手前はすべて満額（§105.7）。
+export const KIN_OTHER = { start: 0.85, end: 0.85 };
 
 /**
  * **セミアクティブが照射を保てる見込み**（§38.2）。
@@ -203,14 +214,8 @@ const DECEPT_FLOOR = 0.30;
  * 一定ぶんはここではなく `SARH_HOLD_UNDER_FIRE` が受け持つ。
  */
 const SARH_HOLD = 0.77;
-/**
- * ただし**目視距離の乱戦では話が別**（§38.1）。
- * 実測の照射切れ率は 6km で **61%**（8km 以遠の約2.5倍）。
- * 近いほど目標の視線角速度が大きく、扇を横切る速さが上がる。
- */
-const HOLD_FAN_MIN = 4000;
-const HOLD_FAN_FULL = 8000;
-const HOLD_FAN_FLOOR = 0.40;
+// §38.1 の「目視距離の乱戦では照射を保てない」（`HOLD_FAN_*`・4〜8km で最大 0.40 倍）は撤去した（§105.4）。
+// 測り直したら AAM-M の 8km 未満は 予測0.38・実測0.81（36発）、6km の照射切れは 0.10。前提（6km で 61% 切れる）がもう無い。
 /**
  * **自分も撃たれているなら、照射は保てない**（§38.1）。
  *
@@ -248,11 +253,14 @@ const DECOY_REACT_SEC = 7;
  * `decoyRepeatFactor`（2発目以降は落ちる）が入っていないぶん、丸ごと過大だった。
  * 較正して **0.35**。これで 2〜8km の予測が実測と ±0.06 に収まる。
  *
+ * **0.35 → 0.15**（§105.4）。測り直したら AAM-S の外れは 225発中25（11%）で、
+ * 距離（2〜7km）でも向きでもほぼ動かない。0.35 だと 5km で 16% 撒かれると見ていた。
+ *
  * **この項は赤外線にしか掛けない。** §35.2 以降チャフは引き付けないので、
  * レーダー弾に「デコイで逸らされる確率」を掛けるのは二重の誤り
  * （起きない事象を、しかも距離で罰していた）。
  */
-const DECOY_GEOM_TYPICAL = 0.35;
+const DECOY_GEOM_TYPICAL = 0.15;
 
 export function decoyFactor(dist) {
   return clamp(0.15 + dist / 12000, 0.15, 0.85);
@@ -510,15 +518,22 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
     // 実測: AAM-S を 2km で撃つと 0.20、3km なら 0.66。
     p *= clamp((tof - NEAR_MIN) / (NEAR_FULL - NEAR_MIN), 0, 1);
 
-    // **遠すぎ**（§38.3）。距離の罰はここ1本だけ。
-    p *= clamp((KIN_END - frac) / (KIN_END - KIN_START), 0, 1);
+    // **遠すぎ**（§38.3・§105.4）。距離の罰はここ1本だけ。
+    // 崖が早いのは、レーダー弾で、逃げてチャフを撒ける機体を狙うときだけ。
+    // 戦闘機への**初弾**はさらに早い（§105.6）。自分の陣営がまだレーダー弾を撃っていない相手 ——
+    // 撃つ側が知っている量なので、相手の残弾を数えることにはならない（§38）。
+    const evader = weapon.guidance !== 'ir' && !(target.spec && target.spec.noAfterburner);
+    const first = evader && !(target.radarShotBy && target.radarShotBy[shooter.side]);
+    const kin = first ? KIN_EVADER_FIRST : evader ? KIN_EVADER : KIN_OTHER;
+    p *= kin.end > kin.start ? clamp((kin.end - frac) / (kin.end - kin.start), 0, 1)
+      : (frac < kin.end ? 1 : 0);
 
-    // アスペクト。誘導方式で得意な角度が逆になる。
-    //   赤外線: 排気を見るので後方から撃つほど当たる
-    //   レーダー: 接近速度が乗る正面ほど当たる
+    // アスペクト。レーダー弾は接近速度が乗る正面ほど当たる。
+    // **赤外線には掛けない**（§105.4）。後方から撃つほど当たる、と見て 0.7〜1.0 を掛けていたが、
+    // 実測は 前 0.84・横 0.86・後 0.82（AAM-S 225発）。掴めるかどうかは `irLockRange` が見ている。
     const dx = target.pos.x - shooter.pos.x, dz = target.pos.z - shooter.pos.z;
     const aspect = Math.abs(angleDiff(headingOf(-dx, -dz), target.heading)) / Math.PI;
-    p *= weapon.guidance === 'ir' ? (0.7 + 0.3 * aspect) : (1 - 0.4 * aspect);
+    if (weapon.guidance !== 'ir') p *= 1 - 0.4 * aspect;
 
     if (weapon.guidance === 'ir') {
       // 赤外線は掴めない距離なら 0（§34）。ここを入れないと、
@@ -534,10 +549,10 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
     }
     // **「欺瞞をすり抜ける見込み」の項は撤去した**（§70.12）。
     //
-    // 前提（抽選）は §70.4.1 で消えている。距離の歯止めは `KIN_END` を
-    // 0.85 → 0.74 に締めて引き受ける —— **名前と仕事を一致させる。**
-    // 撤去だけして歯止めを足さないと、AI が 20km 超へ撃ち捨てて全滅する
-    // （§70.4.7 の #2 で実測）。**必ず対で動かす。**
+    // 前提（抽選）は §70.4.1 で消えている。距離の歯止めは「遠すぎ」の項が引き受ける
+    // （§105.4 で相手ごとに分けた `KIN_EVADER` / `KIN_OTHER`）。
+    // 歯止めを外すと、AI が 20km 超へ撃ち捨てて全滅する（§70.4.7 の #2 で実測）。
+    // **「遠すぎ」を緩めるときは、戦闘機に撃つ距離が伸びていないかを必ず測る。**
 
     // **セミアクティブは、着弾まで照射を保てるかを見る**（§38.2）。
     //
@@ -545,10 +560,6 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
     // （8km 26% / 20km 28%）。切れる原因は時間ではなく**機動**。
     if (weapon.guidance === 'sarh') {
       p *= SARH_HOLD;
-      // 目視距離の乱戦では話が別。視線角速度が大きく、扇を横切る速さが上がる
-      // （実測の照射切れ率は 6km で 61%）。
-      p *= clamp((dist - HOLD_FAN_MIN) / (HOLD_FAN_FULL - HOLD_FAN_MIN),
-        HOLD_FAN_FLOOR, 1);
       // 自分も撃たれているなら保てない（実測 0/12 命中）。
       if (shooter.threats && shooter.threats.length) p *= SARH_HOLD_UNDER_FIRE;
     }
@@ -923,9 +934,9 @@ export class CombatSystem {
 
     if (w.guidance === 'sarh' || w.guidance === 'arh') {
       const lock = w.guidance === 'sarh';
-      if (!inRadarFan(shooter, dx, dz, dy, flat, lock)
+      if (!inRadarFan(shooter, target, dx, dz, dy, flat, lock)
           && !datalinkSource(this.world, shooter, target, w, dx, dz, dy, flat)) {
-        return fanMiss(shooter, dx, dz, dy, flat, lock);
+        return fanMiss(shooter, target, dx, dz, dy, flat, lock);
       }
     } else if (off > 45) {
       return `射角外 ${Math.round(off)}度`;
@@ -1044,7 +1055,7 @@ export class CombatSystem {
         // 発射の可否も狭いロックの扇で判定する（§28.7）。
         //
         // **データリンクを持つ弾だけ、陣営の目で代用できる**（§89.7）。
-        if (!inRadarFan(shooter, dx, dz, dy, flat, w.guidance === 'sarh')
+        if (!inRadarFan(shooter, target, dx, dz, dy, flat, w.guidance === 'sarh')
             && !datalinkSource(this.world, shooter, target, w, dx, dz, dy, flat)) return false;
         return los();
 
@@ -1109,6 +1120,9 @@ export class CombatSystem {
     // `estimateHitChance` は発射のたびに1回だけなので、二重に呼んでも安い。
     if (weapon.kind === 'aam' && target.kind === 'aircraft') {
       m.pk = estimateHitChance(shooter, target, weapon, this.aimErrorOf(shooter, target));
+      // この陣営がこの相手にレーダー弾を撃ったことを覚える（§105.6・見積りの「初弾」）。
+      // 見積りを出したあとに付けるので、この弾自身の `pk` は初弾として見積もられる
+      if (weapon.guidance !== 'ir') (target.radarShotBy ||= {})[shooter.side] = true;
     }
     this.world.missiles.push(m);
 
@@ -1320,13 +1334,15 @@ function datalinkSource(world, shooter, target, w, dx, dz, dy, flat) {
   return null;
 }
 
-function inRadarFan(shooter, dx, dz, dy, flat, lock = false) {
+function inRadarFan(shooter, target, dx, dz, dy, flat, lock = false) {
   const spec = shooter.spec;
   // レーダーを切っていれば扇そのものが無い（§26.4）。
   // AAM-M も AAM-A も、ここを通れないので撃てなくなる。
   const range = shooter.radarRange != null ? shooter.radarRange : (spec && spec.radarRange) || 0;
   if (!spec || range <= 0) return false;
-  if (Math.hypot(flat, dy) > range) return false;
+  // **反射断面積を掛ける**（§104）。探知・照射の継続と同じ `stealthRange` ——
+  // 逆探知で識別できても、レーダーに映る距離まで詰めなければロックできない
+  if (Math.hypot(flat, dy) > stealthRange(range, target)) return false;
   return inFanGeometry(shooter, dx, dz, dy, flat, lock);
 }
 
@@ -1357,13 +1373,16 @@ function inFanGeometry(shooter, dx, dz, dy, flat, lock = false) {
  * 左右と上下では上限が違う（ロックなら 40度 と 20度）ので、
  * **落ちた軸と、その軸の上限**を出す。
  */
-function fanMiss(shooter, dx, dz, dy, flat, lock) {
+function fanMiss(shooter, target, dx, dz, dy, flat, lock) {
   const spec = shooter.spec;
   const fovH = lock ? (spec.radarLockFovH ?? spec.radarFovH ?? 60) : (spec.radarFovH || 60);
   const fovV = lock ? (spec.radarLockFovV ?? spec.radarFovV ?? 30) : (spec.radarFovV || 30);
   const range = shooter.radarRange != null ? shooter.radarRange : (spec && spec.radarRange) || 0;
   if (range <= 0) return 'レーダー沈黙';
   if (Math.hypot(flat, dy) > range) return `レーダー範囲外 ${Math.round(Math.hypot(flat, dy) / 100) / 10}km`;
+  // 射程の内側でも、ステルス機はレーダーに映る距離まで掴めない（§104）
+  const seen = stealthRange(range, target);
+  if (Math.hypot(flat, dy) > seen) return `ステルス ${Math.round(seen / 100) / 10}km まで掴めない`;
   const yaw = Math.abs(angleDiff(headingOf(dx, dz), shooter.heading)) / DEG;
   if (yaw > fovH) return `左右の扇の外 ${Math.round(yaw)}度（上限${fovH}度）`;
   const el = Math.abs(radarElevation(shooter, dy, flat)) / DEG;
