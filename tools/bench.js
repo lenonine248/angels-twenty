@@ -36,6 +36,12 @@
    *           ここで条件を差し替える。**進めた後に触っても A/B にならない**
    *   record … リプレイを溜める（§56）。既定は false。
    *           `AT.bench.save(i, seed, 名前)` から使う
+   *   playbook … 作戦書（PROPOSAL_playlog §4 案A・`ai/playbook.js`）。true ならその面の
+   *           `AT.PLAYBOOKS[stage.id]`、配列ならそれをそのまま使う。省けば素の司令官AIだけ
+   *   loadouts … 作戦書の搭載を使うか（true ならその面の `PLAYBOOKS[id].loadouts`、
+   *           `{ 'ANVIL 1': [...] }` ならそれ）。名前の無い機体はブリーフィングの既定のまま。
+   *           `playbook` とは別に指定できる —— 搭載の効きと指示の効きを分けて測るため
+   *   maxSec … 打ち切りの秒数（既定 900）。上陸やレーダー陥落まで見たいときに延ばす
    */
   function runOne(stageIndex, trace, opts = {}) {
     return new Promise((resolve) => {
@@ -57,14 +63,14 @@
       AT.loop.setPaused = () => setPaused(true);
       setPaused(true);
 
-      AT.startStage(stageIndex, opts.seed);
+      AT.startStage(stageIndex, opts.seed, loadoutsFor(stageIndex, opts.loadouts));
       const wait = () => {
         if (!AT.battle || AT.battle === prev) { setTimeout(wait, 30); return; }
         AT.loop.setSpeed = setSpeed;
         AT.loop.setPaused = setPaused;
         setPaused(true);
         if (opts.setup) opts.setup(AT.battle);
-        const r = step(trace, opts.record);
+        const r = step(trace, opts.record, opts);
         r.seed = AT.battle.seed;
         resolve(r);
       };
@@ -72,7 +78,17 @@
     });
   }
 
-  function step(trace, record) {
+  /** 作戦書の搭載（名前 → 兵装）を、ステージの機体の順の配列にする。指定が無ければ null（既定のまま） */
+  function loadoutsFor(stageIndex, spec) {
+    if (!spec) return null;
+    const st = AT.stageList()[stageIndex];
+    const byName = spec === true ? AT.PLAYBOOKS?.[st.id]?.loadouts : spec;
+    if (!byName) return null;
+    return st.friendly.aircraft.map((a) => (byName[a.name] || a.loadout).slice());
+  }
+
+  function step(trace, record, opts = {}) {
+    const maxSec = opts.maxSec || MAX_SEC;
     const b = AT.battle;
     const w = b.world;
     const t0 = performance.now();
@@ -91,7 +107,14 @@
     // どちらもベンチ固有の癖で、ゲーム本体（ai/pilot.js）は正しかった。
     // **プレイヤーの機体だけ**（§102）。友軍の機体は友軍の司令官（`b.allyCommander`）が動かす ——
     // ベンチが動かすと、友軍の指揮を横取りして測ることになる
-    const auto = new AT.Commander(w, w.playerSide, b.mission, { owner: 'player' });
+    // **作戦書を付けるときは、作戦書が掴んだ機体を司令官AIが触らない**（`skip`）。
+    // 掴んでいない機体・手放した機体は今までどおり司令官AIが動かす
+    const list = opts.playbook === true ? AT.PLAYBOOKS?.[b.stage.id]?.steps : opts.playbook;
+    const plan = list ? new AT.Playbook(w, list, b.mission) : null;
+    const auto = new AT.Commander(w, w.playerSide, b.mission,
+      { owner: 'player', skip: plan ? (u) => plan.holds(u) : null });
+    // 誰がいつ落ちたか（作戦書の A/B で、艦がいつ沈んだかを並べるため）
+    const deaths = [];
 
     // **敵側の司令官も回す**（§27.6）。`buildBattle` が組んだものをそのまま使う。
     // ここを忘れると、ベンチと実際の遊びで**敵の動きが違う**。
@@ -112,9 +135,9 @@
     // しかも `main.js` 側は `loop.simTime` を使うが、ベンチはそれを進めない。
     // **ベンチ自身の時計（steps/30）で録る。**
     const now = () => steps / 30;
-    w.onFire = (sh, tg, wp) => {
+    w.onFire = (sh, tg, wp, m) => {
       shots++;
-      if (record) b.recorder?.event('fire', now(), { unit: sh, target: tg, weapon: wp.id, pos: sh.pos });
+      if (record) b.recorder?.event('fire', now(), { unit: sh, target: tg, weapon: wp.id, pos: sh.pos, mid: m ? m.id : null });
       if (trace) events.push(`${at()} ${sh.name} ${wp.id} -> ${tg.name} ${km(sh, tg)} alt${Math.round(sh.pos.y)}`);
     };
     // **チャフ／フレアも録る**（§23.9）。`onFire` と同じで、
@@ -125,13 +148,13 @@
     w.onMissileHit = (m, tg, dist) => {
       hits++;
       if (record) {
-        b.recorder?.event('hit', now(), { unit: m.launcher, target: tg, weapon: m.weapon.id, pos: m.pos,
+        b.recorder?.event('hit', now(), { unit: m.launcher, target: tg, weapon: m.weapon.id, pos: m.pos, mid: m.id,
           label: dist != null && dist > 25 ? '至近弾' : '直撃' });
       }
       if (trace) events.push(`${at()}   HIT ${tg.name} hp${Math.round(tg.hp)}`);
     };
 
-    while (b.mission.state === 'active' && steps < MAX_SEC * 30) {
+    while (b.mission.state === 'active' && steps < maxSec * 30) {
       // **雲を風で流す**（§88.15）。`main.js` の `fixedUpdate` と同じ順番・同じ位置。
       // ここはゲーム本体の刻みを写した別の実装なので、
       // **向こうに足したものはこちらにも足す** —— 忘れると、
@@ -144,6 +167,9 @@
       for (const u of w.units) {
         if (u.alive || u._benchDead) continue;
         u._benchDead = true;
+        const by = AT.killedBy ? AT.killedBy(u) : null;
+        deaths.push({ t: +(steps / 30).toFixed(1), name: u.name, side: u.side, cause: u.deathCause || '被弾',
+          by: by && by.by ? by.by.name : null, weapon: by ? by.weapon : null });
         if (trace) events.push(`${at()} DEAD ${u.name} (${u.deathCause || '被弾'})`);
         if (record) {
           const kind = u.deathCause === 'withdraw' ? 'withdraw'
@@ -178,6 +204,8 @@
         }
       }
 
+      // 作戦書は司令官AIより先 —— 同じステップで掴んだ機体を司令官AIが触らないように
+      plan?.tick(DT);
       auto.update(DT);
       b.enemyPlan?.update(DT);
       if (foe) foe.update(DT);
@@ -214,12 +242,19 @@
       blueLeft: alive.filter((u) => u.side === 'blue' && u.kind === 'aircraft').length,
       redLeft: alive.filter((u) => u.side === 'red' && u.kind === 'aircraft').length,
       ms: Math.round(performance.now() - t0),
+      // 出撃時の残りポイント。負なら搭載が上限を超えている（作戦書の書き損じ）
+      pointsLeft: w.weaponPoints,
       reason: b.mission.failReason || '',
       // 出していた割合(%)。100 なら誰も黙っていない＝電波管制が効いていない
       blueEmit: emit.blue[1] ? Math.round((emit.blue[0] / emit.blue[1]) * 100) : null,
       redEmit: emit.red[1] ? Math.round((emit.red[0] / emit.red[1]) * 100) : null,
       blueSaw: firstSeen.blue,
       redSaw: firstSeen.red,
+      deaths,
+      // 敵側のトリガーの発火（COASTAL WALL なら land1・land2 ＝上陸）
+      enemyTriggers: b.mission.triggers ? b.mission.triggers.log.slice() : [],
+      // 作戦書の段の発火と、機体ごとの任務の移り変わり
+      plan: plan ? { steps: plan.log.slice(), tasks: plan.events.slice() } : null,
       events,
     };
   }

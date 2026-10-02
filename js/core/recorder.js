@@ -31,15 +31,38 @@ export const SAMPLE_DT = 0.5;
  * | 1 | 最初の形 |
  * | **2** | **天候・到達目標・チャフ／フレアを足し、コンタクトを厚くした**（§23.9）|
  * | **3** | **名簿に指揮系統 `owner` を足した**（§102）。友軍機の色を再現するため。友軍が居ない面の記録は v2 と同じ中身 |
+ * | **4** | **理由を起こせるようにした**（PROPOSAL_playlog）。サンプルに機体の状態 `a` と敵の探知 `e`、出来事に弾の対（`mid`・`mend`）・トリガー・目標・メモ、指示は全機と行き先、頭に回の名前 `play` と作戦 `plan` |
  *
  * **足しただけなので v1 も開ける。** 変わったのはコンタクト1件の長さだけで、
  * そこは `v` を見て読み分ける（`contactStride`）。
  * 古い記録は新しい要素が空のまま開く —— 弾くよりそのほうが役に立つ。
  */
-export const FORMAT = 3;
+export const FORMAT = 4;
 
 /** コンタクト1件が何個の数値で書かれているか（形式版ごと）*/
 export function contactStride(v) { return v >= 2 ? 9 : 5; }
+
+/**
+ * 機体の状態（サンプルの `a`・v4）。1機が `A_STRIDE` 個の数値:
+ * `[id, 速度(m/s), 旗, AAM の残り, 搭載の残り, 燃料(%), モード]`。
+ * モードは記録の `amodes` の添字（文字列を毎回持たない）。
+ *
+ * 「なぜ落ちたか」を起こすのに要るのはここ —— 位置と HP だけでは、
+ * 気づいていたか・避けていたか・弾が残っていたかが分からない
+ */
+export const A_STRIDE = 7;
+export const AFLAG = {
+  EMIT: 1,          // 電波を出している（逆探知に映る）
+  THREAT: 2,        // 自分に向かう弾がある（警報）
+  EVADE: 4,         // 回避中
+  BEAM: 8,          // ビーム
+  RUN: 16,          // 背を向けて逃げている
+  CRANK: 32,        // クランク
+  AB: 64,           // アフターバーナー
+};
+
+/** 敵の探知（サンプルの `e`・v4）。1件が `[自軍の id, 探知の段階]` */
+export const E_STRIDE = 2;
 
 /** コンタクトの旗（`flags`）*/
 export const CFLAG = {
@@ -67,6 +90,25 @@ export class Recorder {
     this._next = 0;             // 次にサンプルを取る時刻
     this.result = null;
     this.stats = null;
+
+    /** 回の名前（playlog の `id`）と出撃前の作戦（v4）。呼ぶ側が入れる */
+    this.playId = null;
+    this.plan = null;
+    /** 目標とトリガーの差分を取る相手（v4）。呼ぶ側が入れる */
+    this.mission = null;
+    this._trigSeen = { red: 0, ally: 0 };
+    this._objSeen = new Map();
+    /** 機体のモードの表（`a` の添字の先） */
+    this.amodes = [];
+
+    // **弾の終わりを録る**（v4）。外れた弾は「撃って当たらなかった」としか分からず、
+    // 失速か・見失ったか・地面かが消えていた。終わり方は弾が知っている
+    world.onMissileEnd = (m, reason) => {
+      this.event('mend', this._now ?? 0, {
+        mid: m.id, pos: m.pos, cause: reason,
+        ...(m.lost && m.lostReason ? { label: m.lostReason } : {}),
+      });
+    };
   }
 
   /** 名簿へ載せる（初出のときだけ） */
@@ -89,6 +131,7 @@ export class Recorder {
    * 呼ぶ側に間隔を意識させない。
    */
   tick(time) {
+    this._now = time;
     if (!this.enabled || time < this._next) return;
     this._next = time + SAMPLE_DT;
     this.sample(time);
@@ -139,12 +182,80 @@ export class Recorder {
       }
     }
 
-    this.samples.push({ t: Math.round(time * 10) / 10, u, c });
+    // 機体の状態（v4）。両陣営
+    const a = [];
+    for (const unit of w.units) {
+      if (!unit.alive || unit.kind !== 'aircraft') continue;
+      let f = 0;
+      if (unit.emitting) f |= AFLAG.EMIT;
+      if (unit.threats && unit.threats.length) f |= AFLAG.THREAT;
+      if (unit.evading) f |= AFLAG.EVADE;
+      if (unit.beaming) f |= AFLAG.BEAM;
+      if (unit.running) f |= AFLAG.RUN;
+      if (unit.cranking) f |= AFLAG.CRANK;
+      if (unit.afterburner) f |= AFLAG.AB;
+      const lo = unit.loadout || [];
+      a.push(
+        unit.id,
+        Math.round(unit.speed || 0),
+        f,
+        lo.filter((id) => String(id).startsWith('AAM')).length,
+        lo.length,
+        Number.isFinite(unit.fuelRatio) ? Math.round(unit.fuelRatio * 100) : -1,
+        this._modeIndex(unit.aiMode),
+      );
+    }
+
+    // 敵が自軍のどれを掴んでいるか（v4）。「先に見つけたのはどちらか」はこれと `c` を突き合わせる
+    const e = [];
+    if (det) {
+      const foe = w.playerSide === 'blue' ? 'red' : 'blue';
+      for (const [, ct] of det.contactsFor(foe)) {
+        if (!ct.unit || ct.unit.side !== w.playerSide || !ct.detected) continue;
+        e.push(ct.unit.id, ct.level | 0);
+      }
+    }
+
+    this._watchMission(time);
+    this.samples.push({ t: Math.round(time * 10) / 10, u, c, a, e });
+  }
+
+  _modeIndex(mode) {
+    const m = mode || '';
+    let i = this.amodes.indexOf(m);
+    if (i < 0) { i = this.amodes.length; this.amodes.push(m); }
+    return i;
+  }
+
+  /**
+   * トリガーの発火と目標の移り変わりを出来事にする（v4）。
+   * **sim には手を入れず、記録の側から差分を取る** —— 発火は `triggers.log`、
+   * 目標は `done`/`failed` の旗に既に残っている
+   */
+  _watchMission(time) {
+    const m = this.mission;
+    if (!m) return;
+    for (const [key, tr] of [['red', m.triggers], ['ally', m.allyTriggers]]) {
+      const log = tr && tr.log;
+      if (!log) continue;
+      for (let i = this._trigSeen[key]; i < log.length; i++) {
+        this.event('trigger', log[i].t ?? time, { label: String(log[i].id), cause: key });
+      }
+      this._trigSeen[key] = log.length;
+    }
+    for (const o of m.objectives || []) {
+      const st = o.failed ? 'failed' : o.done ? 'done' : '';
+      const key = o.id ?? o.label;
+      if (!st || this._objSeen.get(key) === st) continue;
+      this._objSeen.set(key, st);
+      this.event('objective', time, { label: o.label || String(key), cause: st });
+    }
   }
 
   /**
    * 出来事。位置は起きた場所を丸めて持つ。
    * @param {string} type 'fire' | 'hit' | 'kill' | 'loss' | 'withdraw' | 'order' | 'decoy'
+   *   v4 から 'mend'（弾の終わり）| 'trigger' | 'objective' | 'note'（プレイヤーのメモ）
    */
   event(type, time, o = {}) {
     if (!this.enabled) return;
@@ -157,6 +268,10 @@ export class Recorder {
     if (o.cause) e.cause = o.cause;
     if (o.kind) e.k = o.kind;            // チャフ／フレアの別（§23.9）
     if (o.label) e.label = o.label;
+    if (o.mid != null) e.mid = o.mid;    // 弾の id（v4）。fire・hit・mend を対にする
+    if (o.dest) e.dx = Math.round(o.dest.x), e.dz = Math.round(o.dest.z);   // 指示の行き先（v4）
+    if (o.text) e.text = o.text;         // メモ（v4）
+    if (o.units) e.ids = o.units.map((u) => u.id);   // メモを付けた機体（v4）
     this.events.push(e);
   }
 
@@ -173,7 +288,9 @@ export class Recorder {
    */
   finish(result, stats) {
     const o = result && typeof result === 'object' ? result : { state: result };
-    this.result = { state: o.state === 'clear' ? 'clear' : 'fail', reason: o.reason || '' };
+    // 途中でやめた回（v4）も 'fail' に寄せずに残す。読む側は `resultOf` で clear かどうかだけ見る
+    this.result = { state: o.state === 'clear' ? 'clear' : o.state === 'abort' ? 'abort' : 'fail',
+      reason: o.reason || '' };
     this.stats = stats || null;
   }
 
@@ -201,6 +318,10 @@ export class Recorder {
           .filter((o) => o.type === 'reach')
           .map((o) => ({ id: o.id, type: o.type, x: o.x, z: o.z, radius: o.radius || 3000 })),
       },
+      // 回の名前と作戦（v4）
+      ...(this.playId ? { play: this.playId } : {}),
+      ...(this.plan ? { plan: this.plan } : {}),
+      amodes: this.amodes,
       dt: SAMPLE_DT,
       units: this.units,
       samples: this.samples,

@@ -38,6 +38,8 @@ import * as tuning from './ui/tuning.js';
 import { isDebug, setDebug } from './core/debug.js';
 import { pruneFormations, resetFormationIds } from './ai/formation.js';
 import { Commander } from './ai/commander.js';
+import { Playbook } from './ai/playbook.js';
+import { PLAYBOOKS } from './data/playbooks.js';
 import { CommandController } from './ui/commands.js';
 import { Hud } from './ui/hud.js';
 import { ScreenManager } from './ui/briefing.js';
@@ -83,6 +85,8 @@ let audio = null;
 
 /** 現在の戦闘。ステージを開始するたびに作り直す。 */
 let battle = null;
+/** 出撃前に書いた作戦（PROPOSAL_playlog P4）。ブリーフィングを通った出撃でだけ入る */
+let battlePlan = '';
 
 /** チュートリアル進行（§19）。通常のステージでは null。 */
 let tutorial = null;
@@ -119,7 +123,9 @@ async function boot() {
 
   screens = new ScreenManager({
     progress,
-    onStart: (stage, loadouts) => startBattle(stage, loadouts),
+    onStart: (stage, loadouts, terrain, plan) => { battlePlan = plan || ''; startBattle(stage, loadouts); },
+    // 結果画面の一言（PROPOSAL_playlog P3）
+    onComment: (id, text) => telemetry.comment(id, text),
     // 種はふつう毎回引く（spread 0 なので配置は揺れない）。**雲の塊の位置は種で決まる**ので、
     // 雲を手順に使う本は `battleSeed` で固定する（§93.7）
     onStartTutorial: (t) => startBattle(t, null, t, t.battleSeed),
@@ -140,12 +146,20 @@ async function boot() {
   onAction((kind, detail) => {
     if (tutorial) tutorial.handleAction(kind, detail);
     // 「自分が何をしたから何が起きたのか」を並べて見るため、指示も残す（§23.2）。
-    if (battle && !battle.finished && kind.startsWith('order:')) {
-      const u = commands.selection[0];
-      battle.recorder.event('order', loop.simTime, {
-        unit: u, target: detail.target, pos: u ? u.pos : null,
-        label: kind.slice(6),
-      });
+    //
+    // **選んでいる全機ぶん残す**（v4）。以前は先頭の1機だけで、まとめて出した指示は
+    // 2機目から先が記録に無かった。行き先（移動の点）も持つ —— 位置は指示した時点の機体の位置
+    const isOrder = kind.startsWith('order:') || kind === 'alt:up' || kind === 'alt:down';
+    if (battle && !battle.finished && isOrder) {
+      const label = kind.startsWith('order:') ? kind.slice(6) : kind.replace(':', '-');
+      const dest = detail && Number.isFinite(detail.x) && Number.isFinite(detail.z)
+        ? { x: detail.x, z: detail.z } : null;
+      const sel = commands.selection.length ? commands.selection : [null];
+      for (const u of sel) {
+        battle.recorder.event('order', loop.simTime, {
+          unit: u, target: detail && detail.target, pos: u ? u.pos : null, dest, label,
+        });
+      }
     }
   });
   screens.onReset = () => { progress = resetProgress(); screens.progress = progress; };
@@ -291,6 +305,8 @@ ${err.message}`);
     // 司令官AI（§27）。いまは検証（tools/bench.js）から使う。
     // 敵に付けるかは種を固定して測ってから決める（§27.6）。
     Commander,
+    // 作戦書（PROPOSAL_playlog §4 案A）。検証用だけ —— `tools/bench.js` の `playbook` から使う
+    Playbook, PLAYBOOKS,
     // 落とした相手（§12.3 の P0）。ベンチの記録が `handleDeaths` と同じものを載せるため
     killedBy,
     get recording() { return lastRecording; },
@@ -302,10 +318,11 @@ ${err.message}`);
      */
     // **検証用ステージも番号で呼べるようにする**（§51）。
     // デバッグモードのときだけ末尾に並ぶので、切っていれば従来どおり 0〜6。
-    startStage(i, seed) {
+    // `loadouts` を渡すとブリーフィングの搭載の代わりに使う（作戦書の搭載・PROPOSAL_playlog §4）
+    startStage(i, seed, loadouts) {
       const list = stageList();
       screens.showBriefing(list[i]);
-      startBattle(list[i], screens.loadouts.map((l) => l.slice()), false, seed);
+      startBattle(list[i], (loadouts || screens.loadouts).map((l) => l.slice()), false, seed);
     },
   };
 }
@@ -680,7 +697,7 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
 
   world.onFire = (shooter, target, weapon, missile) => {
     world.recorder?.event('fire', loop.simTime,
-      { unit: shooter, target, weapon: weapon.id, pos: shooter.pos });
+      { unit: shooter, target, weapon: weapon.id, pos: shooter.pos, mid: missile ? missile.id : null });
     if (isPlayerOwned(shooter, world)) {
       world.log(`${shooter.name} ${weapon.id} 発射`);
       telemetry.markShot(weapon.id);
@@ -706,7 +723,7 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
   };
   world.onMissileHit = (m, target, dist) => {
     world.recorder?.event('hit', loop.simTime,
-      { unit: m.launcher, target, weapon: m.weapon.id, pos: m.pos,
+      { unit: m.launcher, target, weapon: m.weapon.id, pos: m.pos, mid: m.id,
         label: dist != null && dist > 25 ? '至近弾' : '直撃' });
     if (m.side === world.playerSide && !isAlly(m.launcher)) telemetry.markHit(m.weapon.id);
   };
@@ -843,6 +860,14 @@ function buildBattle(stage, loadouts, asTutorial, seed) {
     recorder: new Recorder(stage, world, battleSeed),
   };
   world.recorder = battle.recorder;
+  // 理由を起こすための結び付け（v4・PROPOSAL_playlog）
+  battle.recorder.mission = mission;
+  battle.recorder.playId = asTutorial ? null : telemetry.currentId();
+  if (!asTutorial && battlePlan.trim()) {
+    battle.recorder.plan = battlePlan.trim();
+    telemetry.setPlan(battlePlan);
+  }
+  battlePlan = '';
   battle.recorder.sample(0);          // 開始時の配置を1枚残す
 
   // 初期カメラ。**選択はしない**（§64）。
@@ -1261,6 +1286,75 @@ function spawnReinforcement(world, airbase, type, index, tags, owner, loadout) {
 
 // ================================================================ 戦闘終了
 
+/**
+ * 手で遊んだ回のリプレイを `replays/plays/<回の名前>.json` へ落とす（PROPOSAL_playlog P1）。
+ * playlog の行の `replay` がこれを指す。失敗しても遊びは止めない
+ */
+function savePlayReplay(playId, rec) {
+  if (!playId || !onDevServer()) return;
+  try {
+    fetch(`/replay/${telemetry.REPLAY_SUB}/${playId}.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rec),
+    }).catch(() => {});
+  } catch (e) { /* noop */ }
+}
+
+/**
+ * 途中でやめた回も残す（v4）。**やめた回が一番の材料になることがある** ——
+ * 「これは無理だ」と判断した瞬間までが記録に残る
+ */
+function abortBattle() {
+  if (!battle || battle.finished || tutorial) return;
+  battle.finished = true;
+  const world = battle.world;
+  const playId = telemetry.end('abort', {
+    sec: loop.simTime, kills: battle.kills, losses: battle.losses, pointsLeft: world.weaponPoints,
+  });
+  battle.recorder.sample(loop.simTime);
+  battle.recorder.finish({ state: 'abort', reason: '途中でやめた' }, {
+    sec: Math.round(loop.simTime), kills: battle.kills, losses: battle.losses,
+    pointsLeft: world.weaponPoints, rank: null,
+  });
+  savePlayReplay(playId, battle.recorder.toJSON());
+}
+
+/**
+ * 戦闘中のメモ（PROPOSAL_playlog P4）。止めて書かせ、選んでいる機体と時刻に付ける。
+ * 閉じたら止める前の状態へ戻す
+ */
+function openMemo() {
+  if (document.getElementById('memoBox')) return;
+  const wasPaused = loop.paused;
+  loop.setPaused(true);
+  const units = commands.selection.slice();
+  const box = document.createElement('div');
+  box.id = 'memoBox';
+  box.className = 'memo-box';
+  const who = units.length ? units.map((u) => u.name).join('・') : '（機体を選んでいない）';
+  box.innerHTML = `<div class="memo-head">メモ ${formatTime(loop.simTime)} — ${who}</div>
+    <input type="text" placeholder="例: 北回り — SAM 艦を避ける（Enter で残す・Esc でやめる）">`;
+  document.body.appendChild(box);
+  const input = box.querySelector('input');
+  input.focus();
+  const close = () => { box.remove(); loop.setPaused(wasPaused); };
+  input.addEventListener('keydown', (ev) => {
+    ev.stopPropagation();
+    if (ev.key === 'Escape') { close(); return; }
+    if (ev.key !== 'Enter') return;
+    const text = input.value.trim();
+    if (text && battle && !battle.finished) {
+      telemetry.note(loop.simTime, text, units.map((u) => u.name));
+      battle.recorder.event('note', loop.simTime, {
+        unit: units[0] || null, pos: units[0] ? units[0].pos : null, text, units,
+      });
+      pushLog(`メモ: ${text}`);
+    }
+    close();
+  });
+}
+
 function finishBattle() {
   battle.finished = true;
   const { stage, mission, world } = battle;
@@ -1279,17 +1373,18 @@ function finishBattle() {
     screens.progress = progress;
   }
 
-  telemetry.end(clear ? 'clear' : 'fail', {
+  const playId = telemetry.end(clear ? 'clear' : 'fail', {
     sec: loop.simTime, kills: battle.kills, losses: battle.losses,
     pointsLeft: world.weaponPoints,
     rank: rating ? rating.rank : null,
   });
   battle.recorder.sample(loop.simTime);        // 最後の配置を残す
-  battle.recorder.finish(clear ? 'clear' : 'fail', {
+  battle.recorder.finish({ state: clear ? 'clear' : 'fail', reason: mission.failReason || '' }, {
     sec: Math.round(loop.simTime), kills: battle.kills, losses: battle.losses,
     pointsLeft: world.weaponPoints, rank: rating ? rating.rank : null,
   });
   lastRecording = battle.recorder.toJSON();
+  savePlayReplay(playId, lastRecording);
   audio.setAlarm(0);
   audio.setEngine(0, 1);
   setTimeout(() => {
@@ -1301,6 +1396,7 @@ function finishBattle() {
       loadouts: battle.loadouts || [],
       result: clear ? 'clear' : 'fail',
       stats: {
+        playId,
         reason: mission.failReason || (clear ? '全目標を達成' : ''),
         time: formatTime(loop.simTime),
         kills: battle.kills,
@@ -1493,6 +1589,7 @@ function setupPauseMenu() {
   };
   const leave = () => {
     menu.classList.add('hidden');
+    abortBattle();
     el('hud').classList.add('hidden');
     destroyTutorial();
     battle = null;
@@ -1653,6 +1750,11 @@ function setupTimeControls() {
       case 'BracketLeft':  loop.stepSpeed(-1); sync(); notify('speed', { speed: loop.speed }); break;
       case 'BracketRight': loop.stepSpeed(1); sync(); notify('speed', { speed: loop.speed }); break;
       case 'KeyH':         el('helpBox').classList.toggle('hidden'); break;
+      // 戦闘中のメモ（PROPOSAL_playlog P4・L4）。開発サーバのときだけ
+      case 'KeyN':
+        if (replay && replay.isOpen) break;
+        if (battle && !battle.finished && !tutorial && onDevServer()) { e.preventDefault(); openMemo(); }
+        break;
       default: break;
     }
   });

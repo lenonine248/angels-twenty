@@ -13,6 +13,8 @@ python -m http.server だとブラウザが ES モジュールをキャッシュ
 2. 戦闘のリプレイ（仕様 §23）を replays/ へ保存する。
    ブラウザからのダウンロードは環境によって止められるので、
    検証で回した戦闘をそのまま残せるようにしておく。
+   **手で遊んだ戦闘は毎回 replays/plays/ へ自動で落ちる**（PROPOSAL_playlog P1）。
+   playlog.jsonl の1行が持つ `replay` がそのファイル名。
 3. ステージエディタで組んだ面（仕様 §91）を stages_out/ へ保存する。
    自作ステージは localStorage の中にあり、開発側からは読めない。
    画面のテキストをコピーして渡す道は残したうえで、
@@ -31,6 +33,10 @@ import sys
 
 PLAYLOG = "playlog.jsonl"
 REPLAY_DIR = "replays"
+# 手で遊んだ戦闘の自動保存の置き場（PROPOSAL_playlog P1）。REPLAY_DIR の下
+PLAYS_DIR = "plays"
+# 一覧に出す自動保存の本数（新しい順）。ファイル自体は消さない
+PLAYS_LISTED = 30
 STAGE_DIR = "stages_out"
 # 面1つは要点が数 KB・定義が数十 KB。桁で余裕を持たせておく。
 MAX_STAGE = 1024 * 1024
@@ -76,11 +82,16 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         記録そのものに面・結果・種が入っている（`recorder.toJSON`）ので、
         毎回ここから読み直せば**ずれようがない。**
         """
-        out = []
         d = os.path.join(self._root(), REPLAY_DIR)
-        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
-            if not name.endswith(".json") or name == "index.json":
-                continue
+        files = [n for n in (sorted(os.listdir(d)) if os.path.isdir(d) else [])
+                 if n.endswith(".json") and n != "index.json"]
+        # 自動保存は新しい順に先頭へ。名前が時刻で始まるので名前の逆順＝新しい順
+        pd = os.path.join(d, PLAYS_DIR)
+        plays = [PLAYS_DIR + "/" + n
+                 for n in (sorted(os.listdir(pd), reverse=True) if os.path.isdir(pd) else [])
+                 if n.endswith(".json")][:PLAYS_LISTED]
+        out = []
+        for name in plays + files:
             try:
                 with open(os.path.join(d, name), encoding="utf-8") as f:
                     rec = json.load(f)
@@ -152,6 +163,10 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
     def _save_replay(self):
         """POST /replay/<name>.json で戦闘の記録を replays/ に置く。"""
         name = self.path[len("/replay/"):]
+        # 自動保存（PROPOSAL_playlog P1）だけは下の置き場を指せる。それ以外の `/` は通さない
+        sub = ""
+        if name.startswith(PLAYS_DIR + "/"):
+            sub, name = PLAYS_DIR, name[len(PLAYS_DIR) + 1:]
         if not name or not all(c in SAFE_NAME for c in name) or ".." in name:
             self.send_error(400, "bad name")
             return
@@ -166,7 +181,7 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             self.send_error(400, "not json")
             return
-        out = os.path.join(self._root(), REPLAY_DIR)
+        out = os.path.join(self._root(), REPLAY_DIR, sub)
         os.makedirs(out, exist_ok=True)
         with open(os.path.join(out, name), "wb") as f:
             f.write(raw)

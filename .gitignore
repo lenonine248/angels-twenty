@@ -25,3 +25,6 @@ replays/
 # エディタで組んだ面の書き出し（§91）。**手元だけ。**
 # 相談のために落とすもので、本編に載せるときは stages.js へ写す。
 stages_out/
+
+# プレイの報告書（PROPOSAL_playlog・`tools/report.mjs` が作る）。**手元だけ。** 元のリプレイが手元にしか無いので
+reports/

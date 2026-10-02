@@ -17,6 +17,7 @@ import { getType } from '../data/aircraft.js';
 import { Terrain, CELLS, MAP_SIZE } from '../world/terrain.js';
 import * as tuning from './tuning.js';
 import { isDebug } from '../core/debug.js';
+import { onDevServer } from '../core/devserver.js';
 import { inline, block } from './markup.js';
 import * as custom from '../data/custom.js';
 
@@ -25,11 +26,15 @@ import { loadoutRow, removeOne, pylonLabel, LOADOUT_HINT } from './loadout.js';
 export class ScreenManager {
   /**
    * @param {object} o
-   * @param {(stage, loadouts, terrain)=>void} o.onStart 出撃
+   * @param {(stage, loadouts, terrain, plan)=>void} o.onStart 出撃。`plan` は作戦メモ（開発サーバのときだけ・PROPOSAL_playlog P4）
+   * @param {(playId, text)=>void} [o.onComment] 結果画面の一言（開発サーバのときだけ・PROPOSAL_playlog P3）
    */
   constructor(o) {
     this.onStart = o.onStart;
     this.onStartTutorial = o.onStartTutorial;
+    this.onComment = o.onComment;
+    /** 面ごとの作戦メモ。編成を変えるたびに画面を描き直すので、書いたそばからここへ移す */
+    this._plans = {};
     this.progress = o.progress;
     this.root = document.getElementById('screens');
     this._terrainCache = new Map();
@@ -39,6 +44,9 @@ export class ScreenManager {
     this.stage = null;
 
     this.root.addEventListener('click', (e) => this._onClick(e));
+    this.root.addEventListener('input', (e) => {
+      if (e.target.id === 'bfPlan' && this.stage) this._plans[this.stage.id] = e.target.value;
+    });
     // 調整パネルの数値入力（§47）
     this.root.addEventListener('change', (e) => {
       if (!this._tuneOpen || !isDebug() || !this.stage || !e.target.dataset.tn) return;
@@ -531,6 +539,9 @@ export class ScreenManager {
         <div class="bf-section">出撃編成</div>
         <div class="bf-roster">${roster}</div>
         ${allies ? `<div class="bf-section">友軍（操作できない）</div><div class="bf-roster">${allies}</div>` : ''}
+        ${onDevServer() ? `<div class="bf-section">作戦メモ（開発用・プレイ記録に残る）</div>
+          <textarea id="bfPlan" class="dev-memo" rows="3"
+            placeholder="例: VIPER で SAM 艦を ARM で黙らせてから、ANVIL を北回りで揚陸艦へ">${esc(this._plans[stage.id] || '')}</textarea>` : ''}
 
         <div class="screen-foot">
           <button data-act="back" class="ghost">戻る</button>
@@ -551,6 +562,7 @@ export class ScreenManager {
     // `this.stage` が別のステージのまま残っている（§66.9）。
     // 「もう一度」がそれを開いてしまう。
     this.stage = stage;
+    this._lastPlayId = stats.playId || null;
     const clear = result === 'clear';
     // 検証用ステージ（§47.2）は STAGES に無い。indexOf が -1 を返すので、
     // そのまま +1 すると**先頭のステージが「次の任務」として出てしまう**。
@@ -593,6 +605,10 @@ export class ScreenManager {
         </div>
         ${rating}
         ${clear && next ? `<div class="res-next">次の任務「${next.name}」が解禁されました</div>` : ''}
+        ${onDevServer() && stats.playId ? `<div class="res-comment">
+          <input id="resComment" class="dev-memo" type="text"
+            placeholder="勝てた理由・負けた理由を一言（開発用・プレイ記録に残る）">
+          <button data-act="comment" class="ghost">残す</button></div>` : ''}
         <div class="screen-foot">
           <button data-act="select" class="ghost">ステージモードへ</button>
           <button data-act="review" class="ghost">戦闘を振り返る</button>
@@ -727,12 +743,20 @@ export class ScreenManager {
       case 'launch':
         if (!act.hasAttribute('disabled')) {
           this._rememberLoadouts();
-          this.onStart(this.stage, this.loadouts.map((l) => l.slice()), this._terrainFor(this.stage));
+          this.onStart(this.stage, this.loadouts.map((l) => l.slice()), this._terrainFor(this.stage),
+            this._plans[this.stage.id] || '');
         }
         break;
       case 'retry':
         this.showBriefing(this.stage);
         break;
+      case 'comment': {
+        const box = this.root.querySelector('#resComment');
+        if (!box || !box.value.trim() || !this._lastPlayId) break;
+        this.onComment?.(this._lastPlayId, box.value);
+        act.textContent = '残しました';
+        break;
+      }
       // 次のステージへ。クリアした直後だけ出る
       case 'next': {
         const s = STAGES.find((x) => x.id === act.dataset.id);
@@ -825,4 +849,9 @@ export class ScreenManager {
 function verNum(v) {
   const m = /(\d+)\.(\d+)/.exec(v || '');
   return m ? Number(m[1]) * 1000 + Number(m[2]) : 0;
+}
+
+/** 書いた文を HTML に戻すとき用 */
+function esc(t) {
+  return String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 }

@@ -14,7 +14,7 @@
 // どちらかが最後まで分からない。
 
 import { Terrain, MAP_SIZE, CELLS } from '../world/terrain.js';
-import { downloadRecording, pickRecordingFile, resultOf } from '../core/recorder.js';
+import { downloadRecording, pickRecordingFile, resultOf, contactStride } from '../core/recorder.js';
 import { colorKeyOf } from '../sim/unit.js';
 
 /** 出来事の見た目 */
@@ -25,6 +25,7 @@ const EVENT_STYLE = {
   loss:     { color: '#ff5f5f', r: 4.5, label: '喪失' },
   withdraw: { color: '#8a8f98', r: 3.5, label: '離脱' },
   order:    { color: '#6fd8e8', r: 2,   label: '指示' },
+  note:     { color: '#f4f4f4', r: 3.5, label: 'メモ' },   // プレイヤーのメモ（v4）
 };
 
 // `ally` は友軍の航空機（§102）。記録の名簿の `owner` で分ける（v3 から）
@@ -38,7 +39,7 @@ export class ReviewScreen {
 
     this.mode = 'truth';        // 'truth' | 'seen'
     this.tIndex = 0;            // 時間軸の位置（サンプル番号）
-    this.showEvents = new Set(['kill', 'loss', 'hit', 'fire', 'withdraw', 'order']);
+    this.showEvents = new Set(['kill', 'loss', 'hit', 'fire', 'withdraw', 'order', 'note']);
     this.focusId = null;        // ある機体だけを追う
 
     this._onClick = (e) => this._click(e);
@@ -238,8 +239,11 @@ export class ReviewScreen {
           if (!u || u.side !== 'blue' || u.kind !== 'aircraft') continue;
           push(tracks, id, s.u[k + 1], s.u[k + 3]);
         }
-        for (let k = 0; k < s.c.length; k += 5) {
-          push(tracks, s.c[k], s.c[k + 1], s.c[k + 2]);
+        // コンタクト1件の長さは形式版で違う（v2 から 9・y が x の次に入る）。
+        // **5 で決め打ちしていたので、v2 以降は x と高度を地図に描いていた**
+        const cs = contactStride(this.data.v || 1), cz = cs >= 9 ? 3 : 2;
+        for (let k = 0; k < s.c.length; k += cs) {
+          push(tracks, s.c[k], s.c[k + 1], s.c[k + cz]);
         }
       }
     }
@@ -292,7 +296,8 @@ export class ReviewScreen {
     const sNow = d.samples[upTo];
     const groundSeen = new Set();
     if (sNow) {
-      for (let k = 0; k < sNow.c.length; k += 5) groundSeen.add(sNow.c[k]);
+      const cs = contactStride(d.v || 1);
+      for (let k = 0; k < sNow.c.length; k += cs) groundSeen.add(sNow.c[k]);
     }
     const aliveNow = new Set();
     if (sNow) for (let k = 0; k < sNow.u.length; k += 6) aliveNow.add(sNow.u[k]);

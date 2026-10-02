@@ -19,6 +19,10 @@
 //   AT.telemetry.text()     直近の記録を JSON 文字列で得る（コンソールから読む用）
 //   AT.telemetry.summary()  ステージごとの平均を表で見る
 //   AT.telemetry.clear()    記録を消す
+//
+// **1行は「何が起きたか」の索引で、中身はリプレイにある**（PROPOSAL_playlog）。
+// 行の `replay` が `replays/plays/` に自動で落ちたリプレイを指す。
+// 理由（誰が先に見つけたか・どこで分かれたか）は `tools/report.js` がリプレイから起こす。
 
 import { onDevServer } from './devserver.js';
 
@@ -49,7 +53,12 @@ function save() {
  * @param {?number} seed   その戦闘の乱数の種（§24）
  */
 export function begin(stage, loadouts, version, seed) {
+  const id = playId(stage.id);
   current = {
+    // **その回の名前**（PROPOSAL_playlog P1）。リプレイの自動保存のファイル名と、
+    // あとから足す一言（`comment`）がこの名前でこの行に結び付く
+    id,
+    replay: `${REPLAY_SUB}/${id}.json`,
     // **版を必ず残す。** これが無いと、調整の前後の記録が同じファイルに
     // 混ざって、どちらの数字を見ているのか分からなくなる（実際そうなった）。
     version: version || '?',
@@ -63,6 +72,55 @@ export function begin(stage, loadouts, version, seed) {
     shots: {},          // 兵装ごとの発射数
     hits: {},           // 兵装ごとの命中数
   };
+}
+
+/** リプレイの自動保存の置き場（`replays/` の下・devserver.py の PLAYS_DIR と同じ） */
+export const REPLAY_SUB = 'plays';
+
+/**
+ * 回の名前。`20261001-161644-s5` の形 —— 名前の順が時刻の順になる（devserver の一覧が新しい順に並べる）。
+ * 手元の時刻で付ける。読むのは人なので UTC より分かりやすい
+ */
+function playId(stageId) {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const safe = String(stageId).replace(/[^A-Za-z0-9_-]/g, '_');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+    + `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-${safe}`;
+}
+
+/** 進行中の回の名前（無ければ null） */
+export function currentId() { return current ? current.id : null; }
+
+/**
+ * 出撃前に書いた作戦（PROPOSAL_playlog P4）。空なら残さない
+ */
+export function setPlan(text) {
+  if (!current) return;
+  const t = String(text || '').trim();
+  if (t) current.plan = t; else delete current.plan;
+}
+
+/**
+ * 戦闘中のメモ（PROPOSAL_playlog P4・L4）。`units` は選んでいた機体の名前
+ */
+export function note(time, text, units) {
+  if (!current) return;
+  const t = String(text || '').trim();
+  if (!t) return;
+  (current.notes ||= []).push({ t: Math.round(time), text: t, ...(units && units.length ? { units } : {}) });
+}
+
+/**
+ * 終わったあとの一言（PROPOSAL_playlog P3）。行はもう送ってあるので、
+ * **別の行として足す**（`type: 'comment'`）。読む側が `id` で結び付ける
+ */
+export function comment(id, text) {
+  const t = String(text || '').trim();
+  if (!id || !t) return;
+  const r = runs.find((x) => x.id === id);
+  if (r) { r.comment = t; save(); }
+  post({ type: 'comment', id, text: t });
 }
 
 /** ミッション中の出来事。pos は {x,z} だけ丸めて持つ。 */
@@ -105,6 +163,7 @@ export function end(result, stats) {
   current = null;
   save();
   post(finished);
+  return finished.id;
 }
 
 /** 開発サーバーへ送ってファイルに残す。失敗しても黙って諦める（遊びを止めない）。 */

@@ -92,6 +92,7 @@ export class Commander {
    * @param {object} [opts]
    *   owner … 'ally' | 'player'（§102）。渡さなければ陣営全体を動かす
    *   escortPlayer … 友軍の戦闘機がプレイヤーの攻撃機も護衛する（§102・既定 true）
+   *   skip … 触らない機体を返す関数（作戦書 `ai/playbook.js` が掴んでいる機体）。発進だけはここで出す
    */
   constructor(world, side, mission, opts = {}) {
     this.world = world;
@@ -99,6 +100,7 @@ export class Commander {
     this.mission = mission;
     this.owner = opts.owner || null;
     this.escortPlayer = opts.escortPlayer !== false;
+    this.skip = opts.skip || null;
     /** 判断をログに出すか（友軍だけ・§102）。同じ文を2秒ごとに出さないよう、機体ごとに最後の文を覚える */
     this.talk = !!opts.talk;
     this._said = new Map();
@@ -163,6 +165,7 @@ export class Commander {
       if (u.aiMode === 'MANUAL' || u.aiMode === 'RTB' || u.aiMode === 'TRANSIT'
         || u.aiMode === 'GUARD') continue;
       if (u.order && u.order.player) continue;          // プレイヤーの直接指示が優先
+      if (this.skip && this.skip(u)) continue;          // 作戦書が掴んでいる機体
       if (!isArmed(u.spec)) continue;                   // 非武装の支援機は経路のまま
 
       // 1. **本来の戦闘機**は護衛に付く。

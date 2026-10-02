@@ -36,6 +36,9 @@ def load(stage=None):
     if not os.path.exists(LOG):
         return []
     runs = []
+    # 結果画面の一言は**あとから別の行で届く**（`type: "comment"`・PROPOSAL_playlog P3）。
+    # 回の行に `id` で結び付けて、行そのものは回に数えない
+    comments = {}
     with io.open(LOG, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -45,9 +48,15 @@ def load(stage=None):
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if r.get("type") == "comment":
+                comments[r.get("id")] = r.get("text", "")
+                continue
             if stage and r.get("stage") != stage:
                 continue
             runs.append(r)
+    for r in runs:
+        if r.get("id") in comments:
+            r["comment"] = comments[r["id"]]
     return runs
 
 

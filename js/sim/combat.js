@@ -412,6 +412,20 @@ export const LAUNCH_RANGE_FRAC = 0.85;
 export const FIRE_THRESHOLD = { low: 0.12, mid: 0.20, high: 0.40 };
 
 /**
+ * **座標がずれている相手への撃ちっぱなしの対地弾**に掛ける倍率（§110）。
+ *
+ * ずれの量に比例させていた（`1 - ずれ×0.7 / 届く幅`）が、実測と合わなかった。
+ * COASTAL WALL の艦への AGM 181発（§109）: 目視で正確に掴んで撃った77発は直撃64、
+ * **逆探知の座標（ずれ 120〜145m）で撃った104発は直撃0**（一部 43・無傷 61）。
+ * 比例の式はそこを 0.43 → 0.22〜0.26 と見て、しきい値 0.20 を越えて撃っていた。
+ *
+ * そこで**目視か、ずれ0の記憶かどうか**で分ける（プレイヤーの提案）。
+ * 0.1 なら最大の 0.97 でも 0.097 —— どのしきい値（最低 0.12）でも AI は自分では撃たず、
+ * 詰めて目視で掴んでから撃つ。プレイヤーの射撃指示はしきい値を見ないので撃てる
+ */
+export const AIM_APPROX_FACTOR = 0.1;
+
+/**
  * 機銃のしきい値はミサイルより低く取る。
  * ミサイルは1発が高価なので「当たりそうなときだけ」でよいが、
  * 機銃は連射する前提で、1発あたりの期待値はもともと小さい。
@@ -584,11 +598,13 @@ export function estimateHitChance(shooter, target, weapon, aimError = 0) {
   // 撃破 1 → 0 に落ちた。当たらない弾を撃ち尽くしていただけだった。
   // 期待度に織り込めば「詰めてから撃つ」を自分で選ぶ。
   //
+  // **ずれの量ではなく、ずれが有るか無いかで見る**（§110）。`aimError` は
+  // 目視か、ずれ0の記憶（ブリーフィングで判明・目視した静止目標）なら 0（`aimErrorOf`）。
+  // 量に比例させた旧式は軽すぎ、逆探知の座標で撃って1発も直撃しなかった（`AIM_APPROX_FACTOR`）。
+  //
   // ARM は除く。電波そのものを追うので座標のずれを受けない。
   if (aimError > 0 && weapon.fireAndForget && weapon.guidance !== 'arm') {
-    const reach = (weapon.blastRadius || 40)
-      + (target.spec && target.spec.size ? target.spec.size * 0.25 : 0);
-    p *= clamp(1 - (aimError * 0.7) / Math.max(30, reach), 0.05, 1);
+    p *= AIM_APPROX_FACTOR;
   }
   return clamp(p, 0.02, 0.97);
 }

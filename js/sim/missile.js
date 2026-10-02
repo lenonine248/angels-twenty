@@ -1241,6 +1241,8 @@ export class Missile {
     if (!this.alive) return;
     this.alive = false;
     this.endReason = reason;
+    // 記録が弾の終わり方を拾う口（PROPOSAL_playlog・リプレイ v4）。sim は何もしない
+    world.onMissileEnd?.(this, reason);
     // 地表付近での炸裂は衝撃波と土煙を伴う演出にする
     const ground = world.terrain
       && this.pos.y - Math.max(0, world.terrain.heightAt(this.pos.x, this.pos.z)) < 70;
